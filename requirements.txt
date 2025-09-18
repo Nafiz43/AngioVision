@@ -1,0 +1,7 @@
+torch>=2.1.0
+transformers>=4.40.0
+accelerate>=0.29.0
+huggingface-hub>=0.23.0
+pillow>=10.0.0
+sentencepiece>=0.1.99
+timm>=0.9.12
