@@ -11,13 +11,15 @@ This file contains **DSA (Digital Subtraction Angiography) run–level labels** 
 ### Columns
 
 - **Accession**  
-  An anonymized identifier for the patient/procedure (e.g., `PXgCA2nz3E`).
+  An anonymized identifier for the patient/procedure.
 
 - **code**  
-  Standardized IR procedure code (e.g., `IRTRANEMBO`, `IRURETEMBO`, `IRVISCSEL`, `IRHEPSIRTP`).
+  Standardized IR procedure code. <span style="color:red"><strong>why each study has only one CPT Code?</strong></span>
+
 
 - **SeriesNumber**  
   Numerical identifier grouping related images within a procedure.
+  <span style="color:red"><strong>why the series number is irregular?</strong></span>
 
 - **SeriesUID**  
   DICOM Series Instance UID uniquely identifying the image series.
@@ -36,9 +38,11 @@ This file contains **DSA (Digital Subtraction Angiography) run–level labels** 
 
 - **First_Diag_Image**  
   Starting diagnostic frame number.
-
+  
 - **Last_Diag_Image**  
   Ending diagnostic frame number.
+
+<span style="color:red"><strong>Are the above three (Best, First, Last) manually labeled? should we only contain first to last Diag image frame number?</strong></span>
 
 - **Comments**  
   Optional notes about the run.
@@ -51,26 +55,15 @@ This file contains **DSA (Digital Subtraction Angiography) run–level labels** 
 
 ---
 
-## 2. `IR_Folder_List_Labeling_V07_2023_10_24.csv`
+## 4. `Report_List_v01_01.csv`
 
-Inventory of IR imaging runs, including DSA, fluoroscopy, and other image types.
+Contains anonymized radiology reports corresponding to IR studies.
 
-### Columns
+### Key Fields
 
-- **(Unnamed first column)** – Sequential index  
-- **Accession** – Anonymized patient/procedure ID  
-- **code** – IR procedure code  
-- **SeriesNumber** – Series identifier  
-- **SeriesUID** – DICOM Series Instance UID  
-- **dirpath** – Network path to the image folder  
-- **Angio Run** – Descriptive run label  
-- **Run Type** – Imaging modality (DSA, Fluoro Run, etc.)  
-- **Best_Image** – Best frame (if applicable)  
-- **First_Diag_Image** – Diagnostic start frame  
-- **Last_Diag_Image** – Diagnostic end frame  
-- **Comments** – Optional notes  
+- **Orig Acc # / Anon Acc #** – Link reports to imaging studies
+- **radrpt** – Full free-text radiology report, including procedure, technique, findings, impression, and plan
 
----
 
 ## 3. `Deep_Angiography_DB_Download_V01_log.csv`
 
@@ -87,19 +80,18 @@ Tracks anonymization and download of imaging studies.
 
 ---
 
-## 4. `Report_List_v01_01.csv`
-
-Contains anonymized radiology reports corresponding to IR studies.
-
-### Key Fields
-
-- **Orig Acc # / Anon Acc #** – Link reports to imaging studies
-- **radrpt** – Full free-text radiology report, including procedure, technique, findings, impression, and plan
-
-
 <img width="935" height="600" alt="image" src="https://github.com/user-attachments/assets/ba28ed68-b56f-407e-9c93-5b82ea30b6ee" />
 
 
+Questions:
+Why the series numbers are irregular?
 
-Dtaset Image
+
+Plans:
+1. Use LLMs to extract labels from the radiology reports
+2. Use Video Language Model on sequences/each dicom image to see whether we can extract those labels from the sequence/video
+RQ1
+
+3. Use the sequences/each dicom image to generate reports 
+4. Evaluating the difference between LLM generated reports vs the actual reports
 
