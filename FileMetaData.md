@@ -96,8 +96,10 @@ Contains anonymized radiology reports corresponding to IR studies.
 - **Orig Acc # / Anon Acc #** – Link reports to imaging studies
 - **radrpt** – Full free-text radiology report, including procedure, technique, findings, impression, and plan
 
----
 
-## Overall Dataset Purpose
+<img width="935" height="600" alt="image" src="https://github.com/user-attachments/assets/ba28ed68-b56f-407e-9c93-5b82ea30b6ee" />
 
-Together, these CSV files enable linkage between anonymized patients, DICOM images, angiography run–level labels, and radiology reports, supporting reproducible research and AI development in interventional angiography.
+
+
+Dtaset Image
+
