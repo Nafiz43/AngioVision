@@ -15,6 +15,10 @@
 - Revisit and refine the question set to improve **clinical specificity and diagnostic relevance**.
 
 ## Weekly Update — Week of 12 January
+1. Extraction of FRAMES, MetaData from DICOM files
+2. Summary of the sequences that can be processed
+3. Passsing the frames to video language model to extract anatomical questions
+
 
 ### Work Completed
 
