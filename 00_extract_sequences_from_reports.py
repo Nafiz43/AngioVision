@@ -30,7 +30,7 @@ DEFAULT_CSV_PATH = Path("/data/Deep_Angiography/Reports/Report_List_v01_01.csv")
 REPORT_COL = "radrpt"
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL_NAME = "qwen2.5vl:32b"
+DEFAULT_MODEL_NAME = "llama3:8b"
 DEFAULT_TIMEOUT_S = 180
 
 # New prompt for sequence extraction
@@ -56,10 +56,10 @@ IMPORTANT RULES
 OUTPUT FORMAT (STRICT JSON ONLY)
 Return a single JSON object with this schema:
 
-{
+{{
   "num_sequences_estimate": <integer or null>,
   "sequences": [
-    {
+    {{
       "sequence_id": "Sequence 1",
       "verbatim_text": "<direct copy-paste from report>",
       "rationale": [
@@ -67,18 +67,19 @@ Return a single JSON object with this schema:
         "<brief evidence point 2>"
       ],
       "confidence": "high|medium|low"
-    }
+    }}
   ],
   "notes": [
     "List any ambiguities, overlaps, or places where the report does not clearly separate sequences."
   ]
-}
+}}
 
 NOW PROCESS THIS REPORT:
 <<<REPORT_TEXT
 {REPORT_TEXT}
 REPORT_TEXT>>>
 """
+
 
 
 # -----------------------------

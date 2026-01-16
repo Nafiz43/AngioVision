@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 from pathlib import Path
-import re
 import pydicom
 import numpy as np
 import pandas as pd
@@ -100,18 +99,6 @@ def extract_metadata_pairs(ds):
 
     return rows
 
-def sanitize_dirname(name: str, max_len: int = 150) -> str:
-    """
-    Make a filesystem-safe directory name (keeps letters, numbers, dot, dash, underscore).
-    """
-    name = name.strip()
-    name = re.sub(r"\s+", "_", name)
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
-    name = name.strip("._-")
-    if not name:
-        name = "dicom"
-    return name[:max_len]
-
 # ----------------------------
 # Image conversion
 # ----------------------------
@@ -166,15 +153,11 @@ def save_frames(ds, frames_dir: Path, base_name: str) -> int:
 # Core Processing
 # ----------------------------
 def process_dicom_directory(dicom_dir: Path, output_root: Path):
-    """
-    For a given dicom_dir (matched by KEYWORDS), create:
-      output_root/<dicom_dir.name>/<dicom_file_dir>/frames/*.png
-      output_root/<dicom_dir.name>/<dicom_file_dir>/metadata.csv
+    output_dir = output_root / dicom_dir.name
+    frames_dir = output_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
 
-    where <dicom_file_dir> is derived from the source DICOM filename.
-    """
-    study_output_dir = output_root / dicom_dir.name
-    study_output_dir.mkdir(parents=True, exist_ok=True)
+    metadata_rows = []
 
     for file in dicom_dir.rglob("*"):
         if not file.is_file() or not is_dicom_file(file):
@@ -187,14 +170,7 @@ def process_dicom_directory(dicom_dir: Path, output_root: Path):
             print(f"Failed to read {file}: {e}")
             continue
 
-        # Per-DICOM output folder named after the DICOM file
-        dicom_folder_name = sanitize_dirname(file.stem)
-        per_dicom_dir = study_output_dir / dicom_folder_name
-        frames_dir = per_dicom_dir / "frames"
-        frames_dir.mkdir(parents=True, exist_ok=True)
-
-        # Use a consistent base name inside that folder (avoid collisions)
-        base_name = sanitize_dirname(file.stem)
+        base_name = file.stem
 
         try:
             frame_count = save_frames(ds_full, frames_dir, base_name)
@@ -202,20 +178,26 @@ def process_dicom_directory(dicom_dir: Path, output_root: Path):
             print(f"Frame extraction failed {file}: {e}")
             frame_count = NA_VALUE
 
-        # Metadata (only for this DICOM)
-        metadata_rows = extract_metadata_pairs(ds_meta)
-        metadata_rows.extend([
+        rows = extract_metadata_pairs(ds_meta)
+
+        rows.extend([
             {"Information": "source_file", "Value": safe_str(file.name)},
-            {"Information": "source_path", "Value": safe_str(str(file))},
             {"Information": "frame_count", "Value": safe_str(frame_count)},
         ])
 
-        df = pd.DataFrame(metadata_rows)
-        df["Information"] = df["Information"].fillna(NA_VALUE).map(safe_str)
-        df["Value"] = df["Value"].fillna(NA_VALUE).map(safe_str)
+        metadata_rows.extend(rows)
 
-        per_dicom_dir.mkdir(parents=True, exist_ok=True)
-        df.to_csv(per_dicom_dir / "metadata.csv", index=False, encoding="utf-8")
+    if not metadata_rows:
+        return
+
+    df = pd.DataFrame(metadata_rows)
+
+    # absolutely no nulls
+    df["Information"] = df["Information"].fillna(NA_VALUE).map(safe_str)
+    df["Value"] = df["Value"].fillna(NA_VALUE).map(safe_str)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_dir / "metadata.csv", index=False, encoding="utf-8")
 
 def contains_required_keywords(dir_name: str) -> bool:
     name = dir_name.upper()

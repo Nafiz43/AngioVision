@@ -18,6 +18,10 @@
 1. Extraction of FRAMES, MetaData from DICOM files
 2. Summary of the sequences that can be processed
 3. Passsing the frames to video language model to extract anatomical questions
+4. Used language model (llama-3 8B) to extract sequences from reports 
+    Used Individual extracted sequences to answer anatomical questions
+    
+
 
 
 ### Work Completed
