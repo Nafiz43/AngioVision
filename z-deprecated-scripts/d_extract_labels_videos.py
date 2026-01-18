@@ -1,3 +1,11 @@
+# PURPOSE:
+# This script iterates over subdirectories under a base path, where each subdirectory represents
+# one angiography image sequence (a folder of frame images). For each sequence, it samples a subset
+# of frames (using stride + max_frames), sends those frames along with a fixed list of clinical
+# questions to a multimodal LLM (Qwen-2.5VL) served via Ollama, parses the model’s JSON-only answers,
+# and incrementally writes one CSV row per (sequence, question) containing answer/confidence/evidence.
+
+
 import argparse
 import base64
 import json
