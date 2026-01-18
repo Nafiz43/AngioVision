@@ -2,20 +2,15 @@
 """
 extract_anatomical_questions_from_sequences_json.py
 
-Reads per-report JSON files that contain multiple sequence-level text chunks,
-asks an LLM (via Ollama) the SAME anatomical-level QUESTIONS per sequence,
-and writes ONE new JSON file per source JSON file (in the same directory).
+Adds robust error reporting for:
+- Ollama not reachable (connection refused, DNS, etc.)
+- request timeouts
+- non-200 responses (prints status + body snippet)
+- empty/no content returned by the model
 
-Input dir (default):
-  /data/Deep_Angiography/Reports/Report_List_v01_01_sequences_json
-
-Output:
-  For each <name>.json, writes <name>_anatomy.json (unless --suffix changed)
-
-Notes:
-- This script tries to be robust to different JSON schemas by searching for
-  sequences in common keys and for per-sequence text in common fields.
-- If a sequence text is missing/empty, it records "Not stated" with 0 confidence.
+Also adds:
+- --health_check : verify Ollama reachable + model responds before processing
+- --verbose_ollama : prints request/response snippets for debugging
 """
 
 import argparse
@@ -26,6 +21,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
+from requests.exceptions import ConnectionError as ReqConnectionError
+from requests.exceptions import Timeout as ReqTimeout
+from requests.exceptions import HTTPError as ReqHTTPError
 from tqdm import tqdm
 
 # -----------------------------
@@ -97,9 +95,37 @@ SEQUENCE_TEXT_KEYS = [
     "sequence",
 ]
 
+
+# -----------------------------
+# Ollama errors
+# -----------------------------
+class OllamaError(RuntimeError):
+    """Base error for Ollama call failures."""
+
+
+class OllamaNotReachableError(OllamaError):
+    pass
+
+
+class OllamaTimeoutError(OllamaError):
+    pass
+
+
+class OllamaHTTPStatusError(OllamaError):
+    pass
+
+
+class OllamaEmptyResponseError(OllamaError):
+    pass
+
+
 # -----------------------------
 # Helpers
 # -----------------------------
+def eprint(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -136,22 +162,90 @@ def build_prompt(sequence_text: str, question: str) -> str:
     return BASE_PROMPT.format(QUESTION=question, SEQUENCE_TEXT=sequence_text)
 
 
-def ollama_chat(prompt: str, model: str, url: str, timeout_s: int) -> str:
+def truncate(s: str, n: int) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def ollama_chat(
+    prompt: str,
+    model: str,
+    url: str,
+    timeout_s: int,
+    *,
+    verbose: bool = False,
+    meta: Optional[str] = None,
+) -> str:
+    """
+    Calls Ollama /api/chat and returns message.content.
+
+    Raises explicit errors when:
+    - Ollama not reachable
+    - timeout
+    - non-200 status
+    - JSON payload missing/empty "message.content"
+    """
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
         "options": {"temperature": 0},
     }
-    r = requests.post(url, json=payload, timeout=timeout_s)
-    r.raise_for_status()
-    return r.json().get("message", {}).get("content", "")
+
+    try:
+        if verbose:
+            eprint(f"[DEBUG] Ollama call {meta or ''}".strip())
+            eprint(f"[DEBUG] URL={url} model={model} timeout={timeout_s}s")
+            eprint(f"[DEBUG] Prompt preview: {truncate(prompt, 300)}")
+
+        r = requests.post(url, json=payload, timeout=timeout_s)
+
+        if verbose:
+            eprint(f"[DEBUG] HTTP {r.status_code}")
+            eprint(f"[DEBUG] Raw response preview: {truncate(r.text, 800)}")
+
+        # Non-2xx
+        try:
+            r.raise_for_status()
+        except ReqHTTPError as he:
+            body_preview = truncate(r.text, 1200)
+            raise OllamaHTTPStatusError(
+                f"Ollama returned HTTP {r.status_code}. Body preview: {body_preview}"
+            ) from he
+
+        # Parse JSON
+        try:
+            data = r.json()
+        except Exception as je:
+            raise OllamaHTTPStatusError(
+                f"Ollama returned non-JSON response. Body preview: {truncate(r.text, 1200)}"
+            ) from je
+
+        content = (data.get("message") or {}).get("content", "")
+        if content is None or not str(content).strip():
+            raise OllamaEmptyResponseError(
+                "Model returned empty content (message.content is empty). "
+                "Possible causes: model crashed/oom, prompt too long, backend error."
+            )
+
+        return str(content)
+
+    except ReqConnectionError as ce:
+        raise OllamaNotReachableError(
+            f"Cannot reach Ollama at {url}. Is Ollama running? "
+            f"Try: `ollama serve` and confirm URL/port."
+        ) from ce
+    except ReqTimeout as te:
+        raise OllamaTimeoutError(
+            f"Ollama request timed out after {timeout_s}s (URL={url}, model={model})."
+        ) from te
 
 
 def looks_like_sequence_list(x: Any) -> bool:
     if not isinstance(x, list) or len(x) == 0:
         return False
-    # allow list of dicts or list of strings
     if all(isinstance(i, dict) for i in x):
         return True
     if all(isinstance(i, str) for i in x):
@@ -160,36 +254,25 @@ def looks_like_sequence_list(x: Any) -> bool:
 
 
 def extract_sequences(root: Any) -> Tuple[List[Any], str]:
-    """
-    Returns (sequences, path_hint).
-    - sequences: list[dict] or list[str]
-    - path_hint: where we found them (for metadata/debug)
-    """
-    # 1) direct list at top level
+    """Returns (sequences, path_hint)."""
     if looks_like_sequence_list(root):
         return list(root), "$"
 
-    # 2) dict with known container keys
     if isinstance(root, dict):
         for k in SEQUENCE_CONTAINER_KEYS:
             v = root.get(k)
             if looks_like_sequence_list(v):
                 return list(v), f"$.{k}"
 
-    # 3) try a shallow scan for any list that looks like sequences
     if isinstance(root, dict):
         for k, v in root.items():
             if looks_like_sequence_list(v):
                 return list(v), f"$.{k}"
 
-    # 4) nothing found
     return [], ""
 
 
 def get_sequence_text(seq: Any) -> str:
-    """
-    Given a sequence object (dict or string), return best-effort text.
-    """
     if isinstance(seq, str):
         return seq.strip()
 
@@ -199,8 +282,7 @@ def get_sequence_text(seq: Any) -> str:
             if isinstance(v, str) and v.strip():
                 return v.strip()
 
-        # sometimes text is nested, e.g., {"sequence": {"text": "..."}}
-        for k, v in seq.items():
+        for _, v in seq.items():
             if isinstance(v, dict):
                 for kk in SEQUENCE_TEXT_KEYS:
                     vv = v.get(kk)
@@ -211,13 +293,30 @@ def get_sequence_text(seq: Any) -> str:
 
 
 def get_sequence_id(seq: Any, fallback_idx: int) -> Union[str, int]:
-    """Best-effort stable identifier for a sequence."""
     if isinstance(seq, dict):
         for k in ["sequence_id", "seq_id", "id", "run_id", "index", "sequence_index"]:
             v = seq.get(k)
             if isinstance(v, (str, int)) and str(v) != "":
                 return v
     return fallback_idx
+
+
+def health_check(url: str, model: str, timeout_s: int) -> None:
+    """
+    Verifies:
+    - Ollama endpoint reachable
+    - model returns non-empty content
+    """
+    test_prompt = 'Return JSON: {"answer":"OK","confidence":100,"evidence":[],"notes":"health_check"}'
+    _ = ollama_chat(
+        prompt=test_prompt,
+        model=model,
+        url=url,
+        timeout_s=timeout_s,
+        verbose=True,
+        meta="(health_check)",
+    )
+    eprint("[OK] Ollama health check passed: model responded with non-empty content.")
 
 
 # -----------------------------
@@ -230,6 +329,8 @@ def process_one_file(
     url: str,
     timeout_s: int,
     delay_s: float,
+    *,
+    verbose_ollama: bool = False,
 ) -> Dict[str, Any]:
     src = load_json(in_path)
     sequences, found_at = extract_sequences(src)
@@ -240,6 +341,7 @@ def process_one_file(
         "num_sequences": len(sequences),
         "questions": QUESTIONS,
         "results": [],
+        "errors": [],  # file-level errors (e.g., model unreachable)
     }
 
     for i, seq in enumerate(sequences):
@@ -249,7 +351,6 @@ def process_one_file(
         seq_result: Dict[str, Any] = {
             "sequence_id": seq_id,
             "sequence_text_present": bool(seq_text),
-            # keep original sequence payload for traceability (optional but helpful)
             "source_sequence": seq,
             "qa": [],
         }
@@ -269,12 +370,20 @@ def process_one_file(
             continue
 
         for q in QUESTIONS:
+            meta = f"(file={in_path.name} seq={seq_id} q={q[:24]}...)"
             try:
                 prompt = build_prompt(seq_text, q)
-                raw = ollama_chat(prompt=prompt, model=model, url=url, timeout_s=timeout_s)
+                raw = ollama_chat(
+                    prompt=prompt,
+                    model=model,
+                    url=url,
+                    timeout_s=timeout_s,
+                    verbose=verbose_ollama,
+                    meta=meta,
+                )
                 parsed = safe_parse_json(raw)
                 if not parsed:
-                    raise ValueError("Invalid JSON returned by model")
+                    raise ValueError(f"Invalid JSON returned by model. Raw preview: {truncate(raw, 500)}")
 
                 seq_result["qa"].append(
                     {
@@ -283,10 +392,71 @@ def process_one_file(
                         "confidence": parsed.get("confidence"),
                         "evidence": parsed.get("evidence", []),
                         "notes": parsed.get("notes", ""),
-                        "raw_model_text": raw if parsed is None else None,  # usually None
                     }
                 )
+
+            except OllamaNotReachableError as e:
+                # Print loudly + record, and STOP processing further (model unreachable)
+                msg = f"[ERROR] {e} {meta}"
+                eprint(msg)
+                out["errors"].append(msg)
+                # also store per-question failure
+                seq_result["qa"].append(
+                    {
+                        "question": q,
+                        "answer": "Unclear",
+                        "confidence": 0,
+                        "evidence": [],
+                        "notes": f"Model unreachable: {str(e)}",
+                    }
+                )
+                # break out early: no point continuing
+                out["results"].append(seq_result)
+                write_json(out_path, out)
+                raise
+
+            except OllamaTimeoutError as e:
+                msg = f"[ERROR] {e} {meta}"
+                eprint(msg)
+                seq_result["qa"].append(
+                    {
+                        "question": q,
+                        "answer": "Unclear",
+                        "confidence": 0,
+                        "evidence": [],
+                        "notes": f"Timeout: {str(e)}",
+                    }
+                )
+
+            except OllamaEmptyResponseError as e:
+                msg = f"[ERROR] {e} {meta}"
+                eprint(msg)
+                seq_result["qa"].append(
+                    {
+                        "question": q,
+                        "answer": "Unclear",
+                        "confidence": 0,
+                        "evidence": [],
+                        "notes": f"No response: {str(e)}",
+                    }
+                )
+
+            except OllamaHTTPStatusError as e:
+                msg = f"[ERROR] {e} {meta}"
+                eprint(msg)
+                seq_result["qa"].append(
+                    {
+                        "question": q,
+                        "answer": "Unclear",
+                        "confidence": 0,
+                        "evidence": [],
+                        "notes": f"Ollama HTTP error: {str(e)}",
+                    }
+                )
+
             except Exception as e:
+                msg = f"[ERROR] Unexpected error: {str(e)[:500]} {meta}"
+                eprint(msg)
                 seq_result["qa"].append(
                     {
                         "question": q,
@@ -318,12 +488,29 @@ def main():
     parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--delay", type=float, default=0.0, help="Delay (seconds) between model calls")
+    parser.add_argument(
+        "--health_check",
+        action="store_true",
+        help="Run a quick Ollama/model check before processing files (recommended).",
+    )
+    parser.add_argument(
+        "--verbose_ollama",
+        action="store_true",
+        help="Print request/response previews for Ollama calls (debugging).",
+    )
 
     args = parser.parse_args()
 
     in_dir: Path = args.dir
     if not in_dir.exists() or not in_dir.is_dir():
         raise FileNotFoundError(f"Input directory not found: {in_dir}")
+
+    if args.health_check:
+        try:
+            health_check(url=args.url, model=args.model, timeout_s=args.timeout)
+        except Exception as e:
+            eprint(f"[FATAL] Health check failed: {e}")
+            sys.exit(2)
 
     json_files = sorted([p for p in in_dir.glob("*.json") if p.is_file()])
 
@@ -361,9 +548,12 @@ def main():
                     url=args.url,
                     timeout_s=args.timeout,
                     delay_s=args.delay,
+                    verbose_ollama=args.verbose_ollama,
                 )
+            except OllamaNotReachableError:
+                eprint("[FATAL] Ollama not reachable. Stopping immediately.")
+                sys.exit(2)
             except Exception as e:
-                # Write a minimal failure artifact so you can see which file failed
                 fail_obj = {
                     "source_file": str(in_path),
                     "error": str(e),

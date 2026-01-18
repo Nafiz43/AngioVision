@@ -20,7 +20,8 @@
 3. Passsing the frames to video language model to extract anatomical questions
 4. Used language model (llama-3 8B) to extract sequences from reports 
     Used Individual extracted sequences to answer anatomical questions
-    
+5. Spliced up the frames that are present in individaul sequences; and then passed those to the models; then asked seuqence level questions
+
 
 
 
