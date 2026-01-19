@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import requests
 from tqdm import tqdm
+from utils.questions import QUESTIONS
 
 
 # -----------------------------
@@ -38,14 +39,6 @@ DEFAULT_TIMEOUT_S = 180
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
-QUESTIONS = [
-    "Which artery is catheterized?",
-    "Is variant anatomy present?",
-    "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
-    "Is there evidence of arterial or venous dissection?",
-    "Is stenosis present in any visualized vessel?",
-    "Is an endovascular stent visible in this sequence?",
-]
 
 BASE_PROMPT = """ROLE
 You are a meticulous clinical information extraction engine for interventional radiology angiography image sequences.

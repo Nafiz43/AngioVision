@@ -1,4 +1,38 @@
 #!/usr/bin/env python3
+"""
+Purpose
+-------
+Batch-process DICOM studies under an input root, locate directories whose *folder name*
+contains required keyword(s) (default: "DSA"), and for each DICOM file found inside:
+
+1) Extract image frames from pixel data and save them as PNGs (8-bit grayscale) to:
+     <output_root>/<matched_dir_name>/<dicom_filename_sanitized>/frames/
+
+   - Supports single-frame (2D) and multi-frame (3D) DICOMs.
+   - Applies rescale slope/intercept if present.
+   - Applies window center/width if present; otherwise min-max normalizes.
+   - Inverts intensities for MONOCHROME1.
+
+2) Export per-file metadata (excluding sequences and large/binary fields like PixelData)
+   as a simple key/value CSV:
+     <output_root>/<matched_dir_name>/<dicom_filename_sanitized>/metadata.csv
+
+Output Structure
+----------------
+For each matched directory M and DICOM file F inside it:
+  <output_root>/M/<safe(F.stem)>/
+      frames/<safe(F.stem)>_frame_0001.png ...
+      metadata.csv
+
+Notes / Behavior
+----------------
+- Directory matching is based ONLY on the directory name (not file contents):
+    contains_required_keywords(current_dir.name)
+- DICOM reading uses force=True; non-DICOM files are skipped.
+- Very long metadata values are truncated for CSV safety.
+- If frame extraction fails, metadata still gets written with frame_count="NA".
+"""
+
 import os
 from pathlib import Path
 import re

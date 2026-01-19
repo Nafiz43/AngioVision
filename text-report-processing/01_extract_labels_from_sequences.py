@@ -26,6 +26,7 @@ from requests.exceptions import Timeout as ReqTimeout
 from requests.exceptions import HTTPError as ReqHTTPError
 from tqdm import tqdm
 
+
 # -----------------------------
 # Defaults / Configuration
 # -----------------------------
@@ -35,14 +36,6 @@ DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL_NAME = "qwen2.5vl:32b"
 DEFAULT_TIMEOUT_S = 120
 
-QUESTIONS = [
-    "Which artery is catheterized?",
-    "Is variant anatomy present?",
-    "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
-    "Is there evidence of arterial or venous dissection?",
-    "Is stenosis present in any visualized vessel?",
-    "Is an endovascular stent visible in this sequence?",
-]
 
 BASE_PROMPT = """ROLE
 You are a meticulous clinical information extraction engine for radiology/interventional radiology narrative reports. Your job is to convert unstructured text into a high-precision, audit-friendly answer to a single targeted question.
