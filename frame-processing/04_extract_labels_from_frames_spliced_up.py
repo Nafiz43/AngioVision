@@ -5,19 +5,20 @@ extract_labels_from_frames.py
 Automates extraction of structured clinical labels from angiography image sequences
 using a multimodal LLM (Qwen-2.5VL) served via Ollama.
 
-UPDATED (inner-dir processing + mosaic per DICOM/sequence dir)
-- Your base_path may contain *outer* folders (e.g., studies) that contain multiple *inner* folders
-  (e.g., one folder per DICOM/sequence with a UID name).
-- We now treat a "sequence directory" as ANY directory under base_path that contains a
-  <frames_subdir>/ folder (default: "frames") with image files.
-- A mosaic (spliced image) is created and saved **inside each inner sequence directory**,
-  and ONLY that mosaic is sent to the model.
+WORKFLOW (UPDATED: two-stage pipeline)
+1) Mosaic creation stage:
+   - Discover INNER "sequence dirs" (any dir under base_path that contains <frames_subdir>/ with images)
+   - For each sequence dir, sample frames and create/reuse a mosaic image
+   - Store the mosaic inside that sequence dir (e.g., <seq_dir>/mosaic.png)
+
+2) LLM inference stage:
+   - For each sequence dir, send ONLY the stored mosaic image to the model
+   - Ask a fixed set of questions
+   - Append results incrementally to a CSV (fault-tolerant)
 
 Other:
 - Samples representative frames (stride + max_frames)
-- Asks a fixed set of clinical questions
 - Requires strict JSON responses
-- Appends results incrementally to a CSV (fault-tolerant)
 """
 
 import argparse
@@ -26,13 +27,13 @@ import json
 import math
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
 from tqdm import tqdm
-
 from PIL import Image, ImageOps
 
 
@@ -155,35 +156,29 @@ def b64_image(path: Path) -> str:
 
 
 # -----------------------------
-# NEW: sequence-dir discovery (inner dirs)
+# Sequence-dir discovery (inner dirs)
 # -----------------------------
 def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
     """
     Return directories under base_path that look like per-DICOM/per-sequence folders.
 
-    Definition used:
+    Definition:
     - Any directory D such that D/<frames_subdir>/ exists AND contains at least one image file.
-
-    This naturally picks INNER dirs (your UID-named folders) even if they live under outer folders.
     """
     seq_dirs: List[Path] = []
-    # Search all directories; we'll keep those that contain frames_subdir with images
     for d in base_path.rglob("*"):
         if not d.is_dir():
             continue
         frames_dir = d / frames_subdir
         if not frames_dir.exists() or not frames_dir.is_dir():
             continue
-        # Must contain at least one image file to count as a sequence dir
         has_image = any(
             (p.is_file() and p.suffix.lower() in IMAGE_EXTS) for p in frames_dir.iterdir()
         )
         if has_image:
             seq_dirs.append(d)
 
-    # Stable ordering
-    seq_dirs = sorted(seq_dirs, key=lambda p: p.as_posix())
-    return seq_dirs
+    return sorted(seq_dirs, key=lambda p: p.as_posix())
 
 
 # -----------------------------
@@ -222,6 +217,10 @@ def create_mosaic_image(
     cols: Optional[int] = None,
     max_cols: int = 6,
 ) -> Optional[Path]:
+    """
+    Create a single mosaic PNG at out_path from the provided frame_paths.
+    Returns out_path on success, None on failure.
+    """
     if not frame_paths:
         return None
 
@@ -257,6 +256,90 @@ def create_mosaic_image(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     mosaic.save(out_path, format="PNG", optimize=True)
     return out_path
+
+
+# -----------------------------
+# Two-stage pipeline: stage 1 = make/store mosaics
+# -----------------------------
+@dataclass
+class SequenceMosaicInfo:
+    seq_dir: Path
+    seq_rel: str
+    num_frames_found: int
+    selected_frames: List[Path]
+    frame_names: List[str]
+    mosaic_path: Path
+    mosaic_ok: bool
+    mosaic_error: Optional[str] = None
+
+
+def prepare_mosaics(
+    seq_dirs: List[Path],
+    base_path: Path,
+    frames_subdir: str,
+    mosaic_name: str,
+    max_frames: int,
+    stride: int,
+    tile_size: Tuple[int, int],
+    mosaic_cols: Optional[int],
+    mosaic_max_cols: int,
+    overwrite_mosaic: bool,
+    debug: bool,
+) -> List[SequenceMosaicInfo]:
+    """
+    Stage 1:
+    For each sequence directory, sample frames and create/reuse a mosaic image on disk.
+    Returns a list of SequenceMosaicInfo objects (one per sequence directory).
+    """
+    infos: List[SequenceMosaicInfo] = []
+
+    for seq_dir in tqdm(seq_dirs, desc="Creating mosaics", unit="seq"):
+        frames = list_frame_files(seq_dir, frames_subdir=frames_subdir)
+        selected = pick_frames(frames, max_frames=max_frames, stride=stride)
+
+        seq_rel = seq_dir.relative_to(base_path).as_posix()
+        mosaic_path = seq_dir / mosaic_name
+
+        if debug:
+            print(f"[DEBUG] {seq_rel}: found {len(frames)} frames, selected {len(selected)}")
+
+        mosaic_ok = False
+        mosaic_error: Optional[str] = None
+
+        if mosaic_path.exists() and not overwrite_mosaic:
+            mosaic_ok = True
+        else:
+            try:
+                created = create_mosaic_image(
+                    frame_paths=selected,
+                    out_path=mosaic_path,
+                    tile_size=tile_size,
+                    cols=mosaic_cols,
+                    max_cols=mosaic_max_cols,
+                )
+                mosaic_ok = created is not None and created.exists()
+                if not mosaic_ok:
+                    mosaic_error = "Mosaic creation returned None or file missing."
+            except Exception as e:
+                mosaic_ok = False
+                mosaic_error = str(e)[:300]
+                if debug:
+                    print(f"[DEBUG] Failed to create mosaic for {seq_rel}: {mosaic_error}")
+
+        infos.append(
+            SequenceMosaicInfo(
+                seq_dir=seq_dir,
+                seq_rel=seq_rel,
+                num_frames_found=len(frames),
+                selected_frames=selected,
+                frame_names=[p.name for p in selected],
+                mosaic_path=mosaic_path,
+                mosaic_ok=mosaic_ok,
+                mosaic_error=mosaic_error,
+            )
+        )
+
+    return infos
 
 
 # -----------------------------
@@ -312,6 +395,108 @@ def ollama_chat_with_images(
     r = requests.post(url, json=payload, timeout=timeout_s)
     r.raise_for_status()
     return r.json().get("message", {}).get("content", "")
+
+
+# -----------------------------
+# Two-stage pipeline: stage 2 = send mosaics to LLM
+# -----------------------------
+def run_llm_over_mosaics(
+    infos: List[SequenceMosaicInfo],
+    out_path: Path,
+    out_cols: List[str],
+    model: str,
+    url: str,
+    timeout_s: int,
+    delay: float,
+    debug: bool,
+) -> None:
+    """
+    Stage 2:
+    For each sequence dir, read the stored mosaic and query the LLM for each question.
+    Append results incrementally to CSV.
+    """
+    total_tasks = len(infos) * len(QUESTIONS)
+
+    with tqdm(total=total_tasks, desc="Analyzing", unit="q") as pbar:
+        for info in infos:
+            # Load mosaic -> base64 (only if it exists and mosaic_ok)
+            images_b64: List[str] = []
+            if info.mosaic_ok and info.mosaic_path.exists():
+                try:
+                    images_b64 = [b64_image(info.mosaic_path)]
+                except Exception as e:
+                    images_b64 = []
+                    if debug:
+                        print(f"[DEBUG] Could not read mosaic {info.mosaic_path}: {str(e)[:300]}")
+            else:
+                if debug and info.mosaic_error:
+                    print(f"[DEBUG] Mosaic not available for {info.seq_rel}: {info.mosaic_error}")
+
+            for q in QUESTIONS:
+                if not images_b64:
+                    append_csv_row(
+                        out_path,
+                        {
+                            "sequence_dir": info.seq_rel,
+                            "num_frames_found": info.num_frames_found,
+                            "num_frames_sent": 0,
+                            "question": q,
+                            "answer": "Not stated",
+                            "confidence": 0,
+                            "evidence": "[]",
+                            "notes": "No usable mosaic image (or no usable frames).",
+                        },
+                        out_cols,
+                    )
+                    pbar.update(1)
+                    continue
+
+                try:
+                    raw = ollama_chat_with_images(
+                        build_prompt(q, info.frame_names, info.mosaic_path.name),
+                        images_b64,
+                        model,
+                        url,
+                        timeout_s,
+                    )
+                    parsed = safe_parse_json(raw)
+                    if not parsed:
+                        raise ValueError(f"Non-JSON model output: {raw[:200]}")
+
+                    append_csv_row(
+                        out_path,
+                        {
+                            "sequence_dir": info.seq_rel,
+                            "num_frames_found": info.num_frames_found,
+                            "num_frames_sent": len(images_b64),  # should be 1
+                            "question": q,
+                            "answer": parsed.get("answer"),
+                            "confidence": parsed.get("confidence"),
+                            "evidence": json.dumps(parsed.get("evidence", [])),
+                            "notes": parsed.get("notes", f"Mosaic used: {info.mosaic_path.name}"),
+                        },
+                        out_cols,
+                    )
+
+                except Exception as e:
+                    append_csv_row(
+                        out_path,
+                        {
+                            "sequence_dir": info.seq_rel,
+                            "num_frames_found": info.num_frames_found,
+                            "num_frames_sent": len(images_b64),
+                            "question": q,
+                            "answer": "Unclear",
+                            "confidence": 0,
+                            "evidence": "[]",
+                            "notes": f"Error: {str(e)[:200]}",
+                        },
+                        out_cols,
+                    )
+
+                pbar.update(1)
+                if delay > 0:
+                    time.sleep(delay)
 
 
 # -----------------------------
@@ -408,123 +593,48 @@ def main() -> None:
     ]
     ensure_csv_header(out_path, out_cols)
 
-    total_tasks = len(seq_dirs) * len(QUESTIONS)
-
     print(f"Discovered {len(seq_dirs)} sequence (inner) directories")
-    print(f"Total questions: {total_tasks}")
     print(f"Output CSV: {out_path}")
     print(f"Frames subdir: {args.frames_subdir}")
     print(
         f"Mosaic: {args.mosaic_name} | tile_size={tuple(args.tile_size)} | cols={args.mosaic_cols or 'auto'}"
     )
 
-    with tqdm(total=total_tasks, desc="Analyzing", unit="q") as pbar:
-        for seq_dir in seq_dirs:
-            frames = list_frame_files(seq_dir, frames_subdir=args.frames_subdir)
-            selected = pick_frames(frames, args.max_frames, args.stride)
+    # -----------------------------
+    # Stage 1: Create + store mosaics
+    # -----------------------------
+    infos = prepare_mosaics(
+        seq_dirs=seq_dirs,
+        base_path=args.base_path,
+        frames_subdir=args.frames_subdir,
+        mosaic_name=args.mosaic_name,
+        max_frames=args.max_frames,
+        stride=args.stride,
+        tile_size=(int(args.tile_size[0]), int(args.tile_size[1])),
+        mosaic_cols=args.mosaic_cols,
+        mosaic_max_cols=args.mosaic_max_cols,
+        overwrite_mosaic=args.overwrite_mosaic,
+        debug=args.debug,
+    )
 
-            seq_rel = seq_dir.relative_to(args.base_path).as_posix()
+    ok_count = sum(1 for i in infos if i.mosaic_ok and i.mosaic_path.exists())
+    print(f"Mosaics ready: {ok_count}/{len(infos)}")
 
-            if args.debug:
-                print(
-                    f"[DEBUG] {seq_rel}: found {len(frames)} frames, selected {len(selected)}"
-                )
-
-            # Create / reuse mosaic (saved inside THIS inner seq_dir)
-            mosaic_path = seq_dir / args.mosaic_name
-            if mosaic_path.exists() and not args.overwrite_mosaic:
-                mosaic_ok = True
-            else:
-                try:
-                    created = create_mosaic_image(
-                        frame_paths=selected,
-                        out_path=mosaic_path,
-                        tile_size=(int(args.tile_size[0]), int(args.tile_size[1])),
-                        cols=args.mosaic_cols,
-                        max_cols=args.mosaic_max_cols,
-                    )
-                    mosaic_ok = created is not None and created.exists()
-                except Exception as e:
-                    mosaic_ok = False
-                    if args.debug:
-                        print(f"[DEBUG] Failed to create mosaic for {seq_rel}: {e}")
-
-            images_b64: List[str] = []
-            if mosaic_ok:
-                try:
-                    images_b64 = [b64_image(mosaic_path)]  # SINGLE IMAGE: mosaic
-                except Exception as e:
-                    images_b64 = []
-                    if args.debug:
-                        print(f"[DEBUG] Could not read mosaic {mosaic_path}: {e}")
-
-            frame_names = [p.name for p in selected]
-
-            for q in QUESTIONS:
-                if not images_b64:
-                    append_csv_row(
-                        out_path,
-                        {
-                            "sequence_dir": seq_rel,
-                            "num_frames_found": len(frames),
-                            "num_frames_sent": 0,
-                            "question": q,
-                            "answer": "Not stated",
-                            "confidence": 0,
-                            "evidence": "[]",
-                            "notes": "No usable mosaic image (or no usable frames).",
-                        },
-                        out_cols,
-                    )
-                    pbar.update(1)
-                    continue
-
-                try:
-                    raw = ollama_chat_with_images(
-                        build_prompt(q, frame_names, mosaic_path.name),
-                        images_b64,
-                        args.model,
-                        args.url,
-                        args.timeout,
-                    )
-                    parsed = safe_parse_json(raw)
-                    if not parsed:
-                        raise ValueError(f"Non-JSON model output: {raw[:200]}")
-
-                    append_csv_row(
-                        out_path,
-                        {
-                            "sequence_dir": seq_rel,
-                            "num_frames_found": len(frames),
-                            "num_frames_sent": len(images_b64),  # should be 1
-                            "question": q,
-                            "answer": parsed.get("answer"),
-                            "confidence": parsed.get("confidence"),
-                            "evidence": json.dumps(parsed.get("evidence", [])),
-                            "notes": parsed.get("notes", f"Mosaic used: {mosaic_path.name}"),
-                        },
-                        out_cols,
-                    )
-
-                except Exception as e:
-                    append_csv_row(
-                        out_path,
-                        {
-                            "sequence_dir": seq_rel,
-                            "num_frames_found": len(frames),
-                            "num_frames_sent": len(images_b64),
-                            "question": q,
-                            "answer": "Unclear",
-                            "confidence": 0,
-                            "evidence": "[]",
-                            "notes": f"Error: {str(e)[:200]}",
-                        },
-                        out_cols,
-                    )
-
-                pbar.update(1)
-                if args.delay > 0:
-                    time.sleep(args.delay)
+    # -----------------------------
+    # Stage 2: Send stored mosaics to LLM
+    # -----------------------------
+    total_tasks = len(infos) * len(QUESTIONS)
+    print(f"Total questions: {total_tasks}")
+    run_llm_over_mosaics(
+        infos=infos,
+        out_path=out_path,
+        out_cols=out_cols,
+        model=args.model,
+        url=args.url,
+        timeout_s=args.timeout,
+        delay=args.delay,
+        debug=args.debug,
+    )
 
     print("Done ✔ Results saved incrementally.")
 
