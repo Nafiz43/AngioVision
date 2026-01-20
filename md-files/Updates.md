@@ -23,6 +23,11 @@
 5. Spliced up the frames that are present in individaul sequences; and then passed those to the models; then asked seuqence level questions
 
 
+## Weekly Update — Week of 19 January
+1. Identified 20763 DSA sequences out of all DICOM files
+2. Created consolidated metadata (DICOM_Sequence_Processed/consolidated_metadata.csv) for validating whether we can extract the number of seuqences
+
+
 
 
 ### Work Completed

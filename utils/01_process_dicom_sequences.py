@@ -8,29 +8,12 @@ contains required keyword(s) (default: "DSA"), and for each DICOM file found ins
 1) Extract image frames from pixel data and save them as PNGs (8-bit grayscale) to:
      <output_root>/<matched_dir_name>/<dicom_filename_sanitized>/frames/
 
-   - Supports single-frame (2D) and multi-frame (3D) DICOMs.
-   - Applies rescale slope/intercept if present.
-   - Applies window center/width if present; otherwise min-max normalizes.
-   - Inverts intensities for MONOCHROME1.
-
 2) Export per-file metadata (excluding sequences and large/binary fields like PixelData)
    as a simple key/value CSV:
      <output_root>/<matched_dir_name>/<dicom_filename_sanitized>/metadata.csv
 
-Output Structure
-----------------
-For each matched directory M and DICOM file F inside it:
-  <output_root>/M/<safe(F.stem)>/
-      frames/<safe(F.stem)>_frame_0001.png ...
-      metadata.csv
-
-Notes / Behavior
-----------------
-- Directory matching is based ONLY on the directory name (not file contents):
-    contains_required_keywords(current_dir.name)
-- DICOM reading uses force=True; non-DICOM files are skipped.
-- Very long metadata values are truncated for CSV safety.
-- If frame extraction fails, metadata still gets written with frame_count="NA".
+Adds:
+- A tqdm progress bar showing percent complete + ETA over all DICOM files found.
 """
 
 import os
@@ -41,6 +24,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 from pydicom.multival import MultiValue
+from tqdm import tqdm
 
 # ----------------------------
 # Configuration
@@ -146,6 +130,10 @@ def sanitize_dirname(name: str, max_len: int = 150) -> str:
         name = "dicom"
     return name[:max_len]
 
+def contains_required_keywords(dir_name: str) -> bool:
+    name = dir_name.upper()
+    return all(k.upper() in name for k in KEYWORDS)
+
 # ----------------------------
 # Image conversion
 # ----------------------------
@@ -197,70 +185,95 @@ def save_frames(ds, frames_dir: Path, base_name: str) -> int:
     raise ValueError(f"Unexpected pixel_array shape: {px.shape}")
 
 # ----------------------------
-# Core Processing
+# Planning pass (for progress bar)
 # ----------------------------
-def process_dicom_directory(dicom_dir: Path, output_root: Path):
-    """
-    For a given dicom_dir (matched by KEYWORDS), create:
-      output_root/<dicom_dir.name>/<dicom_file_dir>/frames/*.png
-      output_root/<dicom_dir.name>/<dicom_file_dir>/metadata.csv
-
-    where <dicom_file_dir> is derived from the source DICOM filename.
-    """
-    study_output_dir = output_root / dicom_dir.name
-    study_output_dir.mkdir(parents=True, exist_ok=True)
-
-    for file in dicom_dir.rglob("*"):
-        if not file.is_file() or not is_dicom_file(file):
-            continue
-
-        try:
-            ds_meta = pydicom.dcmread(file, stop_before_pixels=True, force=True)
-            ds_full = pydicom.dcmread(file, force=True)
-        except Exception as e:
-            print(f"Failed to read {file}: {e}")
-            continue
-
-        # Per-DICOM output folder named after the DICOM file
-        dicom_folder_name = sanitize_dirname(file.stem)
-        per_dicom_dir = study_output_dir / dicom_folder_name
-        frames_dir = per_dicom_dir / "frames"
-        frames_dir.mkdir(parents=True, exist_ok=True)
-
-        # Use a consistent base name inside that folder (avoid collisions)
-        base_name = sanitize_dirname(file.stem)
-
-        try:
-            frame_count = save_frames(ds_full, frames_dir, base_name)
-        except Exception as e:
-            print(f"Frame extraction failed {file}: {e}")
-            frame_count = NA_VALUE
-
-        # Metadata (only for this DICOM)
-        metadata_rows = extract_metadata_pairs(ds_meta)
-        metadata_rows.extend([
-            {"Information": "source_file", "Value": safe_str(file.name)},
-            {"Information": "source_path", "Value": safe_str(str(file))},
-            {"Information": "frame_count", "Value": safe_str(frame_count)},
-        ])
-
-        df = pd.DataFrame(metadata_rows)
-        df["Information"] = df["Information"].fillna(NA_VALUE).map(safe_str)
-        df["Value"] = df["Value"].fillna(NA_VALUE).map(safe_str)
-
-        per_dicom_dir.mkdir(parents=True, exist_ok=True)
-        df.to_csv(per_dicom_dir / "metadata.csv", index=False, encoding="utf-8")
-
-def contains_required_keywords(dir_name: str) -> bool:
-    name = dir_name.upper()
-    return all(k.upper() in name for k in KEYWORDS)
-
-def process_root_directory(root_dir: Path, output_root: Path):
+def iter_matched_dirs(root_dir: Path):
+    """Yield directories whose *name* contains required KEYWORDS."""
     for dirpath, _, _ in os.walk(root_dir):
         current = Path(dirpath)
         if contains_required_keywords(current.name):
-            print(f"Processing: {current}")
-            process_dicom_directory(current, output_root)
+            yield current
+
+def collect_dicom_files(root_dir: Path):
+    """
+    Pre-scan to collect all DICOM files we will process.
+    Returns a list of (matched_dir, dicom_file_path).
+    """
+    pairs = []
+    for matched_dir in iter_matched_dirs(root_dir):
+        for f in matched_dir.rglob("*"):
+            if f.is_file() and is_dicom_file(f):
+                pairs.append((matched_dir, f))
+    return pairs
+
+# ----------------------------
+# Core Processing (single file)
+# ----------------------------
+def process_one_dicom(matched_dir: Path, file: Path, output_root: Path):
+    """
+    Process ONE DICOM file that lives somewhere under matched_dir.
+    Outputs under: output_root/<matched_dir.name>/<safe(file.stem)>/{frames,metadata.csv}
+    """
+    study_output_dir = output_root / matched_dir.name
+    study_output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        ds_meta = pydicom.dcmread(file, stop_before_pixels=True, force=True)
+        ds_full = pydicom.dcmread(file, force=True)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read {file}: {e}") from e
+
+    dicom_folder_name = sanitize_dirname(file.stem)
+    per_dicom_dir = study_output_dir / dicom_folder_name
+    frames_dir = per_dicom_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = sanitize_dirname(file.stem)
+
+    try:
+        frame_count = save_frames(ds_full, frames_dir, base_name)
+    except Exception as e:
+        # Keep going, but record NA
+        frame_count = NA_VALUE
+
+    metadata_rows = extract_metadata_pairs(ds_meta)
+    metadata_rows.extend([
+        {"Information": "source_file", "Value": safe_str(file.name)},
+        {"Information": "source_path", "Value": safe_str(str(file))},
+        {"Information": "frame_count", "Value": safe_str(frame_count)},
+    ])
+
+    df = pd.DataFrame(metadata_rows)
+    df["Information"] = df["Information"].fillna(NA_VALUE).map(safe_str)
+    df["Value"] = df["Value"].fillna(NA_VALUE).map(safe_str)
+
+    per_dicom_dir.mkdir(parents=True, exist_ok=True)
+    df.to_csv(per_dicom_dir / "metadata.csv", index=False, encoding="utf-8")
+
+# ----------------------------
+# Root Processing (with loader)
+# ----------------------------
+def process_root_directory(root_dir: Path, output_root: Path):
+    # 1) Pre-scan so we can show percent + ETA.
+    print("Scanning for DICOM files (to initialize progress bar)...")
+    targets = collect_dicom_files(root_dir)
+
+    if not targets:
+        print("No DICOM files found under keyword-matched directories.")
+        return
+
+    # 2) Process with progress bar.
+    with tqdm(total=len(targets), unit="dicom", desc="Processing DICOMs") as pbar:
+        for matched_dir, file in targets:
+            pbar.set_postfix_str(f"{matched_dir.name}/{file.name}"[:80])
+
+            try:
+                process_one_dicom(matched_dir, file, output_root)
+            except Exception as e:
+                # Don't crash the run; show error and continue.
+                tqdm.write(str(e))
+
+            pbar.update(1)
 
 # ----------------------------
 # Entry Point
@@ -269,7 +282,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Process DSA DICOM directories and extract frames + metadata"
+        description="Process DSA DICOM directories and extract frames + metadata (with progress bar)"
     )
     parser.add_argument(
         "--input_root",

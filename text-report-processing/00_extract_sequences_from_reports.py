@@ -9,6 +9,9 @@ asks an LLM (via Ollama) to:
   - provide rationale + confidence per chunk
 
 Writes ONE JSON file per report into a new output directory.
+
+UPDATE (per request):
+- Includes the original report text column ("radrpt") in each JSON output as "radrpt".
 """
 
 import argparse
@@ -30,7 +33,7 @@ DEFAULT_CSV_PATH = Path("/data/Deep_Angiography/Reports/Report_List_v01_01.csv")
 REPORT_COL = "radrpt"
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL_NAME = "llama3:8b"
+DEFAULT_MODEL_NAME = "thewindmom/llama3-med42-8b"
 DEFAULT_TIMEOUT_S = 180
 
 # New prompt for sequence extraction
@@ -79,7 +82,6 @@ NOW PROCESS THIS REPORT:
 {REPORT_TEXT}
 REPORT_TEXT>>>
 """
-
 
 
 # -----------------------------
@@ -137,7 +139,16 @@ def choose_output_name(row: pd.Series, idx: int) -> str:
     Use a stable identifier if available; otherwise fall back to row index.
     You can add more candidate columns here if your CSV has them.
     """
-    candidate_cols = ["study_id", "StudyID", "accession", "AccessionNumber", "mrn", "MRN", "patient_id", "PatientID"]
+    candidate_cols = [
+        "study_id",
+        "StudyID",
+        "accession",
+        "AccessionNumber",
+        "mrn",
+        "MRN",
+        "patient_id",
+        "PatientID",
+    ]
     for c in candidate_cols:
         if c in row.index:
             v = row.get(c)
@@ -209,10 +220,15 @@ def main():
             #     pbar.update(1)
             #     continue
 
-            if not isinstance(report, str) or not report.strip():
+            # Normalize report to string or empty
+            report_text = report if isinstance(report, str) else ""
+            report_text = report_text.strip()
+
+            if not report_text:
                 # Save a minimal JSON so every row still produces a file
                 minimal = {
                     "row_index": int(idx),
+                    REPORT_COL: report_text,  # include original column (empty here)
                     "error": "Empty or missing report",
                     "num_sequences_estimate": None,
                     "sequences": [],
@@ -222,8 +238,9 @@ def main():
                 pbar.update(1)
                 continue
 
+            raw = ""  # ensure exists for error path
             try:
-                prompt = build_prompt(report)
+                prompt = build_prompt(report_text)
                 raw = ollama_chat(
                     prompt=prompt,
                     model=args.model,
@@ -233,6 +250,9 @@ def main():
                 parsed = safe_parse_json(raw)
                 if not parsed or not validate_sequence_json(parsed):
                     raise ValueError("Invalid JSON or missing expected fields")
+
+                # Include the original report text column in the JSON (as requested)
+                parsed[REPORT_COL] = report_text
 
                 # Attach bookkeeping info (doesn't change extracted content)
                 parsed["_meta"] = {
@@ -247,8 +267,9 @@ def main():
             except Exception as e:
                 err = {
                     "row_index": int(idx),
+                    REPORT_COL: report_text,  # include original report even on failure
                     "error": f"{type(e).__name__}: {str(e)[:300]}",
-                    "raw_model_output": raw if "raw" in locals() else "",
+                    "raw_model_output": raw,
                     "num_sequences_estimate": None,
                     "sequences": [],
                     "notes": ["Model call failed or returned invalid JSON."],
