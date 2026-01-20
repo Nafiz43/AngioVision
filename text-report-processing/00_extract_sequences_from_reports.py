@@ -12,6 +12,7 @@ Writes ONE JSON file per report into a new output directory.
 
 UPDATE (per request):
 - Includes the original report text column ("radrpt") in each JSON output as "radrpt".
+- Includes "Anon Acc #" from the source CSV in each JSON output as "Anon Acc #".
 """
 
 import argparse
@@ -31,6 +32,7 @@ from tqdm import tqdm
 # -----------------------------
 DEFAULT_CSV_PATH = Path("/data/Deep_Angiography/Reports/Report_List_v01_01.csv")
 REPORT_COL = "radrpt"
+ANON_ACC_COL = "Anon Acc #"
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL_NAME = "thewindmom/llama3-med42-8b"
@@ -137,9 +139,10 @@ def sanitize_filename(s: str, max_len: int = 80) -> str:
 def choose_output_name(row: pd.Series, idx: int) -> str:
     """
     Use a stable identifier if available; otherwise fall back to row index.
-    You can add more candidate columns here if your CSV has them.
+    Prefer Anon Acc # if present since it is a stable per-report identifier.
     """
     candidate_cols = [
+        ANON_ACC_COL,  # preferred
         "study_id",
         "StudyID",
         "accession",
@@ -170,6 +173,18 @@ def validate_sequence_json(obj: Dict[str, Any]) -> bool:
     return True
 
 
+def normalize_scalar(v) -> Optional[str]:
+    """Turn CSV cell into a JSON-friendly scalar string (or None)."""
+    if v is None:
+        return None
+    if isinstance(v, float) and pd.isna(v):
+        return None
+    if isinstance(v, str):
+        s = v.strip()
+        return s if s else None
+    return str(v)
+
+
 # -----------------------------
 # Main
 # -----------------------------
@@ -198,6 +213,10 @@ def main():
     if REPORT_COL not in df.columns:
         raise ValueError(f"Missing column: {REPORT_COL}")
 
+    # We won't hard-fail if Anon Acc # is missing, but we will warn.
+    if ANON_ACC_COL not in df.columns:
+        print(f"WARNING: Column '{ANON_ACC_COL}' not found in CSV. It will be written as null.", file=sys.stderr)
+
     if args.limit is not None:
         df = df.iloc[: args.limit]
 
@@ -212,13 +231,10 @@ def main():
     with tqdm(total=len(df), desc="Extracting sequences", unit="report") as pbar:
         for idx, row in df.iterrows():
             report = row.get(REPORT_COL)
+            anon_acc = normalize_scalar(row.get(ANON_ACC_COL)) if ANON_ACC_COL in row.index else None
+
             base_name = choose_output_name(row, idx)
             out_path = out_dir / f"{base_name}.json"
-
-            # Skip if already exists (optional behavior; comment out if undesired)
-            # if out_path.exists():
-            #     pbar.update(1)
-            #     continue
 
             # Normalize report to string or empty
             report_text = report if isinstance(report, str) else ""
@@ -228,6 +244,7 @@ def main():
                 # Save a minimal JSON so every row still produces a file
                 minimal = {
                     "row_index": int(idx),
+                    ANON_ACC_COL: anon_acc,
                     REPORT_COL: report_text,  # include original column (empty here)
                     "error": "Empty or missing report",
                     "num_sequences_estimate": None,
@@ -251,14 +268,16 @@ def main():
                 if not parsed or not validate_sequence_json(parsed):
                     raise ValueError("Invalid JSON or missing expected fields")
 
-                # Include the original report text column in the JSON (as requested)
+                # Include requested source fields in the JSON
                 parsed[REPORT_COL] = report_text
+                parsed[ANON_ACC_COL] = anon_acc
 
-                # Attach bookkeeping info (doesn't change extracted content)
+                # Attach bookkeeping info
                 parsed["_meta"] = {
                     "row_index": int(idx),
                     "source_csv": str(args.csv),
                     "report_col": REPORT_COL,
+                    "anon_acc_col": ANON_ACC_COL,
                     "model": args.model,
                 }
 
@@ -267,7 +286,8 @@ def main():
             except Exception as e:
                 err = {
                     "row_index": int(idx),
-                    REPORT_COL: report_text,  # include original report even on failure
+                    ANON_ACC_COL: anon_acc,
+                    REPORT_COL: report_text,
                     "error": f"{type(e).__name__}: {str(e)[:300]}",
                     "raw_model_output": raw,
                     "num_sequences_estimate": None,

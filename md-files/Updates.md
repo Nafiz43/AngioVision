@@ -24,9 +24,9 @@
 
 
 ## Weekly Update — Week of 19 January
-1. Identified 20763 DSA sequences out of all DICOM files
-2. Created consolidated metadata (DICOM_Sequence_Processed/consolidated_metadata.csv) for validating whether we can extract the number of seuqences
-
+1. Identified 20763 DSA sequences out of all DICOM files (Aggregated 1749 DSA studies)
+2. Created consolidated metadata (DICOM_Sequence_Processed/consolidated_metadata.csv) for validating whether we can extract the number of seuqences from each study
+3. 
 
 
 

@@ -3,33 +3,60 @@ import csv
 
 def generate_frame_stats(root_dir, output_csv):
     root_dir = Path(root_dir)
-
     rows = []
 
-    for dicom_dir in root_dir.iterdir():
-        if not dicom_dir.is_dir():
+    # Iterate over OUTER directories
+    for outer_dir in sorted(root_dir.iterdir()):
+        if not outer_dir.is_dir():
             continue
 
-        frames_dir = dicom_dir / "frames"
+        # Iterate over INNER directories
+        for inner_dir in sorted(outer_dir.iterdir()):
+            if not inner_dir.is_dir():
+                continue
 
-        if frames_dir.exists() and frames_dir.is_dir():
-            frame_count = sum(
-                1 for f in frames_dir.iterdir() if f.is_file()
-            )
-        else:
-            frame_count = 0  # frames folder missing
+            # Recursively search for a 'frames' directory under inner_dir
+            frames_dirs = [
+                p for p in inner_dir.rglob("frames") if p.is_dir()
+            ]
 
-        rows.append([dicom_dir.name, frame_count])
+            if not frames_dirs:
+                # No frames directory found
+                rows.append([
+                    outer_dir.name,
+                    inner_dir.name,
+                    0
+                ])
+                continue
 
-    # write CSV
-    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+            # Usually there should be exactly ONE frames dir per inner dir
+            for frames_dir in frames_dirs:
+                frame_count = sum(
+                    1 for f in frames_dir.iterdir() if f.is_file()
+                )
+
+                rows.append([
+                    outer_dir.name,
+                    inner_dir.name,
+                    frame_count
+                ])
+
+    # Write CSV
+    output_csv = Path(output_csv)
+    with output_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["dir_name", "number_of_frames"])
+        writer.writerow([
+            "outer_dir_name",
+            "inner_dir_name",
+            "number_of_frames"
+        ])
         writer.writerows(rows)
 
 
-# -------- example usage --------
+# -----------------------------
+# Example usage
+# -----------------------------
 generate_frame_stats(
     root_dir="/data/Deep_Angiography/DICOM_Sequence_Processed",
-    output_csv="frame_statistics.csv"
+    output_csv="/data/Deep_Angiography/DICOM_Sequence_Processed/frame_statistics.csv"
 )
