@@ -25,8 +25,14 @@
 
 ## Weekly Update — Week of 19 January
 1. Identified 20763 DSA sequences out of all DICOM files (Aggregated 1749 DSA studies)
-2. Created consolidated metadata (DICOM_Sequence_Processed/consolidated_metadata.csv) for validating whether we can extract the number of seuqences from each study
-3. 
+2. Mosais created out of all dicom files 
+3. Many to one report problem; prompt improvement; code refactoring
+4. Created consolidated metadata (DICOM_Sequence_Processed/consolidated_metadata.csv) for validating whether we can extract the number of seuqences from each study - Groud Truth for the sequence level analysis of the main reports
+5. Comparison between sending frames vs sending mosaics to the language model
+    It makes more sense to the model while seeing the mosaics compared to seeing the frames
+
+
+
 
 
 

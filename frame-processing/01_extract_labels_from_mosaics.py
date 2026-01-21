@@ -39,7 +39,7 @@ QUESTIONS = [
 # -----------------------------
 DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL_NAME = "qwen2.5vl:32b"
+DEFAULT_MODEL_NAME = "qwen3-vl:32b"
 DEFAULT_TIMEOUT_S = 180
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
