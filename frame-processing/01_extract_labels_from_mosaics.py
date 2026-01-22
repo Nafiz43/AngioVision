@@ -6,12 +6,13 @@ Stage 2 only: Discover INNER sequence dirs (same rule as stage 1),
 read an EXISTING mosaic image from each sequence dir, and query an LLM (Ollama)
 for each anatomical-level question.
 
-CSV behavior
+CSV behavior (FINAL)
 - Adds: Timestamp, Model Name
 - Removes: mosaic_file column
 - Appends row-by-row (never rewrites the full file)
-- If CSV exists, appends new rows to the SAME file (does not create a new file path)
-  (It will still create the file if it does not exist yet.)
+- If CSV exists, new rows are appended
+- Output directory is ALWAYS:
+    <base_path>_Output/
 """
 
 import argparse
@@ -29,7 +30,7 @@ import requests
 from tqdm import tqdm
 
 # -----------------------------
-# Questions (keep local or import from your utils/questions.py)
+# Questions
 # -----------------------------
 QUESTIONS = [
     "Which artery is catheterized?",
@@ -70,28 +71,21 @@ Treat each tile as an individual frame.
 STRICT RULES
 1) Do not guess. If unclear, return “Not stated” or “Unclear”.
 2) If evidence conflicts across tiles, return “Conflicting”.
-3) Cite frames by filename when possible (choose from the provided filenames list).
+3) Cite frames by filename when possible.
 
 OUTPUT FORMAT (JSON ONLY)
 Return:
 - answer
 - confidence (0–100)
-- evidence (≤3 short frame-based cues; reference filenames if possible)
+- evidence (≤3 short cues)
 - notes
-
-IMAGE
-A single mosaic image is attached.
 """
 
 
 # -----------------------------
-# CSV helpers (row-by-row append)
+# CSV helpers (append-only)
 # -----------------------------
 def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
-    """
-    Create CSV with header ONLY if file doesn't exist or is empty.
-    Never dumps full data; just writes an empty header row via pandas.
-    """
     if out_path.exists() and out_path.stat().st_size > 0:
         return
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,103 +93,63 @@ def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
 
 
 def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
-    """
-    Append a single row to CSV in the specified column order.
-    Assumes header already exists (call ensure_csv_header first).
-    """
     ordered = {c: row.get(c) for c in columns}
     pd.DataFrame([ordered]).to_csv(out_path, mode="a", header=False, index=False)
 
 
 # -----------------------------
-# Sequence-dir discovery (inner dirs)
+# Directory discovery
 # -----------------------------
 def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
-    """
-    Return directories under base_path that look like per-DICOM/per-sequence folders.
-
-    Definition:
-    - Any directory D such that D/<frames_subdir>/ exists AND contains at least one image file.
-    """
     seq_dirs: List[Path] = []
     for d in base_path.rglob("*"):
         if not d.is_dir():
             continue
         frames_dir = d / frames_subdir
-        if not frames_dir.exists() or not frames_dir.is_dir():
+        if not frames_dir.exists():
             continue
-        has_image = any(
-            (p.is_file() and p.suffix.lower() in IMAGE_EXTS) for p in frames_dir.iterdir()
-        )
-        if has_image:
+        if any(p.suffix.lower() in IMAGE_EXTS for p in frames_dir.iterdir()):
             seq_dirs.append(d)
-
     return sorted(seq_dirs, key=lambda p: p.as_posix())
 
 
 # -----------------------------
-# Mosaic + prompt helpers
+# Helpers
 # -----------------------------
 def b64_image(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
-def build_prompt(question: str, frame_names: List[str], mosaic_name: str) -> str:
-    names_block = "\n".join(frame_names) if frame_names else "(none)"
-    return (
-        BASE_PROMPT.format(QUESTION=question)
-        + f"\nMOSAIC FILENAME\n{mosaic_name}\n"
-        + f"\nFRAME FILENAMES (tiles are in this order: left-to-right, top-to-bottom)\n{names_block}\n"
-    )
+def build_prompt(question: str) -> str:
+    return BASE_PROMPT.format(QUESTION=question)
 
 
 def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
-    if not text:
-        return None
-    text = text.strip()
     try:
-        return json.loads(text)
+        return json.loads(text.strip())
     except Exception:
-        pass
-
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(text[start : end + 1])
-        except Exception:
-            return None
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1:
+            try:
+                return json.loads(text[start : end + 1])
+            except Exception:
+                return None
     return None
 
 
-def ollama_chat_with_images(
-    prompt: str,
-    images_b64: List[str],
-    model: str,
-    url: str,
-    timeout_s: int,
-) -> str:
+def ollama_chat_with_images(prompt, images_b64, model, url, timeout):
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-                "images": images_b64,
-            }
-        ],
+        "messages": [{"role": "user", "content": prompt, "images": images_b64}],
         "stream": False,
         "options": {"temperature": 0},
     }
-
-    r = requests.post(url, json=payload, timeout=timeout_s)
+    r = requests.post(url, json=payload, timeout=timeout)
     r.raise_for_status()
-    return r.json().get("message", {}).get("content", "")
+    return r.json()["message"]["content"]
 
 
-def now_timestamp() -> str:
-    """
-    ISO-8601 UTC timestamp (stable + sortable), e.g. 2026-01-22T19:03:11Z
-    """
+def utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -204,168 +158,90 @@ class SequenceMosaicInfo:
     seq_dir: Path
     seq_rel: str
     mosaic_path: Path
-    mosaic_ok: bool
-    mosaic_error: Optional[str] = None
+    ok: bool
+    error: Optional[str] = None
 
 
-def load_sequence_mosaics(
-    seq_dirs: List[Path],
-    base_path: Path,
-    mosaic_name: str,
-    debug: bool,
-) -> List[SequenceMosaicInfo]:
-    infos: List[SequenceMosaicInfo] = []
-    for seq_dir in seq_dirs:
-        seq_rel = seq_dir.relative_to(base_path).as_posix()
-        mosaic_path = seq_dir / mosaic_name
-        if mosaic_path.exists() and mosaic_path.is_file():
-            infos.append(SequenceMosaicInfo(seq_dir, seq_rel, mosaic_path, True, None))
-        else:
-            err = f"Missing mosaic: expected {mosaic_path.name} in {seq_rel}"
-            if debug:
-                print(f"[DEBUG] {err}")
-            infos.append(SequenceMosaicInfo(seq_dir, seq_rel, mosaic_path, False, err))
+def load_mosaics(seq_dirs, base_path, mosaic_name):
+    infos = []
+    for d in seq_dirs:
+        rel = d.relative_to(base_path).as_posix()
+        mp = d / mosaic_name
+        infos.append(
+            SequenceMosaicInfo(d, rel, mp, mp.exists(), None if mp.exists() else "Missing mosaic")
+        )
     return infos
 
 
 # -----------------------------
-# Main LLM loop (mosaics only)
+# Main processing loop
 # -----------------------------
-def run_llm_over_mosaics(
-    infos: List[SequenceMosaicInfo],
-    out_path: Path,
-    out_cols: List[str],
-    model: str,
-    url: str,
-    timeout_s: int,
-    delay: float,
-    debug: bool,
-) -> None:
-    total_tasks = len(infos) * len(QUESTIONS)
+def run_llm(infos, out_path, columns, model, url, timeout, delay):
+    total = len(infos) * len(QUESTIONS)
 
-    with tqdm(total=total_tasks, desc="Analyzing mosaics", unit="q") as pbar:
+    with tqdm(total=total, desc="Analyzing mosaics", unit="q") as pbar:
         for info in infos:
-            images_b64: List[str] = []
-            if info.mosaic_ok:
-                try:
-                    images_b64 = [b64_image(info.mosaic_path)]
-                except Exception as e:
-                    images_b64 = []
-                    if debug:
-                        print(f"[DEBUG] Could not read {info.mosaic_path}: {str(e)[:300]}")
-
-            # Stage-2 only doesn't inherently know frame filenames;
-            # if you want them here, store them during stage-1 in a sidecar file.
-            frame_names: List[str] = []
+            images = [b64_image(info.mosaic_path)] if info.ok else []
 
             for q in QUESTIONS:
-                ts = now_timestamp()
+                row = {
+                    "Timestamp": utc_timestamp(),
+                    "Model Name": model,
+                    "sequence_dir": info.seq_rel,
+                    "question": q,
+                }
 
-                if not images_b64:
-                    append_csv_row(
-                        out_path,
-                        {
-                            "Timestamp": ts,
-                            "Model Name": model,
-                            "sequence_dir": info.seq_rel,
-                            "question": q,
-                            "answer": "Not stated",
-                            "confidence": 0,
-                            "evidence": "[]",
-                            "notes": info.mosaic_error or "No usable mosaic image.",
-                        },
-                        out_cols,
+                if not images:
+                    row.update(
+                        dict(answer="Not stated", confidence=0, evidence="[]", notes=info.error)
                     )
-                    pbar.update(1)
-                    continue
+                else:
+                    try:
+                        raw = ollama_chat_with_images(build_prompt(q), images, model, url, timeout)
+                        parsed = safe_parse_json(raw)
+                        if not parsed:
+                            raise ValueError("Non-JSON response")
+                        row.update(
+                            dict(
+                                answer=parsed.get("answer"),
+                                confidence=parsed.get("confidence"),
+                                evidence=json.dumps(parsed.get("evidence", [])),
+                                notes=parsed.get("notes"),
+                            )
+                        )
+                    except Exception as e:
+                        row.update(
+                            dict(answer="Unclear", confidence=0, evidence="[]", notes=str(e)[:200])
+                        )
 
-                try:
-                    raw = ollama_chat_with_images(
-                        build_prompt(q, frame_names, info.mosaic_path.name),
-                        images_b64,
-                        model,
-                        url,
-                        timeout_s,
-                    )
-                    parsed = safe_parse_json(raw)
-                    if not parsed:
-                        raise ValueError(f"Non-JSON model output: {raw[:200]}")
-
-                    append_csv_row(
-                        out_path,
-                        {
-                            "Timestamp": ts,
-                            "Model Name": model,
-                            "sequence_dir": info.seq_rel,
-                            "question": q,
-                            "answer": parsed.get("answer"),
-                            "confidence": parsed.get("confidence"),
-                            "evidence": json.dumps(parsed.get("evidence", [])),
-                            "notes": parsed.get(
-                                "notes", f"Mosaic used: {info.mosaic_path.name}"
-                            ),
-                        },
-                        out_cols,
-                    )
-
-                except Exception as e:
-                    append_csv_row(
-                        out_path,
-                        {
-                            "Timestamp": ts,
-                            "Model Name": model,
-                            "sequence_dir": info.seq_rel,
-                            "question": q,
-                            "answer": "Unclear",
-                            "confidence": 0,
-                            "evidence": "[]",
-                            "notes": f"Error: {str(e)[:200]}",
-                        },
-                        out_cols,
-                    )
-
+                append_csv_row(out_path, row, columns)
                 pbar.update(1)
-                if delay > 0:
+                if delay:
                     time.sleep(delay)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Ollama on existing per-sequence mosaics.")
+# -----------------------------
+# Entrypoint
+# -----------------------------
+def main():
+    parser = argparse.ArgumentParser()
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
-    parser.add_argument("--out", type=Path, default=None)
-
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
     parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--delay", type=float, default=0.0)
-
-    parser.add_argument("--frames_subdir", type=str, default="frames")
-    parser.add_argument("--mosaic_name", type=str, default="mosaic.png")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--debug", action="store_true")
-
+    parser.add_argument("--frames_subdir", default="frames")
+    parser.add_argument("--mosaic_name", default="mosaic.png")
     args = parser.parse_args()
 
-    if not args.base_path.exists():
-        raise FileNotFoundError(args.base_path)
+    seq_dirs = find_sequence_dirs(args.base_path, args.frames_subdir)
+    infos = load_mosaics(seq_dirs, args.base_path, args.mosaic_name)
 
-    seq_dirs = find_sequence_dirs(args.base_path, frames_subdir=args.frames_subdir)
-    if args.limit is not None:
-        seq_dirs = seq_dirs[: max(0, args.limit)]
+    # 🔥 OUTPUT PATH FIX (as requested)
+    output_root = Path(f"{args.base_path}_Output")
+    out_csv = output_root / "mosaics_extracted_labels.csv"
 
-    infos = load_sequence_mosaics(
-        seq_dirs=seq_dirs,
-        base_path=args.base_path,
-        mosaic_name=args.mosaic_name,
-        debug=args.debug,
-    )
-
-    out_path = args.out or (args.base_path / "mosaics_extracted_labels.csv")
-
-    # UPDATED columns:
-    # - Add Timestamp, Model Name
-    # - Remove mosaic_file
-    out_cols = [
+    columns = [
         "Timestamp",
         "Model Name",
         "sequence_dir",
@@ -376,31 +252,27 @@ def main() -> None:
         "notes",
     ]
 
-    ensure_csv_header(out_path, out_cols)
+    ensure_csv_header(out_csv, columns)
 
-    ok = sum(1 for i in infos if i.mosaic_ok)
-    print(f"Discovered {len(seq_dirs)} sequence (inner) directories")
-    print(f"Mosaics found: {ok}/{len(infos)}")
-    print(f"Output CSV: {out_path}")
-    print(f"Model: {args.model}")
+    print(f"Sequences found: {len(seq_dirs)}")
+    print(f"Output CSV: {out_csv}")
 
-    run_llm_over_mosaics(
+    run_llm(
         infos=infos,
-        out_path=out_path,
-        out_cols=out_cols,
+        out_path=out_csv,
+        columns=columns,
         model=args.model,
         url=args.url,
-        timeout_s=args.timeout,
+        timeout=args.timeout,
         delay=args.delay,
-        debug=args.debug,
     )
 
-    print("Done ✔ Results appended incrementally.")
+    print("Done ✔ Incremental results preserved.")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nInterrupted — partial results are preserved.", file=sys.stderr)
+        print("\nInterrupted — partial results saved.", file=sys.stderr)
         raise
