@@ -46,8 +46,11 @@ QUESTIONS = [
 # -----------------------------
 DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
+
+# Default model if user does not pass --model
 DEFAULT_MODEL_NAME = "qwen3-vl:32b"
 # "qwen3-vl:32b"
+
 DEFAULT_TIMEOUT_S = 180
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -227,7 +230,10 @@ def run_llm(infos, out_path, columns, model, url, timeout, delay):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
+
+    # ✅ Model can be passed as an argument; defaults to qwen3-vl:32b if not provided
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
+
     parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--delay", type=float, default=0.0)
@@ -261,6 +267,7 @@ def main():
 
     print(f"Sequences found: {len(seq_dirs)}")
     print(f"Output CSV: {out_csv}")
+    print(f"Model: {args.model}")
 
     run_llm(
         infos=infos,

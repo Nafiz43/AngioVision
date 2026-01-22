@@ -47,6 +47,8 @@ DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
 DEFAULT_OUTPUT_ROOT_SUFFIX = "_Output"
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
+
+# Default model if user does not pass --model
 DEFAULT_MODEL_NAME = "qwen3-vl:32b"
 # "llama3.2-vision:11b"
 # "qwen3-vl:32b"
@@ -228,7 +230,10 @@ def ollama_chat_with_images(prompt, images_b64, model, url, timeout):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
+
+    # ✅ Model can be passed as an argument; defaults to qwen3-vl:32b if not provided
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
+
     parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--frames_subdir", type=str, default="frames")
@@ -268,6 +273,7 @@ def main() -> None:
 
     print(f"Sequences found: {len(seq_dirs)}")
     print(f"Output CSV: {out_path}")
+    print(f"Model: {args.model}")
 
     with tqdm(total=len(seq_dirs) * len(QUESTIONS), desc="Analyzing") as pbar:
         for seq_dir in seq_dirs:
