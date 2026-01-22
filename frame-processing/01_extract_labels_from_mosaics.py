@@ -4,9 +4,14 @@ extract_labels_from_mosaics.py
 
 Stage 2 only: Discover INNER sequence dirs (same rule as stage 1),
 read an EXISTING mosaic image from each sequence dir, and query an LLM (Ollama)
-for each anatomical-level question. Appends results incrementally to a CSV.
+for each anatomical-level question.
 
-This script does NOT create mosaics. Use creating_mosaics.py first (or ensure mosaics exist).
+CSV behavior
+- Adds: Timestamp, Model Name
+- Removes: mosaic_file column
+- Appends row-by-row (never rewrites the full file)
+- If CSV exists, appends new rows to the SAME file (does not create a new file path)
+  (It will still create the file if it does not exist yet.)
 """
 
 import argparse
@@ -15,6 +20,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -79,9 +85,13 @@ A single mosaic image is attached.
 
 
 # -----------------------------
-# CSV helpers
+# CSV helpers (row-by-row append)
 # -----------------------------
 def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
+    """
+    Create CSV with header ONLY if file doesn't exist or is empty.
+    Never dumps full data; just writes an empty header row via pandas.
+    """
     if out_path.exists() and out_path.stat().st_size > 0:
         return
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +99,10 @@ def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
 
 
 def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
+    """
+    Append a single row to CSV in the specified column order.
+    Assumes header already exists (call ensure_csv_header first).
+    """
     ordered = {c: row.get(c) for c in columns}
     pd.DataFrame([ordered]).to_csv(out_path, mode="a", header=False, index=False)
 
@@ -178,6 +192,13 @@ def ollama_chat_with_images(
     return r.json().get("message", {}).get("content", "")
 
 
+def now_timestamp() -> str:
+    """
+    ISO-8601 UTC timestamp (stable + sortable), e.g. 2026-01-22T19:03:11Z
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 @dataclass
 class SequenceMosaicInfo:
     seq_dir: Path
@@ -233,17 +254,20 @@ def run_llm_over_mosaics(
                     if debug:
                         print(f"[DEBUG] Could not read {info.mosaic_path}: {str(e)[:300]}")
 
-            # NOTE: stage-2 only doesn't inherently know frame filenames;
-            # if you want them here, you can store them during stage-1 in a sidecar file.
+            # Stage-2 only doesn't inherently know frame filenames;
+            # if you want them here, store them during stage-1 in a sidecar file.
             frame_names: List[str] = []
 
             for q in QUESTIONS:
+                ts = now_timestamp()
+
                 if not images_b64:
                     append_csv_row(
                         out_path,
                         {
+                            "Timestamp": ts,
+                            "Model Name": model,
                             "sequence_dir": info.seq_rel,
-                            "mosaic_file": info.mosaic_path.name,
                             "question": q,
                             "answer": "Not stated",
                             "confidence": 0,
@@ -270,13 +294,16 @@ def run_llm_over_mosaics(
                     append_csv_row(
                         out_path,
                         {
+                            "Timestamp": ts,
+                            "Model Name": model,
                             "sequence_dir": info.seq_rel,
-                            "mosaic_file": info.mosaic_path.name,
                             "question": q,
                             "answer": parsed.get("answer"),
                             "confidence": parsed.get("confidence"),
                             "evidence": json.dumps(parsed.get("evidence", [])),
-                            "notes": parsed.get("notes", f"Mosaic used: {info.mosaic_path.name}"),
+                            "notes": parsed.get(
+                                "notes", f"Mosaic used: {info.mosaic_path.name}"
+                            ),
                         },
                         out_cols,
                     )
@@ -285,8 +312,9 @@ def run_llm_over_mosaics(
                     append_csv_row(
                         out_path,
                         {
+                            "Timestamp": ts,
+                            "Model Name": model,
                             "sequence_dir": info.seq_rel,
-                            "mosaic_file": info.mosaic_path.name,
                             "question": q,
                             "answer": "Unclear",
                             "confidence": 0,
@@ -333,21 +361,28 @@ def main() -> None:
     )
 
     out_path = args.out or (args.base_path / "mosaics_extracted_labels.csv")
+
+    # UPDATED columns:
+    # - Add Timestamp, Model Name
+    # - Remove mosaic_file
     out_cols = [
+        "Timestamp",
+        "Model Name",
         "sequence_dir",
-        "mosaic_file",
         "question",
         "answer",
         "confidence",
         "evidence",
         "notes",
     ]
+
     ensure_csv_header(out_path, out_cols)
 
     ok = sum(1 for i in infos if i.mosaic_ok)
     print(f"Discovered {len(seq_dirs)} sequence (inner) directories")
     print(f"Mosaics found: {ok}/{len(infos)}")
     print(f"Output CSV: {out_path}")
+    print(f"Model: {args.model}")
 
     run_llm_over_mosaics(
         infos=infos,
@@ -360,7 +395,7 @@ def main() -> None:
         debug=args.debug,
     )
 
-    print("Done ✔ Results saved incrementally.")
+    print("Done ✔ Results appended incrementally.")
 
 
 if __name__ == "__main__":

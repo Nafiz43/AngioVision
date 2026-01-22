@@ -5,27 +5,37 @@ extract_labels_from_frames.py
 Automates extraction of structured clinical labels from angiography image sequences
 using a multimodal LLM (Qwen-2.5VL) served via Ollama.
 
-Key behavior:
-- Iterates over sequence directories under base_path
-- Looks for frames in <sequence_dir>/frames/*.{png,jpg,...}
-  - If that folder doesn't exist or is empty, falls back to recursive search under sequence_dir
-- Samples representative frames (stride + max_frames)
-- Asks a fixed set of clinical questions
-- Requires strict JSON responses
-- Appends results incrementally to a CSV (fault-tolerant)
+FIX (IMPORTANT):
+- Your dataset typically looks like:
+    base_path/<outer_dir>/<dicom_uid_dir>/frames/*.png
+
+  Older versions treated base_path's direct children as sequence dirs (outer_dir),
+  then fell back to recursive search and accidentally collected ALL frames under that outer_dir.
+
+- This version discovers INNER dicom_uid_dir folders as sequence dirs by finding directories
+  that contain <frames_subdir>/ with at least one image.
+
+ADDITIONAL UPDATES (per request):
+- Adds CSV columns:
+  1) timestamp_utc
+  2) model_name
+- Appends row-by-row to an existing CSV (no re-dumping full DF).
+- Creates the CSV only if it doesn't already exist.
 """
 
 import argparse
 import base64
+import csv
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-import pandas as pd
 import requests
 from tqdm import tqdm
+
 QUESTIONS = [
     "Which artery is catheterized?",
     "Is variant anatomy present?",
@@ -44,7 +54,6 @@ DEFAULT_MODEL_NAME = "qwen3-vl:32b"
 DEFAULT_TIMEOUT_S = 180
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
 
 BASE_PROMPT = """ROLE
 You are a meticulous clinical information extraction engine for interventional radiology angiography image sequences.
@@ -77,45 +86,116 @@ A set of angiography frames is attached.
 
 
 # -----------------------------
-# CSV helpers
+# CSV helpers (row-by-row append)
 # -----------------------------
 def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
+    """
+    Create the output CSV with header only if it doesn't exist or is empty.
+    Does NOT overwrite an existing CSV.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists() and out_path.stat().st_size > 0:
         return
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(columns=columns).to_csv(out_path, index=False)
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=columns)
+        w.writeheader()
 
 
 def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
+    """
+    Append exactly one row to an existing CSV. If CSV doesn't exist, it will be created
+    with the provided header first.
+    """
+    ensure_csv_header(out_path, columns)
+
+    # enforce column order + fill missing keys with None
     ordered = {c: row.get(c) for c in columns}
-    pd.DataFrame([ordered]).to_csv(out_path, mode="a", header=False, index=False)
+
+    with out_path.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=columns)
+        w.writerow(ordered)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 # -----------------------------
-# Frame utilities (UPDATED)
+# Sequence discovery
+# -----------------------------
+def _has_images_in_dir(d: Path) -> bool:
+    try:
+        for p in d.iterdir():
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def discover_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
+    """
+    Find all seq_dir such that:
+      <seq_dir>/<frames_subdir>/ exists AND contains at least one image.
+    Returns list of seq_dir paths (parent of the frames folder).
+    """
+    seq_dirs: List[Path] = []
+    seen = set()
+
+    for frames_dir in base_path.rglob(frames_subdir):
+        if not frames_dir.is_dir():
+            continue
+        if not _has_images_in_dir(frames_dir):
+            continue
+
+        seq_dir = frames_dir.parent
+        if seq_dir == base_path:
+            continue
+
+        key = seq_dir.resolve()
+        if key not in seen:
+            seen.add(key)
+            seq_dirs.append(seq_dir)
+
+    seq_dirs.sort(key=lambda p: p.as_posix())
+    return seq_dirs
+
+
+def get_outer_and_inner(seq_dir: Path, base_path: Path) -> Tuple[str, str]:
+    """
+    Expected:
+      base_path/<outer>/<inner>
+    Best-effort:
+      inner = seq_dir.name
+      outer = first path component under base_path if possible
+    """
+    inner = seq_dir.name
+    try:
+        rel = seq_dir.relative_to(base_path)
+        parts = rel.parts
+        outer = parts[0] if len(parts) >= 2 else (seq_dir.parent.name if seq_dir.parent != base_path else "")
+    except Exception:
+        outer = seq_dir.parent.name
+    return outer, inner
+
+
+# -----------------------------
+# Frame utilities
 # -----------------------------
 def list_frame_files(seq_dir: Path, frames_subdir: str = "frames") -> List[Path]:
     """
     Prefer frames in seq_dir/<frames_subdir>/*.{png,jpg,...}.
-    Fall back to recursive search if that folder doesn't exist or is empty.
+    Fall back to recursive search ONLY within seq_dir.
     """
     frames_dir = seq_dir / frames_subdir
 
-    # 1) Preferred: exactly seq_dir/frames/*
     if frames_dir.exists() and frames_dir.is_dir():
-        frames = [
-            p
-            for p in frames_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-        ]
+        frames = [p for p in frames_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
         frames.sort(key=lambda p: p.name)
         if frames:
             return frames
 
-    # 2) Fallback: find images anywhere under seq_dir
-    frames = [
-        p for p in seq_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-    ]
+    frames = [p for p in seq_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
     frames.sort(key=lambda p: p.as_posix())
     return frames
 
@@ -145,9 +225,6 @@ def b64_image(path: Path) -> str:
 # Ollama helpers
 # -----------------------------
 def build_prompt(question: str, frame_names: List[str]) -> str:
-    """
-    Include frame filenames so the model can cite them in evidence.
-    """
     names_block = "\n".join(frame_names) if frame_names else "(none)"
     return BASE_PROMPT.format(QUESTION=question) + f"\nFRAME FILENAMES\n{names_block}\n"
 
@@ -155,14 +232,12 @@ def build_prompt(question: str, frame_names: List[str]) -> str:
 def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
-
     text = text.strip()
     try:
         return json.loads(text)
     except Exception:
         pass
 
-    # Try to salvage a JSON object embedded in extra text
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end != -1 and end > start:
         try:
@@ -181,17 +256,10 @@ def ollama_chat_with_images(
 ) -> str:
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-                "images": images_b64,
-            }
-        ],
+        "messages": [{"role": "user", "content": prompt, "images": images_b64}],
         "stream": False,
         "options": {"temperature": 0},
     }
-
     r = requests.post(url, json=payload, timeout=timeout_s)
     r.raise_for_status()
     return r.json().get("message", {}).get("content", "")
@@ -202,7 +270,7 @@ def ollama_chat_with_images(
 # -----------------------------
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Qwen-2.5VL (via Ollama) on frame directories and extract labels."
+        description="Run Qwen-VL (via Ollama) on DICOM frame directories and extract labels."
     )
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
     parser.add_argument("--out", type=Path, default=None)
@@ -213,23 +281,20 @@ def main() -> None:
     parser.add_argument("--stride", type=int, default=5)
     parser.add_argument("--delay", type=float, default=0.0)
 
-    # NEW: directory limit
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Process only the first N frame directories (sorted by name)",
+        help="Process only the first N sequence dirs (sorted by path)",
     )
 
-    # NEW: frames subdir (default 'frames')
     parser.add_argument(
         "--frames_subdir",
         type=str,
         default="frames",
-        help="Name of the subfolder inside each sequence_dir that contains frames",
+        help="Name of the subfolder inside each dicom dir that contains frames",
     )
 
-    # NEW: optional debug prints
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -241,10 +306,8 @@ def main() -> None:
     if not args.base_path.exists():
         raise FileNotFoundError(args.base_path)
 
-    # Each direct child directory of base_path is treated as a "sequence directory"
-    seq_dirs = sorted(
-        [p for p in args.base_path.iterdir() if p.is_dir()], key=lambda p: p.name
-    )
+    # Discover INNER dicom uid dirs
+    seq_dirs = discover_sequence_dirs(args.base_path, args.frames_subdir)
 
     if args.limit is not None:
         seq_dirs = seq_dirs[: max(0, args.limit)]
@@ -252,7 +315,11 @@ def main() -> None:
     out_path = args.out or (args.base_path / "frames_extracted_labels.csv")
 
     out_cols = [
-        "sequence_dir",
+        "timestamp_utc",
+        "model_name",
+        "outer_dir",
+        "dicom_dir",
+        "sequence_path",
         "num_frames_found",
         "num_frames_sent",
         "question",
@@ -265,26 +332,23 @@ def main() -> None:
 
     total_tasks = len(seq_dirs) * len(QUESTIONS)
 
-    print(f"Processing {len(seq_dirs)} directories")
+    print(f"Discovered {len(seq_dirs)} DICOM sequence directories (inner dirs).")
     print(f"Total questions: {total_tasks}")
-    print(f"Output CSV: {out_path}")
+    print(f"Output CSV (append mode): {out_path}")
     print(f"Frames subdir: {args.frames_subdir}")
+    print(f"Model: {args.model}")
 
     with tqdm(total=total_tasks, desc="Analyzing", unit="q") as pbar:
         for seq_dir in seq_dirs:
+            outer, inner = get_outer_and_inner(seq_dir, args.base_path)
+
             frames = list_frame_files(seq_dir, frames_subdir=args.frames_subdir)
             selected = pick_frames(frames, args.max_frames, args.stride)
 
             if args.debug:
                 print(
-                    f"[DEBUG] {seq_dir.name}: found {len(frames)} frames, selected {len(selected)}"
+                    f"[DEBUG] outer={outer} inner={inner} | found={len(frames)} selected={len(selected)} | path={seq_dir}"
                 )
-                if len(frames) == 0:
-                    try:
-                        contents = [p.name for p in seq_dir.iterdir()]
-                    except Exception:
-                        contents = ["(unable to list)"]
-                    print(f"[DEBUG] {seq_dir.name} contents: {contents[:30]}")
 
             images_b64: List[str] = []
             for f in selected:
@@ -296,11 +360,17 @@ def main() -> None:
             frame_names = [p.name for p in selected]
 
             for q in QUESTIONS:
+                ts = utc_now_iso()
+
                 if not images_b64:
                     append_csv_row(
                         out_path,
                         {
-                            "sequence_dir": seq_dir.name,
+                            "timestamp_utc": ts,
+                            "model_name": args.model,
+                            "outer_dir": outer,
+                            "dicom_dir": inner,
+                            "sequence_path": str(seq_dir),
                             "num_frames_found": len(frames),
                             "num_frames_sent": 0,
                             "question": q,
@@ -329,7 +399,11 @@ def main() -> None:
                     append_csv_row(
                         out_path,
                         {
-                            "sequence_dir": seq_dir.name,
+                            "timestamp_utc": ts,
+                            "model_name": args.model,
+                            "outer_dir": outer,
+                            "dicom_dir": inner,
+                            "sequence_path": str(seq_dir),
                             "num_frames_found": len(frames),
                             "num_frames_sent": len(images_b64),
                             "question": q,
@@ -345,7 +419,11 @@ def main() -> None:
                     append_csv_row(
                         out_path,
                         {
-                            "sequence_dir": seq_dir.name,
+                            "timestamp_utc": ts,
+                            "model_name": args.model,
+                            "outer_dir": outer,
+                            "dicom_dir": inner,
+                            "sequence_path": str(seq_dir),
                             "num_frames_found": len(frames),
                             "num_frames_sent": len(images_b64),
                             "question": q,
@@ -361,7 +439,7 @@ def main() -> None:
                 if args.delay > 0:
                     time.sleep(args.delay)
 
-    print("Done ✔ Results saved incrementally.")
+    print("Done ✔ Results appended incrementally.")
 
 
 if __name__ == "__main__":
