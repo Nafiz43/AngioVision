@@ -47,6 +47,7 @@ QUESTIONS = [
 DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL_NAME = "qwen3-vl:32b"
+# "qwen3-vl:32b"
 DEFAULT_TIMEOUT_S = 180
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -232,9 +233,13 @@ def main():
     parser.add_argument("--delay", type=float, default=0.0)
     parser.add_argument("--frames_subdir", default="frames")
     parser.add_argument("--mosaic_name", default="mosaic.png")
+    parser.add_argument("--limit", type=int, default=None)
+
     args = parser.parse_args()
 
     seq_dirs = find_sequence_dirs(args.base_path, args.frames_subdir)
+    if args.limit:
+        seq_dirs = seq_dirs[:args.limit]
     infos = load_mosaics(seq_dirs, args.base_path, args.mosaic_name)
 
     # 🔥 OUTPUT PATH FIX (as requested)

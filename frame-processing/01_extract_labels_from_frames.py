@@ -48,6 +48,9 @@ DEFAULT_OUTPUT_ROOT_SUFFIX = "_Output"
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL_NAME = "qwen3-vl:32b"
+# "llama3.2-vision:11b"
+# "qwen3-vl:32b"
+
 DEFAULT_TIMEOUT_S = 180
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -262,6 +265,9 @@ def main() -> None:
     ]
 
     ensure_csv_header(out_path, out_cols)
+
+    print(f"Sequences found: {len(seq_dirs)}")
+    print(f"Output CSV: {out_path}")
 
     with tqdm(total=len(seq_dirs) * len(QUESTIONS), desc="Analyzing") as pbar:
         for seq_dir in seq_dirs:
