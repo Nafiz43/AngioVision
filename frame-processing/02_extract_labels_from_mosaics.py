@@ -230,8 +230,6 @@ def run_llm(infos, out_path, columns, model, url, timeout, delay):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
-
-    # ✅ Model can be passed as an argument; defaults to qwen3-vl:32b if not provided
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
 
     parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
