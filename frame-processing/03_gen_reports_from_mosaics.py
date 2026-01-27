@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-extract_labels_from_mosaics.py
-
 Stage 2 only: Discover INNER sequence dirs (same rule as stage 1),
 read an EXISTING mosaic image from each sequence dir, and query an LLM (Ollama)
 to generate an angiography-style report *based only on what is visible in the mosaic*.
