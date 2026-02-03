@@ -12,12 +12,6 @@ CSV behavior (FINAL)
 - If CSV exists, new rows are appended
 - Output directory is ALWAYS:
     <base_path>_Output/
-
-Notes:
-- MedCLIP output typically provides `outputs.logits` (NOT `logits_per_image` like OpenAI CLIP).
-- If `from_pretrained()` fails with a checkpoint/state_dict mismatch, install MedCLIP from GitHub:
-    pip uninstall -y medclip
-    pip install git+https://github.com/RyanWangZf/MedCLIP.git
 """
 
 import argparse
@@ -35,24 +29,14 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from medclip import MedCLIPModel, MedCLIPProcessor, MedCLIPVisionModelViT
-
-# # Try importing MedCLIP
-# try:
-#     from medclip import MedCLIPModel(
-#         MedCLIPModel,
-#         MedCLIPVisionModelViT,
-#         MedCLIPVisionModelResNet,
-#         MedCLIPProcessor,
-#     )
-# except ImportError:
-#     print("ERROR: MedCLIP not found. Install with:")
-#     print("  pip install medclip")
-#     print("If weights/loading fail, try GitHub version:")
-#     print("  pip uninstall -y medclip")
-#     print("  pip install git+https://github.com/RyanWangZf/MedCLIP.git")
-#     sys.exit(1)
-
+# Try importing MedCLIP - you may need to install it
+try:
+    from medclip import MedCLIPModel, MedCLIPVisionModelViT, MedCLIPProcessor
+except ImportError:
+    print("ERROR: MedCLIP not found. Install with:")
+    print("  pip install medclip")
+    print("Or clone from: https://github.com/RyanWangZf/MedCLIP")
+    sys.exit(1)
 
 # -----------------------------
 # Questions and answer options
@@ -170,10 +154,7 @@ def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
 # -----------------------------
 # MedCLIP Model Loading
 # -----------------------------
-def load_medclip_model(
-    model_name: str,
-    device: Optional[str] = None,
-) -> Tuple[Any, Any, torch.device]:
+def load_medclip_model(model_name: str, device: str = None) -> Tuple[Any, Any, torch.device]:
     """
     Load MedCLIP model and processor.
 
@@ -196,10 +177,8 @@ def load_medclip_model(
     print(f"Loading MedCLIP model: {model_name_l} on {dev}")
 
     try:
-        vision_cls = MedCLIPVisionModelViT
-
-        model = MedCLIPModel(vision_cls=vision_cls)
-        # Many installs use an instance method that loads default pretrained weights
+        # Load the pretrained model
+        model = MedCLIPModel(vision_cls=MedCLIPVisionModelViT)
         model.from_pretrained()
         model = model.to(dev)
         model.eval()
@@ -222,36 +201,6 @@ def load_medclip_model(
 # -----------------------------
 # MedCLIP Inference
 # -----------------------------
-def _extract_option_scores_from_outputs(outputs: Any) -> torch.Tensor:
-    """
-    MedCLIP outputs usually contain `logits`. For 1 image and N text prompts, logits is often [N, 1].
-    This returns a 1D tensor of length N with option scores.
-    """
-    if not hasattr(outputs, "logits"):
-        raise AttributeError(f"MedCLIP outputs missing `logits`. Available attrs: {dir(outputs)}")
-
-    logits = outputs.logits
-    if not torch.is_tensor(logits):
-        logits = torch.as_tensor(logits)
-
-    # Common shapes:
-    # - [N, 1] (N texts vs 1 image)
-    # - [1, N] (1 image vs N texts)
-    # - [N] (already flattened)
-    if logits.ndim == 2:
-        if logits.shape[1] == 1:
-            scores = logits[:, 0]
-        elif logits.shape[0] == 1:
-            scores = logits[0, :]
-        else:
-            # fallback: flatten
-            scores = logits.reshape(-1)
-    else:
-        scores = logits.reshape(-1)
-
-    return scores
-
-
 def medclip_classify(
     image_path: Path,
     question: str,
@@ -278,18 +227,20 @@ def medclip_classify(
             return_tensors="pt",
             padding=True,
         )
-
-        # Move to device (some processor outputs include non-tensor fields; guard it)
-        for k, v in list(inputs.items()):
-            if torch.is_tensor(v):
-                inputs[k] = v.to(device)
-
+        
+        # Move to device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        # Get predictions
         with torch.no_grad():
             outputs = model(**inputs)
-            scores = _extract_option_scores_from_outputs(outputs)
-
-            probs = torch.softmax(scores, dim=0).detach().cpu().numpy()
-
+            
+            # Get similarity scores between image and each text prompt
+            # Shape: [1, num_options]
+            logits = outputs.logits_per_image
+            probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
+        
+        # Get the best matching option
         best_idx = int(np.argmax(probs))
         confidence = float(probs[best_idx] * 100.0)
         answer = options[best_idx]

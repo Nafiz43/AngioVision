@@ -22,7 +22,9 @@ from tqdm import tqdm
 # -----------------------------
 # Defaults
 # -----------------------------
-DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
+# DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
+
+DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 # -----------------------------
@@ -255,8 +257,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Create mosaics for per-sequence frame dirs.")
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
     parser.add_argument("--frames_subdir", type=str, default="frames")
-    parser.add_argument("--max_frames", type=int, default=24)
-    parser.add_argument("--stride", type=int, default=5)
+    parser.add_argument("--max_frames", type=int, default=144)
+    parser.add_argument("--stride", type=int, default=2)
 
     parser.add_argument("--limit", type=int, default=None, help="Process only first N sequence dirs.")
     parser.add_argument("--debug", action="store_true")
