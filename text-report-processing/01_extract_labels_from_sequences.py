@@ -26,6 +26,15 @@ from requests.exceptions import Timeout as ReqTimeout
 from requests.exceptions import HTTPError as ReqHTTPError
 from tqdm import tqdm
 
+QUESTIONS = [
+    "Which artery is catheterized?",
+    "Is variant anatomy present?",
+    "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
+    "Is there evidence of arterial or venous dissection?",
+    "Is stenosis present in any visualized vessel?",
+    "Is an endovascular stent visible in this sequence?",
+]
+
 
 # -----------------------------
 # Defaults / Configuration
@@ -33,7 +42,7 @@ from tqdm import tqdm
 DEFAULT_IN_DIR = Path("/data/Deep_Angiography/Reports/Report_List_v01_01_sequences_json")
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_MODEL_NAME = "qwen2.5vl:32b"
+DEFAULT_MODEL_NAME = "llama3:8b"
 DEFAULT_TIMEOUT_S = 120
 
 
