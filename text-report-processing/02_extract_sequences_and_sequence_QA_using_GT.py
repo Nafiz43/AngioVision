@@ -18,28 +18,15 @@ PIPELINE (two-stage, both via Ollama LLM):
        * Saves JSON with actual GT N and UIDs
 
 2) Per-sequence QA (second LLM call per sequence):
-   For each extracted sequence chunk, asks 5 questions:
-     - Is variant anatomy present?
-     - Is there evidence of hemorrhage or contrast extravasation in this sequence?
-     - Is there evidence of arterial or venous dissection?
-     - Is stenosis present in any visualized vessel?
-     - Is an endovascular stent visible in this sequence?
-
-   Each answer is stored under that sequence in:
-     "qa": [
-        {
-          "question": "...",
-          "answer": "...",
-          "confidence": "high|medium|low",
-          "evidence": ["<verbatim snippets from the chunk>", ...],
-          "notes": "..."
-        }, ...
-     ]
+   For each extracted sequence chunk, asks 5 questions.
+   **UPDATED:** QA prompt now includes BOTH:
+     - verbatim_text (the ONLY source for clinical findings + evidence)
+     - rationale (for boundary/context only, NOT evidence)
 
 STRICTNESS / SAFETY:
-- QA must be based ONLY on the provided sequence verbatim_text.
+- QA findings must be based ONLY on the provided sequence verbatim_text.
 - Evidence must be copied verbatim from the sequence text (or empty list if none).
-- If insufficient text, answers should be "unknown" with low confidence.
+- Rationale is for context only; do NOT use it as evidence.
 
 OUTPUT:
 - One JSON file per report.
@@ -50,7 +37,6 @@ python extract_sequences_and_sequence_QA_using_GT.py \
   --gt_csv /data/Deep_Angiography/DICOM_Sequence_Processed/consolidated_metadata_GT.csv \
   --out_dir /data/Deep_Angiography/Reports/Report_List_v01_01_sequences_json \
   --model thewindmom/llama3-med42-8b
-
 """
 
 import argparse
@@ -200,12 +186,16 @@ NOW PROCESS THIS REPORT:
 REPORT_TEXT>>>
 """
 
-# Per-sequence QA prompt (SECOND LLM CALL)
-BASE_PROMPT_SEQUENCE_QA = """You are given a SINGLE extracted sequence-level chunk from a radiology/angiography report.
-You must answer the questions below using ONLY the provided sequence text.
+# Per-sequence QA prompt (SECOND LLM CALL) — UPDATED to include rationale too
+BASE_PROMPT_SEQUENCE_QA = """You are given:
+(1) A SINGLE extracted sequence-level chunk from a radiology/angiography report (verbatim text).
+(2) The extraction rationale used to map that chunk to this sequence (context only).
+
+You must answer the questions below using the provided sequence text and the rationale.
 
 CRITICAL RULES
-- Use ONLY the provided sequence text. Do NOT use outside knowledge and do NOT infer findings that are not explicitly supported.
+- Use ONLY the provided sequence text for clinical findings. Do NOT use outside knowledge.
+- The rationale may be used ONLY to understand sequence boundaries/context, but NOT as evidence for medical findings.
 - If the sequence text does not contain enough information, answer "n/a".
 - Provide "evidence" as an array of SHORT verbatim snippets copied EXACTLY from the sequence text that justify your answer.
   If answer is "n/a", evidence MUST be an empty array [].
@@ -233,6 +223,11 @@ Return a single JSON object with this schema:
   ]
 }}
 
+RATIONALE (context only; NOT evidence for findings):
+<<<RATIONALE
+{RATIONALE_TEXT}
+RATIONALE>>>
+
 NOW ANALYZE THIS SEQUENCE CHUNK (verbatim):
 <<<SEQUENCE_TEXT
 {SEQUENCE_TEXT}
@@ -252,7 +247,11 @@ def ollama_chat(prompt: str, model: str, url: str, timeout_s: int) -> str:
     }
     r = requests.post(url, json=payload, timeout=timeout_s)
     r.raise_for_status()
-    return r.json().get("message", {}).get("content", "")
+    data = r.json()
+    content = data.get("message", {}).get("content", "")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError(f"Ollama returned empty content. Response keys: {list(data.keys())}")
+    return content
 
 
 def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
@@ -284,15 +283,37 @@ def sanitize_filename(s: str, max_len: int = 80) -> str:
 
 
 def normalize_scalar(v) -> Optional[str]:
-    """Turn CSV cell into a JSON-friendly scalar string (or None)."""
+    """
+    Turn CSV cell into a stable string key (or None).
+    Fixes common mismatch where "12345" vs "12345.0" prevents GT lookup.
+    """
     if v is None:
         return None
-    if isinstance(v, float) and pd.isna(v):
-        return None
+
+    if isinstance(v, float):
+        if pd.isna(v):
+            return None
+        if float(v).is_integer():
+            return str(int(v))
+        return str(v).strip()
+
+    if isinstance(v, int):
+        return str(v)
+
     if isinstance(v, str):
         s = v.strip()
-        return s if s else None
-    return str(v)
+        if not s:
+            return None
+        if re.fullmatch(r"\d+\.0", s):
+            return s[:-2]
+        return s
+
+    s = str(v).strip()
+    if not s:
+        return None
+    if re.fullmatch(r"\d+\.0", s):
+        return s[:-2]
+    return s
 
 
 def choose_output_name(row: pd.Series, idx: int) -> str:
@@ -345,11 +366,17 @@ def build_prompt_fallback(report_text: str) -> str:
     return BASE_PROMPT_FALLBACK.format(REPORT_TEXT=report_text)
 
 
-def build_prompt_sequence_qa(sequence_text: str) -> str:
+def build_prompt_sequence_qa(sequence_text: str, rationale: Optional[List[str]] = None) -> str:
     bullets = "\n".join([f"- {q}" for q in QA_QUESTIONS])
+
+    rat_list = rationale if isinstance(rationale, list) else []
+    rat_list = [str(x).strip() for x in rat_list if str(x).strip()]
+    rationale_text = "\n".join([f"- {x}" for x in rat_list]) if rat_list else "N/A"
+
     return BASE_PROMPT_SEQUENCE_QA.format(
         QUESTIONS_BULLETS=bullets,
         SEQUENCE_TEXT=sequence_text,
+        RATIONALE_TEXT=rationale_text,
     )
 
 
@@ -486,16 +513,17 @@ def validate_qa_output(obj: Dict[str, Any]) -> bool:
 def coerce_and_repair_qa(obj: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Ensures we return exactly one QA entry per question in QA_QUESTIONS order.
-    If model output is missing/invalid, fills unknown.
+    If model output is missing/invalid, fills n/a.
     Also enforces field types and confidence enum.
     """
-    unknown_entry = lambda q: {
-        "question": q,
-        "answer": "unknown",
-        "confidence": "low",
-        "evidence": [],
-        "notes": "Insufficient information in provided sequence text.",
-    }
+    def unknown_entry(q: str) -> Dict[str, Any]:
+        return {
+            "question": q,
+            "answer": "n/a",
+            "confidence": "low",
+            "evidence": [],
+            "notes": "Insufficient information in provided sequence text.",
+        }
 
     if not obj or not isinstance(obj, dict) or not isinstance(obj.get("qa"), list):
         return [unknown_entry(q) for q in QA_QUESTIONS]
@@ -518,7 +546,7 @@ def coerce_and_repair_qa(obj: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         ans = item.get("answer")
         if not isinstance(ans, str) or not ans.strip():
-            ans = "unknown"
+            ans = "n/a"
         ans = ans.strip()
 
         conf = item.get("confidence")
@@ -576,6 +604,9 @@ def main():
     # If you ever want to disable QA stage
     parser.add_argument("--skip_qa", action="store_true", help="If set, only extract sequences (no QA).")
 
+    # Force tqdm to show (helpful for non-TTY environments / log capture)
+    parser.add_argument("--force_tqdm", action="store_true", help="Force tqdm to render even if not a TTY.")
+
     args = parser.parse_args()
 
     if not args.reports_csv.exists():
@@ -583,8 +614,9 @@ def main():
     if not args.gt_csv.exists():
         raise FileNotFoundError(args.gt_csv)
 
-    reports_df = pd.read_csv(args.reports_csv)
-    gt_df = pd.read_csv(args.gt_csv)
+    # Force key column to string to avoid 12345 vs 12345.0 mismatches
+    reports_df = pd.read_csv(args.reports_csv, dtype={ANON_ACC_COL: str})
+    gt_df = pd.read_csv(args.gt_csv, dtype={ANON_ACC_COL: str})
 
     if REPORT_COL not in reports_df.columns:
         raise ValueError(f"Reports CSV missing required column: {REPORT_COL}")
@@ -609,9 +641,20 @@ def main():
     if args.skip_qa:
         print("QA stage: SKIPPED")
     else:
-        print("QA stage: ENABLED")
+        print("QA stage: ENABLED (verbatim_text + rationale provided to QA; evidence must come from verbatim_text)")
+    if args.force_tqdm:
+        print("tqdm: FORCED ON")
 
-    with tqdm(total=len(reports_df), desc="Processing reports", unit="report") as pbar:
+    disable_bar = False if args.force_tqdm else (not sys.stderr.isatty())
+
+    with tqdm(
+        total=len(reports_df),
+        desc="Processing reports",
+        unit="report",
+        dynamic_ncols=True,
+        file=sys.stderr,
+        disable=disable_bar,
+    ) as pbar:
         for idx, row in reports_df.iterrows():
             report_text = row.get(REPORT_COL)
             report_text = report_text if isinstance(report_text, str) else ""
@@ -712,11 +755,11 @@ def main():
                                 s["qa"] = []
 
                 # -----------------------------
-                # Stage 2: Per-sequence QA
+                # Stage 2: Per-sequence QA (UPDATED: uses verbatim_text + rationale)
                 # -----------------------------
                 if not args.skip_qa:
                     if "sequences" in parsed and isinstance(parsed["sequences"], list):
-                        for si, seq in enumerate(parsed["sequences"]):
+                        for _, seq in enumerate(parsed["sequences"]):
                             if not isinstance(seq, dict):
                                 continue
 
@@ -724,12 +767,12 @@ def main():
                             if not isinstance(seq_text, str):
                                 seq_text = ""
 
-                            # If no extractable text, fill unknown answers without calling the model
+                            # If no extractable text, fill n/a answers without calling the model
                             if seq_text.strip() == "" or seq_text.strip() == "No text could be extracted for that sequence":
                                 seq["qa"] = [
                                     {
                                         "question": q,
-                                        "answer": "unknown",
+                                        "answer": "n/a",
                                         "confidence": "low",
                                         "evidence": [],
                                         "notes": "No extractable sequence text available.",
@@ -742,7 +785,7 @@ def main():
 
                             raw_qa = ""
                             try:
-                                qa_prompt = build_prompt_sequence_qa(seq_text)
+                                qa_prompt = build_prompt_sequence_qa(seq_text, seq.get("rationale"))
                                 raw_qa = ollama_chat(
                                     prompt=qa_prompt,
                                     model=args.model,
@@ -761,7 +804,7 @@ def main():
                                 seq["qa"] = [
                                     {
                                         "question": q,
-                                        "answer": "unknown",
+                                        "answer": "n/a",
                                         "confidence": "low",
                                         "evidence": [],
                                         "notes": "QA failed or returned invalid JSON.",
