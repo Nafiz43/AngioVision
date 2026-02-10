@@ -1,0 +1,26 @@
+graph TD
+    A[Study Input] --> B[Visual Frames]
+    A --> C[Textual Reports]
+    
+    B --> D[BioMedClip]
+    C --> E[LlamaMed Language Model]
+    
+    D --> F[Binary Labels Yes/No<br/>Anatomical Questions]
+    E --> G[Binary Output]
+    
+    F -.-> H{Cross Validation}
+    G -.-> H
+    
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#fff4e1
+    style D fill:#e8f5e9
+    style E fill:#e8f5e9
+    style F fill:#f3e5f5
+    style G fill:#f3e5f5
+    style H fill:#ffebee
+    
+    %% Title
+    %%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#ff6b6b'}}}%%
+    
+    classDef default fill:#fff,stroke:#333,stroke-width:2px

@@ -30,7 +30,7 @@ from tqdm import tqdm
 # Configuration
 # ----------------------------
 FRAME_FORMAT = "png"
-KEYWORDS = ["DSA"]
+KEYWORDS = []
 
 NA_VALUE = "NA"
 MAX_VALUE_CHARS = 2000

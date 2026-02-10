@@ -6,15 +6,22 @@ Stage 1 only: Discover INNER "sequence dirs" (any dir under base_path that conta
 <frames_subdir>/ with images), sample frames, and create/reuse a mosaic image saved
 inside each sequence dir (e.g., <seq_dir>/mosaic.png).
 
+Parallel version:
+- Multiprocessing across sequence dirs (ProcessPoolExecutor)
+- Multithreading inside each process for frame loading/decoding (ThreadPoolExecutor)
+
 No LLM calls. No CSV output (optional debug prints only).
 """
 
 import argparse
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 
 from PIL import Image, ImageOps
 from tqdm import tqdm
@@ -22,10 +29,9 @@ from tqdm import tqdm
 # -----------------------------
 # Defaults
 # -----------------------------
-# DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
-
-DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed")
+DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+
 
 # -----------------------------
 # Frame utilities
@@ -40,8 +46,7 @@ def list_frame_files(seq_dir: Path, frames_subdir: str = "frames") -> List[Path]
     # 1) Preferred: exactly seq_dir/<frames_subdir>/*
     if frames_dir.exists() and frames_dir.is_dir():
         frames = [
-            p
-            for p in frames_dir.iterdir()
+            p for p in frames_dir.iterdir()
             if p.is_file() and p.suffix.lower() in IMAGE_EXTS
         ]
         frames.sort(key=lambda p: p.name)
@@ -50,7 +55,8 @@ def list_frame_files(seq_dir: Path, frames_subdir: str = "frames") -> List[Path]
 
     # 2) Fallback: find images anywhere under seq_dir
     frames = [
-        p for p in seq_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        p for p in seq_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
     ]
     frames.sort(key=lambda p: p.as_posix())
     return frames
@@ -84,15 +90,20 @@ def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
     - Any directory D such that D/<frames_subdir>/ exists AND contains at least one image file.
     """
     seq_dirs: List[Path] = []
+    # rglob("*") is OK; discovery is usually not the slowest part vs image IO/resize.
     for d in base_path.rglob("*"):
         if not d.is_dir():
             continue
         frames_dir = d / frames_subdir
         if not frames_dir.exists() or not frames_dir.is_dir():
             continue
-        has_image = any(
-            (p.is_file() and p.suffix.lower() in IMAGE_EXTS) for p in frames_dir.iterdir()
-        )
+        try:
+            has_image = any(
+                (p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+                for p in frames_dir.iterdir()
+            )
+        except PermissionError:
+            continue
         if has_image:
             seq_dirs.append(d)
 
@@ -102,12 +113,16 @@ def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
 # -----------------------------
 # Mosaic/splicing utilities
 # -----------------------------
-def _open_image_rgb(path: Path) -> Image.Image:
-    img = Image.open(path)
-    img = ImageOps.exif_transpose(img)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    return img
+def _open_image_rgb(path: Path) -> Optional[Image.Image]:
+    # Keep this top-level for picklability and thread pool usage.
+    try:
+        img = Image.open(path)
+        img = ImageOps.exif_transpose(img)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return img
+    except Exception:
+        return None
 
 
 def _fit_to_box(img: Image.Image, box: Tuple[int, int]) -> Image.Image:
@@ -134,20 +149,33 @@ def create_mosaic_image(
     tile_size: Tuple[int, int] = (384, 384),
     cols: Optional[int] = None,
     max_cols: int = 6,
+    threads: int = 24,
 ) -> Optional[Path]:
     """
     Create a single mosaic PNG at out_path from the provided frame_paths.
     Returns out_path on success, None on failure.
+
+    Uses threads to load/decode/transpose/convert frames faster.
     """
     if not frame_paths:
         return None
 
+    # Load frames concurrently (I/O + decode)
     tiles: List[Image.Image] = []
-    for p in frame_paths:
-        try:
-            tiles.append(_open_image_rgb(p))
-        except Exception:
-            continue
+    threads = max(1, int(threads))
+
+    if threads == 1:
+        for p in frame_paths:
+            img = _open_image_rgb(p)
+            if img is not None:
+                tiles.append(img)
+    else:
+        with ThreadPoolExecutor(max_workers=threads) as tp:
+            futs = [tp.submit(_open_image_rgb, p) for p in frame_paths]
+            for f in futs:
+                img = f.result()
+                if img is not None:
+                    tiles.append(img)
 
     if not tiles:
         return None
@@ -165,6 +193,7 @@ def create_mosaic_image(
 
     mosaic = Image.new("RGB", (mosaic_w, mosaic_h), (0, 0, 0))
 
+    # Resize+paste (CPU-ish). Keep single-threaded to avoid huge memory spikes.
     for idx, img in enumerate(tiles):
         r = idx // cols
         c = idx % cols
@@ -190,7 +219,80 @@ class MosaicResult:
     error: Optional[str] = None
 
 
-def create_mosaics_for_sequence_dirs(
+def _process_one_sequence_dir(payload: dict) -> MosaicResult:
+    """
+    Worker function run in a separate process.
+    Uses threads internally for loading frames.
+    """
+    seq_dir: Path = payload["seq_dir"]
+    base_path: Path = payload["base_path"]
+    frames_subdir: str = payload["frames_subdir"]
+    mosaic_name: str = payload["mosaic_name"]
+    max_frames: int = payload["max_frames"]
+    stride: int = payload["stride"]
+    tile_size: Tuple[int, int] = payload["tile_size"]
+    mosaic_cols: Optional[int] = payload["mosaic_cols"]
+    mosaic_max_cols: int = payload["mosaic_max_cols"]
+    overwrite_mosaic: bool = payload["overwrite_mosaic"]
+    debug: bool = payload["debug"]
+    threads: int = payload["threads"]
+
+    frames = list_frame_files(seq_dir, frames_subdir=frames_subdir)
+    selected = pick_frames(frames, max_frames=max_frames, stride=stride)
+
+    seq_rel = seq_dir.relative_to(base_path).as_posix()
+    mosaic_path = seq_dir / mosaic_name
+
+    if debug:
+        print(f"[DEBUG] {seq_rel}: found {len(frames)} frames, selected {len(selected)}", flush=True)
+
+    if mosaic_path.exists() and not overwrite_mosaic:
+        return MosaicResult(
+            seq_dir=seq_dir,
+            seq_rel=seq_rel,
+            num_frames_found=len(frames),
+            num_frames_selected=len(selected),
+            mosaic_path=mosaic_path,
+            mosaic_ok=True,
+            error=None,
+        )
+
+    try:
+        created = create_mosaic_image(
+            frame_paths=selected,
+            out_path=mosaic_path,
+            tile_size=tile_size,
+            cols=mosaic_cols,
+            max_cols=mosaic_max_cols,
+            threads=threads,
+        )
+        ok = created is not None and created.exists()
+        err = None if ok else "Mosaic creation returned None or file missing."
+        return MosaicResult(
+            seq_dir=seq_dir,
+            seq_rel=seq_rel,
+            num_frames_found=len(frames),
+            num_frames_selected=len(selected),
+            mosaic_path=mosaic_path,
+            mosaic_ok=ok,
+            error=err,
+        )
+    except Exception as e:
+        err = str(e)[:300]
+        if debug:
+            print(f"[DEBUG] Failed mosaic for {seq_rel}: {err}", flush=True)
+        return MosaicResult(
+            seq_dir=seq_dir,
+            seq_rel=seq_rel,
+            num_frames_found=len(frames),
+            num_frames_selected=len(selected),
+            mosaic_path=mosaic_path,
+            mosaic_ok=False,
+            error=err,
+        )
+
+
+def create_mosaics_for_sequence_dirs_parallel(
     seq_dirs: List[Path],
     base_path: Path,
     frames_subdir: str,
@@ -202,59 +304,50 @@ def create_mosaics_for_sequence_dirs(
     mosaic_max_cols: int,
     overwrite_mosaic: bool,
     debug: bool,
+    workers: int,
+    threads: int,
 ) -> List[MosaicResult]:
+    """
+    Parallel driver:
+    - processes: per seq_dir
+    - threads: per-process frame loading
+    """
     results: List[MosaicResult] = []
+    workers = max(1, int(workers))
+    threads = max(1, int(threads))
 
-    for seq_dir in tqdm(seq_dirs, desc="Creating mosaics", unit="seq"):
-        frames = list_frame_files(seq_dir, frames_subdir=frames_subdir)
-        selected = pick_frames(frames, max_frames=max_frames, stride=stride)
-
-        seq_rel = seq_dir.relative_to(base_path).as_posix()
-        mosaic_path = seq_dir / mosaic_name
-
-        if debug:
-            print(f"[DEBUG] {seq_rel}: found {len(frames)} frames, selected {len(selected)}")
-
-        mosaic_ok = False
-        err: Optional[str] = None
-
-        if mosaic_path.exists() and not overwrite_mosaic:
-            mosaic_ok = True
-        else:
-            try:
-                created = create_mosaic_image(
-                    frame_paths=selected,
-                    out_path=mosaic_path,
-                    tile_size=tile_size,
-                    cols=mosaic_cols,
-                    max_cols=mosaic_max_cols,
-                )
-                mosaic_ok = created is not None and created.exists()
-                if not mosaic_ok:
-                    err = "Mosaic creation returned None or file missing."
-            except Exception as e:
-                mosaic_ok = False
-                err = str(e)[:300]
-                if debug:
-                    print(f"[DEBUG] Failed mosaic for {seq_rel}: {err}")
-
-        results.append(
-            MosaicResult(
-                seq_dir=seq_dir,
-                seq_rel=seq_rel,
-                num_frames_found=len(frames),
-                num_frames_selected=len(selected),
-                mosaic_path=mosaic_path,
-                mosaic_ok=mosaic_ok,
-                error=err,
-            )
+    payloads = []
+    for sd in seq_dirs:
+        payloads.append(
+            {
+                "seq_dir": sd,
+                "base_path": base_path,
+                "frames_subdir": frames_subdir,
+                "mosaic_name": mosaic_name,
+                "max_frames": max_frames,
+                "stride": stride,
+                "tile_size": tile_size,
+                "mosaic_cols": mosaic_cols,
+                "mosaic_max_cols": mosaic_max_cols,
+                "overwrite_mosaic": overwrite_mosaic,
+                "debug": debug,
+                "threads": threads,
+            }
         )
 
+    # Important: tqdm in parent process only
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_process_one_sequence_dir, pl) for pl in payloads]
+        for f in tqdm(as_completed(futs), total=len(futs), desc="Creating mosaics", unit="seq"):
+            results.append(f.result())
+
+    # Keep stable order (optional)
+    results.sort(key=lambda r: r.seq_rel)
     return results
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Create mosaics for per-sequence frame dirs.")
+    parser = argparse.ArgumentParser(description="Create mosaics for per-sequence frame dirs (parallel).")
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
     parser.add_argument("--frames_subdir", type=str, default="frames")
     parser.add_argument("--max_frames", type=int, default=144)
@@ -262,6 +355,20 @@ def main() -> None:
 
     parser.add_argument("--limit", type=int, default=None, help="Process only first N sequence dirs.")
     parser.add_argument("--debug", action="store_true")
+
+    # Parallelism knobs
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 2) - 1),
+        help="Number of processes (one sequence dir per task). Default: cpu_count-1",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=4,
+        help="Threads per process for loading/decoding frames. Default: 4",
+    )
 
     # Mosaic settings
     parser.add_argument("--mosaic_name", type=str, default="mosaic.png")
@@ -289,8 +396,9 @@ def main() -> None:
     print(f"Discovered {len(seq_dirs)} sequence (inner) directories")
     print(f"Frames subdir: {args.frames_subdir}")
     print(f"Mosaic name: {args.mosaic_name}")
+    print(f"Parallelism: workers={args.workers}, threads/process={args.threads}")
 
-    results = create_mosaics_for_sequence_dirs(
+    results = create_mosaics_for_sequence_dirs_parallel(
         seq_dirs=seq_dirs,
         base_path=args.base_path,
         frames_subdir=args.frames_subdir,
@@ -302,6 +410,8 @@ def main() -> None:
         mosaic_max_cols=args.mosaic_max_cols,
         overwrite_mosaic=args.overwrite_mosaic,
         debug=args.debug,
+        workers=args.workers,
+        threads=args.threads,
     )
 
     ok = sum(1 for r in results if r.mosaic_ok and r.mosaic_path.exists())
