@@ -27,3 +27,4 @@ dist/
 *.egg-info/
 .eggs/
 .coverage   
+/fine-tuning/checkpoints/

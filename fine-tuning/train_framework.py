@@ -612,7 +612,7 @@ def build_argparser():
 
     ap.add_argument("--grad_clip", type=float, default=1.0)
 
-    ap.add_argument("--out_dir", type=str, default="./checkpoints_pooled")
+    ap.add_argument("--out_dir", type=str, default="./checkpoints")
     ap.add_argument("--save_every", type=int, default=0)
     ap.add_argument("--keep_missing_reports", action="store_true")
 
