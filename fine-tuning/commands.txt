@@ -1,0 +1,16 @@
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+python3 train_framework.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --batch_size 1 \
+  --epochs 1 \
+  --num_workers 8 \
+  --frame_chunk_size 2 \
+  --max_sequences_per_study 1\
+  --freeze_vision --freeze_text \
+  --pooling max
+
+
+
