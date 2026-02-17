@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """
-train_framework_pooled.py
+custom_framework_train.py
 
 AngioVision fine-tuning: (Study) frames -> ViT -> pool -> visual embedding
 Align visual embedding with report text embedding (BERT) using CLIP-style contrastive loss.
 
-Key features:
-- Robust SOPInstanceUIDs parser for comma-separated CSV-quoted strings or python literal lists.
-- Uses your frame path layout:
-    BASE / <Anon Acc #> / <SOPInstanceUID> / frames / <image files>
-- ViTImageProcessor / ViTFeatureExtractor compatibility.
-- Pooling is configurable via CLI args:
-    --pooling (default for both)
-    --frame_pooling (override for frames)
-    --sequence_pooling (override for sequences)
+Directory layout assumed:
+  BASE/<Anon Acc #>/<SOPInstanceUID>/frames/<image files>
 
-Pooling modes:
-- max       : elementwise max
-- mean      : elementwise mean
-- logsumexp : elementwise logsumexp (smooth max)
+NEW (requested):
+- Always creates a loss CSV in --out_dir whenever the script is run.
+- Loss CSV filename encodes ONLY:
+    epochs, batch_size, max_sequences_per_study
+  in "_" separated format:
+    <epochs>_<batch_size>_<max_sequences_per_study>_loss.csv
+  where max_sequences_per_study is "None" if not provided.
+
+Example:
+  3_2_None_loss.csv
+  5_4_10_loss.csv
 """
 
 import re
 import ast
 import math
 import argparse
+import csv
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -54,15 +55,13 @@ except Exception:
 
 
 # ------------------------------------------------------------
-# Robust SOPInstanceUIDs parser (matches your CSV rows)
+# Robust SOPInstanceUIDs parser
 # ------------------------------------------------------------
 def parse_sop_instance_uids(val) -> List[str]:
     """
     Handles:
-    1) CSV-quoted comma-separated string:
-       "uid1,uid2,uid3"
-    2) python literal list/tuple:
-       "['uid1','uid2']" or "('uid1','uid2')"
+    1) CSV-quoted comma-separated string: "uid1,uid2,uid3"
+    2) python literal list/tuple: "['uid1','uid2']" or "('uid1','uid2')"
     3) NaN/None/empty safely
     """
     if val is None:
@@ -93,7 +92,7 @@ def parse_sop_instance_uids(val) -> List[str]:
 
 
 # ------------------------------------------------------------
-# Frame discovery utilities (UPDATED for your directory layout)
+# Frame discovery utilities
 # ------------------------------------------------------------
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
@@ -133,14 +132,14 @@ def find_frame_files_for_sop(base_frames_dir: Path, acc: str, sop_uid: str) -> L
 
     # 3) one-level nested fallback
     if sop_dir.exists() and sop_dir.is_dir():
-        nested_imgs = []
+        nested_imgs: List[Path] = []
         for child in sop_dir.iterdir():
             if child.is_dir():
                 nested_imgs.extend(_list_images_in_dir(child))
         if nested_imgs:
             return sorted(nested_imgs)
 
-    # 4) constrained glob fallback (avoid expensive full recursion)
+    # 4) constrained glob fallback
     try:
         pattern = f"*/{acc}/{sop_uid}/frames"
         for candidate in base_frames_dir.glob(pattern):
@@ -234,7 +233,6 @@ class StudyDataset(Dataset):
 
 
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    # Drop items with no sequences or empty text
     kept = [b for b in batch if b["text"] and isinstance(b["sequences"], list) and len(b["sequences"]) > 0]
     return {
         "acc": [b["acc"] for b in kept],
@@ -251,8 +249,7 @@ POOL_CHOICES = ("max", "mean", "logsumexp")
 
 def pool_stack(x: torch.Tensor, mode: str) -> torch.Tensor:
     """
-    x: (N, D) tensor
-    returns: (D,) pooled
+    x: (N, D) tensor -> (D,)
     """
     if x.ndim != 2:
         raise ValueError(f"pool_stack expects (N,D), got {tuple(x.shape)}")
@@ -329,32 +326,25 @@ class PooledCLIP(nn.Module):
     @torch.no_grad()
     def _init_running(self, device, d: int, mode: str):
         if mode == "max":
-            return torch.full((d,), -1e9, device=device), None  # running, aux
+            return torch.full((d,), -1e9, device=device), None
         if mode == "mean":
-            return torch.zeros((d,), device=device), torch.tensor(0, device=device)  # sum, count
+            return torch.zeros((d,), device=device), torch.tensor(0, device=device)
         if mode == "logsumexp":
-            return torch.full((d,), -float("inf"), device=device), None  # running logsumexp, aux
+            return torch.full((d,), -float("inf"), device=device), None
         raise ValueError(f"Unknown pooling mode: {mode}")
 
     def _update_running(self, running, aux, chunk_feats: torch.Tensor, mode: str):
-        """
-        running: (D,)
-        chunk_feats: (B, D)
-        """
         if mode == "max":
-            chunk_max = chunk_feats.max(dim=0).values
-            running = torch.maximum(running, chunk_max)
+            running = torch.maximum(running, chunk_feats.max(dim=0).values)
             return running, aux
 
         if mode == "mean":
-            # sum + count
             running = running + chunk_feats.sum(dim=0)
             aux = aux + chunk_feats.size(0)
             return running, aux
 
         if mode == "logsumexp":
-            chunk_lse = torch.logsumexp(chunk_feats, dim=0)
-            running = torch.logaddexp(running, chunk_lse)  # combine exp sums in log space
+            running = torch.logaddexp(running, torch.logsumexp(chunk_feats, dim=0))
             return running, aux
 
         raise ValueError(f"Unknown pooling mode: {mode}")
@@ -364,9 +354,7 @@ class PooledCLIP(nn.Module):
             return running
         if mode == "mean":
             count = aux.item() if hasattr(aux, "item") else int(aux)
-            if count <= 0:
-                return running  # all zeros
-            return running / float(count)
+            return running / float(count) if count > 0 else running
         if mode == "logsumexp":
             return running
         raise ValueError(f"Unknown pooling mode: {mode}")
@@ -379,10 +367,6 @@ class PooledCLIP(nn.Module):
         chunk_size: int = 16,
         pooling: str = "max",
     ) -> torch.Tensor:
-        """
-        Returns a single (hidden,) vector pooled across all frames in frame_images
-        using the requested pooling mode, without storing all frame embeddings at once.
-        """
         running, aux = self._init_running(device, self.vit_hidden, pooling)
 
         for i in range(0, len(frame_images), chunk_size):
@@ -391,11 +375,11 @@ class PooledCLIP(nn.Module):
             pixel_values = inputs["pixel_values"].to(device)
 
             out = self.vit(pixel_values=pixel_values)
-            frame_emb = out.last_hidden_state[:, 0, :]  # CLS (B, hidden)
+            frame_emb = out.last_hidden_state[:, 0, :]  # CLS
 
             running, aux = self._update_running(running, aux, frame_emb, pooling)
 
-        return self._finalize_running(running, aux, pooling)  # (hidden,)
+        return self._finalize_running(running, aux, pooling)
 
     def forward(
         self,
@@ -409,7 +393,6 @@ class PooledCLIP(nn.Module):
         B = len(batch_sequences)
         assert B == len(texts)
 
-        # Vision: pool frames -> per-seq feat, then pool seqs -> per-study feat
         study_visuals: List[torch.Tensor] = []
         for sequences in batch_sequences:
             seq_feats: List[torch.Tensor] = []
@@ -434,18 +417,16 @@ class PooledCLIP(nn.Module):
                 seq_feats.append(seq_feat)
 
             if not seq_feats:
-                # fallback: if everything failed to load
                 study_feat = torch.zeros(self.vit_hidden, device=device)
             else:
-                seq_stack = torch.stack(seq_feats, dim=0)  # (num_seq, hidden)
-                study_feat = pool_stack(seq_stack, self.sequence_pooling)  # (hidden,)
+                seq_stack = torch.stack(seq_feats, dim=0)
+                study_feat = pool_stack(seq_stack, self.sequence_pooling)
 
             study_visuals.append(study_feat)
 
-        study_visuals = torch.stack(study_visuals, dim=0)  # (B, hidden)
+        study_visuals = torch.stack(study_visuals, dim=0)
         image_embeds = F.normalize(self.vision_proj(study_visuals), dim=-1)
 
-        # Text: BERT CLS
         tok = tokenizer(
             texts,
             padding=True,
@@ -459,7 +440,7 @@ class PooledCLIP(nn.Module):
         text_embeds = F.normalize(self.text_proj(tcls), dim=-1)
 
         logit_scale = self.logit_scale.exp().clamp(1e-3, 100.0)
-        logits = logit_scale * (image_embeds @ text_embeds.t())  # (B, B)
+        logits = logit_scale * (image_embeds @ text_embeds.t())
 
         return image_embeds, text_embeds, logits
 
@@ -471,21 +452,42 @@ def clip_loss(logits: torch.Tensor) -> torch.Tensor:
 
 
 # ------------------------------------------------------------
+# Loss CSV naming + logging (NEW)
+# ------------------------------------------------------------
+def _loss_csv_name(epochs: int, batch_size: int, max_sequences_per_study) -> str:
+    ms = "None" if max_sequences_per_study is None else str(max_sequences_per_study)
+    return f"{epochs}_{batch_size}_{ms}_loss.csv"
+
+
+def _init_loss_logger(out_dir: Path, epochs: int, batch_size: int, max_sequences_per_study) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_path = out_dir / _loss_csv_name(epochs, batch_size, max_sequences_per_study)
+
+    # Always ensure it exists + has header (even if training later skips everything)
+    if (not log_path.exists()) or (log_path.stat().st_size == 0):
+        with open(log_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["epoch", "step", "batch_size", "loss", "loss_ema"])
+
+    return log_path
+
+
+def _append_loss_row(log_path: Path, epoch: int, step: int, batch_size: int, loss_val: float, loss_ema: float):
+    with open(log_path, "a", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([epoch, step, batch_size, f"{loss_val:.8f}", f"{loss_ema:.8f}"])
+
+
+# ------------------------------------------------------------
 # Train
 # ------------------------------------------------------------
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"[INFO] device = {device}")
 
-    # Resolve pooling settings
     pooling_default = args.pooling
     frame_pooling = args.frame_pooling if args.frame_pooling else pooling_default
     sequence_pooling = args.sequence_pooling if args.sequence_pooling else pooling_default
-
-    if frame_pooling not in POOL_CHOICES:
-        raise ValueError(f"--frame_pooling must be one of {POOL_CHOICES}, got {frame_pooling}")
-    if sequence_pooling not in POOL_CHOICES:
-        raise ValueError(f"--sequence_pooling must be one of {POOL_CHOICES}, got {sequence_pooling}")
 
     print(f"[INFO] pooling: default={pooling_default}, frame={frame_pooling}, sequence={sequence_pooling}")
 
@@ -529,13 +531,30 @@ def train(args):
         weight_decay=args.weight_decay,
     )
 
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ALWAYS create the loss CSV at script start
+    loss_log_path = _init_loss_logger(
+        out_dir=out_dir,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        max_sequences_per_study=args.max_sequences_per_study,
+    )
+    print(f"[INFO] Loss CSV: {loss_log_path}")
+
     model.train()
     step = 0
 
+    ema = None
+    ema_beta = 0.98
+
     for epoch in range(args.epochs):
         pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{args.epochs}", dynamic_ncols=True)
+
         for batch in pbar:
             if len(batch["text"]) == 0:
+                # nothing kept by collate
                 continue
 
             _, _, logits = model(
@@ -558,24 +577,37 @@ def train(args):
             opt.step()
 
             step += 1
-            pbar.set_postfix(loss=float(loss.detach().cpu().item()), bs=len(batch["text"]))
+            loss_val = float(loss.detach().cpu().item())
+
+            if ema is None:
+                ema = loss_val
+            else:
+                ema = ema_beta * ema + (1 - ema_beta) * loss_val
+
+            _append_loss_row(
+                log_path=loss_log_path,
+                epoch=epoch + 1,
+                step=step,
+                batch_size=len(batch["text"]),
+                loss_val=loss_val,
+                loss_ema=float(ema),
+            )
+
+            pbar.set_postfix(loss=loss_val, loss_ema=float(ema), bs=len(batch["text"]))
 
             if args.save_every > 0 and step % args.save_every == 0:
-                out = Path(args.out_dir)
-                out.mkdir(parents=True, exist_ok=True)
                 torch.save(
-                    {"step": step, "epoch": epoch, "model_state": model.state_dict(), "opt_state": opt.state_dict()},
-                    out / f"checkpoint_step_{step}.pt",
+                    {"step": step, "epoch": epoch + 1, "model_state": model.state_dict(), "opt_state": opt.state_dict()},
+                    out_dir / f"checkpoint_step_{step}.pt",
                 )
 
-        out = Path(args.out_dir)
-        out.mkdir(parents=True, exist_ok=True)
         torch.save(
-            {"step": step, "epoch": epoch, "model_state": model.state_dict(), "opt_state": opt.state_dict()},
-            out / f"checkpoint_epoch_{epoch+1}.pt",
+            {"step": step, "epoch": epoch + 1, "model_state": model.state_dict(), "opt_state": opt.state_dict()},
+            out_dir / f"checkpoint_epoch_{epoch+1}.pt",
         )
 
     print("[INFO] Training complete.")
+    print(f"[INFO] Loss CSV saved at: {loss_log_path}")
 
 
 def build_argparser():
@@ -616,7 +648,6 @@ def build_argparser():
     ap.add_argument("--save_every", type=int, default=0)
     ap.add_argument("--keep_missing_reports", action="store_true")
 
-    # Pooling args
     ap.add_argument(
         "--pooling",
         type=str,

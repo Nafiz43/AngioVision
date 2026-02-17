@@ -1,26 +1,50 @@
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-python3 train_framework.py \
+python3 custom_framework_train.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --batch_size 1 \
-  --epochs 1 \
+  --batch_size 16 \
+  --epochs 10 \
+  --num_workers 8 \
+  --frame_chunk_size 32 \
+  --max_sequences_per_study 1\
+  --freeze_vision --freeze_text \
+  --pooling logsumexp
+
+
+python3 custom_framework_train.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --batch_size 8 \
+  --epochs 10 \
+  --num_workers 8 \
+  --frame_chunk_size 2 \
+  --max_sequences_per_study 16\
+  --freeze_vision --freeze_text \
+  --pooling logsumexp
+
+
+python3 custom_framework_train.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --batch_size 8 \
+  --epochs 10 \
   --num_workers 8 \
   --frame_chunk_size 2 \
   --max_sequences_per_study 1\
   --freeze_vision --freeze_text \
-  --pooling max
+  --pooling logsumexp
+
 
 
 python3 custom_framework_validate.py \
-  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_1.pt \
-  --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed \
-  --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv \
-  --device cuda \
-  --frame_chunk_size 64 \
-  --pooling max
-
-
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_1.pt\
+     --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 64   --pooling max
 
 

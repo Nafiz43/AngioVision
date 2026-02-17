@@ -28,3 +28,4 @@ dist/
 .eggs/
 .coverage   
 /fine-tuning/checkpoints/
+/fine-tuning/output/
