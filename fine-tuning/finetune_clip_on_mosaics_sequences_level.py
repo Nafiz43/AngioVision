@@ -324,12 +324,13 @@ def main() -> None:
     parser.add_argument(
         "--base_path",
         type=Path,
-        default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed"),
+        default=Path("/data/Deep_Angiography/DICOM_Sequence_Processed"),
     )
     parser.add_argument(
         "--in_csv",
         type=Path,
-        default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/Test_Data_2026_02_01_v01.csv"),
+        default=Path("/data/Deep_Angiography/Reports/Report_List_v01_01.csv"),
+
     )
 
     parser.add_argument("--uid_col", type=str, default="UID")
