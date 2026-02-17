@@ -7,13 +7,13 @@ import matplotlib.pyplot as plt
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoints_dir", type=str, required=True, help="Same as --out_dir used in training")
+    ap.add_argument("--source_path", type=str, required=True, help="Same as --out_dir used in training")
     ap.add_argument("--use", type=str, default="loss_ema", choices=["loss", "loss_ema"], help="What to plot")
-    ap.add_argument("--max_points", type=int, default=0, help="If >0, downsample to at most this many points")
+    ap.add_argument("--max_points", type=int, default=100, help="If >0, downsample to at most this many points")
     args = ap.parse_args()
 
-    ckpt_dir = Path(args.checkpoints_dir)
-    log_path = ckpt_dir / "loss_log.csv"
+    ckpt_dir = Path(args.source_path)
+    log_path = ckpt_dir
     if not log_path.exists():
         raise FileNotFoundError(f"Missing {log_path}. Re-run training with loss logging enabled.")
 
@@ -40,10 +40,13 @@ def main():
     plt.ylabel("Contrastive loss" + (" (EMA)" if ycol == "loss_ema" else ""))
     plt.title("CLIP-style contrastive loss over training")
 
-    out_png = ckpt_dir / "contrastive_loss_curve.png"
+    out_png = str(ckpt_dir).replace(".csv", "_contrastive_loss_curve.png")
     plt.tight_layout()
     plt.savefig(out_png, dpi=200)
     print(f"[OK] Saved: {out_png}")
 
 if __name__ == "__main__":
     main()
+
+# python3 plot_loss.py --source_path /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/3_16_16_loss.csv
+

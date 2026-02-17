@@ -12,39 +12,53 @@ python3 custom_framework_train.py \
   --freeze_vision --freeze_text \
   --pooling logsumexp
 
+  python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_10.pt\
+     --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
 
 python3 custom_framework_train.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --batch_size 8 \
-  --epochs 10 \
+  --batch_size 16 \
+  --epochs 3 \
   --num_workers 8 \
-  --frame_chunk_size 2 \
+  --frame_chunk_size 32 \
   --max_sequences_per_study 16\
   --freeze_vision --freeze_text \
   --pooling logsumexp
 
 
+  python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_3.pt\
+     --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
 python3 custom_framework_train.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --batch_size 8 \
-  --epochs 10 \
+  --batch_size 16 \
+  --epochs 5 \
   --num_workers 8 \
-  --frame_chunk_size 2 \
-  --max_sequences_per_study 1\
+  --frame_chunk_size 32 \
+  --max_sequences_per_study 4\
   --freeze_vision --freeze_text \
   --pooling logsumexp
 
 
 
 python3 custom_framework_validate.py \
-  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_1.pt\
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_5.pt\
      --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
       --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv \
         --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
-         --device cuda   --frame_chunk_size 64   --pooling max
+         --device cuda   --frame_chunk_size 64   --pooling logsumexp
 
 
