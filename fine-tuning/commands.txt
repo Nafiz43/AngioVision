@@ -13,4 +13,14 @@ python3 train_framework.py \
   --pooling max
 
 
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_1.pt \
+  --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed \
+  --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv \
+  --device cuda \
+  --frame_chunk_size 64 \
+  --pooling max
+
+
+
 
