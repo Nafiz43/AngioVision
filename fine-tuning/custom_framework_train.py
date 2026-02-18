@@ -8,17 +8,20 @@ Align visual embedding with report text embedding (BERT) using CLIP-style contra
 Directory layout assumed:
   BASE/<Anon Acc #>/<SOPInstanceUID>/frames/<image files>
 
-NEW (requested):
-- Always creates a loss CSV in --out_dir whenever the script is run.
+Efficient checkpointing (no validation):
+- Creates a run dir under --out_dir named:
+    {epochs}_{batch_size}_{max_sequences_per_study}
+  where max_sequences_per_study is "None" if not provided.
+- Saves ONLY a single rolling checkpoint:
+    <run_dir>/last.pt
+  which is overwritten during training.
+
+Also:
+- Always creates a loss CSV in that run dir.
 - Loss CSV filename encodes ONLY:
     epochs, batch_size, max_sequences_per_study
   in "_" separated format:
     <epochs>_<batch_size>_<max_sequences_per_study>_loss.csv
-  where max_sequences_per_study is "None" if not provided.
-
-Example:
-  3_2_None_loss.csv
-  5_4_10_loss.csv
 """
 
 import re
@@ -452,16 +455,21 @@ def clip_loss(logits: torch.Tensor) -> torch.Tensor:
 
 
 # ------------------------------------------------------------
-# Loss CSV naming + logging (NEW)
+# Run-dir + loss CSV naming/logging
 # ------------------------------------------------------------
-def _loss_csv_name(epochs: int, batch_size: int, max_sequences_per_study) -> str:
+def _run_dir_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int]) -> str:
+    ms = "None" if max_sequences_per_study is None else str(max_sequences_per_study)
+    return f"{epochs}_{batch_size}_{ms}"
+
+
+def _loss_csv_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int]) -> str:
     ms = "None" if max_sequences_per_study is None else str(max_sequences_per_study)
     return f"{epochs}_{batch_size}_{ms}_loss.csv"
 
 
-def _init_loss_logger(out_dir: Path, epochs: int, batch_size: int, max_sequences_per_study) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    log_path = out_dir / _loss_csv_name(epochs, batch_size, max_sequences_per_study)
+def _init_loss_logger(run_dir: Path, epochs: int, batch_size: int, max_sequences_per_study: Optional[int]) -> Path:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = run_dir / _loss_csv_name(epochs, batch_size, max_sequences_per_study)
 
     # Always ensure it exists + has header (even if training later skips everything)
     if (not log_path.exists()) or (log_path.stat().st_size == 0):
@@ -478,6 +486,25 @@ def _append_loss_row(log_path: Path, epoch: int, step: int, batch_size: int, los
         w.writerow([epoch, step, batch_size, f"{loss_val:.8f}", f"{loss_ema:.8f}"])
 
 
+def _save_last_checkpoint(run_dir: Path, model: nn.Module, opt: torch.optim.Optimizer, step: int, epoch: int):
+    """
+    Saves a single rolling checkpoint that is overwritten each time.
+    Exact path:
+      <run_dir>/last.pt
+    """
+    ckpt_path = run_dir / "last.pt"
+    torch.save(
+        {
+            "step": step,
+            "epoch": epoch,
+            "model_state": model.state_dict(),
+            "opt_state": opt.state_dict(),
+        },
+        ckpt_path,
+    )
+    return ckpt_path
+
+
 # ------------------------------------------------------------
 # Train
 # ------------------------------------------------------------
@@ -488,7 +515,6 @@ def train(args):
     pooling_default = args.pooling
     frame_pooling = args.frame_pooling if args.frame_pooling else pooling_default
     sequence_pooling = args.sequence_pooling if args.sequence_pooling else pooling_default
-
     print(f"[INFO] pooling: default={pooling_default}, frame={frame_pooling}, sequence={sequence_pooling}")
 
     dataset = StudyDataset(
@@ -531,21 +557,28 @@ def train(args):
         weight_decay=args.weight_decay,
     )
 
+    # Root checkpoints dir (out_dir), then run-specific subdir (requested)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ALWAYS create the loss CSV at script start
+    run_dir = out_dir / _run_dir_name(args.epochs, args.batch_size, args.max_sequences_per_study)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] Run dir: {run_dir}")
+
+    # ALWAYS create the loss CSV at script start (inside run_dir)
     loss_log_path = _init_loss_logger(
-        out_dir=out_dir,
+        run_dir=run_dir,
         epochs=args.epochs,
         batch_size=args.batch_size,
         max_sequences_per_study=args.max_sequences_per_study,
     )
     print(f"[INFO] Loss CSV: {loss_log_path}")
 
+    # Show the exact checkpoint path up front
+    print(f"[INFO] Rolling checkpoint path: {run_dir / 'last.pt'}")
+
     model.train()
     step = 0
-
     ema = None
     ema_beta = 0.98
 
@@ -554,7 +587,6 @@ def train(args):
 
         for batch in pbar:
             if len(batch["text"]) == 0:
-                # nothing kept by collate
                 continue
 
             _, _, logits = model(
@@ -595,19 +627,13 @@ def train(args):
 
             pbar.set_postfix(loss=loss_val, loss_ema=float(ema), bs=len(batch["text"]))
 
-            if args.save_every > 0 and step % args.save_every == 0:
-                torch.save(
-                    {"step": step, "epoch": epoch + 1, "model_state": model.state_dict(), "opt_state": opt.state_dict()},
-                    out_dir / f"checkpoint_step_{step}.pt",
-                )
-
-        torch.save(
-            {"step": step, "epoch": epoch + 1, "model_state": model.state_dict(), "opt_state": opt.state_dict()},
-            out_dir / f"checkpoint_epoch_{epoch+1}.pt",
-        )
+        # Efficient checkpointing: overwrite ONLY last.pt
+        _save_last_checkpoint(run_dir=run_dir, model=model, opt=opt, step=step, epoch=epoch + 1)
 
     print("[INFO] Training complete.")
+    print(f"[INFO] Run dir: {run_dir}")
     print(f"[INFO] Loss CSV saved at: {loss_log_path}")
+    print(f"[INFO] Final rolling checkpoint saved at: {run_dir / 'last.pt'}")
 
 
 def build_argparser():
@@ -645,7 +671,6 @@ def build_argparser():
     ap.add_argument("--grad_clip", type=float, default=1.0)
 
     ap.add_argument("--out_dir", type=str, default="./checkpoints")
-    ap.add_argument("--save_every", type=int, default=0)
     ap.add_argument("--keep_missing_reports", action="store_true")
 
     ap.add_argument(

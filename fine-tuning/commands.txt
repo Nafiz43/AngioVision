@@ -5,7 +5,7 @@ python3 custom_framework_train.py \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
   --batch_size 16 \
-  --epochs 10 \
+  --epochs 100 \
   --num_workers 8 \
   --frame_chunk_size 32 \
   --max_sequences_per_study 1\
