@@ -1,0 +1,127 @@
+---
+config:
+  layout: dagre
+---
+flowchart LR
+  %% =========================
+  %% DATA: INPUTS
+  %% =========================
+  subgraph Study["Study (One Report)"]
+    direction LR
+    Start["Study Input"]
+    VisualFrames["Visual Frames"]
+    TextualReports["Textual Reports"]
+  end
+
+  %% =========================
+  %% VISION PATH: SEQUENCES -> ViT -> FRAME CLS -> + TIME EMB -> POOL -> STUDY FEAT
+  %% =========================
+  subgraph Sequences["Frame Sequences (Ordered)"]
+    direction TB
+    S1["Sequence 1<br>(DICOM)<br>📊 Ordered Frames"]
+    S2["Sequence 2<br>(DICOM)<br>📊 Ordered Frames"]
+    Sdots["..."]
+    SN["Sequence N<br>(DICOM)<br>📊 Ordered Frames"]
+  end
+
+  subgraph VisionEncoder["Shared Vision Encoder (Trainable)"]
+    direction TB
+    VE["ViT (shared across sequences)<br>CLS per frame"]
+  end
+
+  subgraph Temporal["Temporal Awareness (Trainable)"]
+    direction TB
+    PosID["Frame Index<br>(0..T-1)"]
+    TimeEmb["Learnable Time Embedding<br>e(t)"]
+    AddTime["Add: CLS + e(t)"]
+  end
+
+  subgraph Pooling["Pooling (Order-aware via time emb)"]
+    direction TB
+    FramePool["Pool across frames<br>(max/mean/logsumexp)"]
+    SeqFeat["Sequence Feature"]
+    SeqPool["Pool across sequences<br>(max/mean/logsumexp)"]
+    StudyFeat["Study Visual Feature"]
+  end
+
+  %% =========================
+  %% TEXT PATH: REPORT -> BERT -> TEXT FEAT
+  %% =========================
+  subgraph TextPath["Text Path"]
+    direction TB
+    LLM["BERT<br>(Frozen)"]
+    TextFeatures["Text Features"]
+  end
+
+  %% =========================
+  %% CLIP OBJECTIVE
+  %% =========================
+  subgraph Objective["Contrastive Objective"]
+    direction TB
+    CLIP["Contrastive Training<br>(CLIP Loss)"]
+    Output["Final Output"]
+  end
+
+  %% =========================
+  %% EDGES
+  %% =========================
+  Start --> VisualFrames
+  Start --> TextualReports
+
+  VisualFrames --> Sequences
+  TextualReports --> LLM
+  LLM --> TextFeatures
+
+  S1 --> VE
+  S2 --> VE
+  SN --> VE
+
+  VE --> PosID
+  PosID --> TimeEmb
+  VE --> AddTime
+  TimeEmb --> AddTime
+
+  AddTime --> FramePool
+  FramePool --> SeqFeat
+  SeqFeat --> SeqPool
+  SeqPool --> StudyFeat
+
+  StudyFeat --> CLIP
+  TextFeatures --> CLIP
+  CLIP --> Output
+
+  %% =========================
+  %% STYLES
+  %% =========================
+  Start:::data
+  VisualFrames:::data
+  TextualReports:::data
+
+  S1:::data
+  S2:::data
+  Sdots:::dots
+  SN:::data
+
+  VE:::trainable
+
+  PosID:::process
+  TimeEmb:::trainable
+  AddTime:::process
+
+  FramePool:::process
+  SeqFeat:::process
+  SeqPool:::process
+  StudyFeat:::process
+
+  LLM:::frozen
+  TextFeatures:::process
+
+  CLIP:::clip
+  Output:::data
+
+  classDef trainable fill:#90EE90,stroke:#2E8B57,stroke-width:3px
+  classDef frozen fill:#FFB6C1,stroke:#C71585,stroke-width:3px
+  classDef data fill:#87CEEB,stroke:#4682B4,stroke-width:2px
+  classDef process fill:#FFE4B5,stroke:#FF8C00,stroke-width:2px
+  classDef dots fill:#F0F0F0,stroke:#808080,stroke-width:1px,stroke-dasharray: 3 3
+  classDef clip fill:#DDA0DD,stroke:#8B008B,stroke-width:3px

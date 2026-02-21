@@ -1,0 +1,38 @@
+flowchart TB
+ subgraph SS["Search Strategy"]
+    direction TB
+        LIMITS["Limits Applied<br>Study type: peer-reviewed full papers (arXiv included as grey literature)<br>Language: English · Time window: 2000 to present<br>Population: human patients or imaging phantoms"]
+        STR@{ label: "Core Boolean Query<br><b>(angiograph* OR fluoroscop* OR 'digital subtraction angiography' OR DSA)</b><br>AND <b>(sequence* OR video OR frame* OR time-series OR temporal)</b><br>AND <b>(processing OR enhancement OR denois* OR subtraction OR registration</b><br><b>OR motion OR segmentation OR detection OR classification OR localization)</b><br>AND <b>('deep learning' OR 'machine learning' OR CNN OR transformer OR U-Net OR GAN)</b>" }
+        DB["Databases Searched<br>PubMed/MEDLINE · IEEE Xplore · Scopus<br>Web of Science · Embase · Google Scholar"]
+  end
+ subgraph CR["Inclusion and Exclusion Criteria"]
+    direction TB
+        EX["Exclusion Criteria<br>— Not angiographic sequences (e.g., CT/MRI only; single static images without temporal component)<br>— No computational method (clinical narrative or commentary only)<br>— No evaluation reported or insufficient detail to extract the approach<br>— Abstract-only or conference poster without full methods section<br>— Non-English language publication"]
+        IN["Inclusion Criteria<br>— Angiographic image sequences (DSA or fluoroscopic): multiple frames with temporal structure<br>— Addresses a computational processing task: image quality enhancement, artifact reduction,<br>subtraction, registration or motion correction, vessel segmentation,<br>detection, localization, classification, or outcome prediction from sequences<br>— Method described with sufficient detail to extract inputs, outputs, and pipeline<br>— Reports quantitative evaluation with metrics and a defined validation design"]
+  end
+    A["Identification — Database Search<br><b>PubMed/MEDLINE · IEEE Xplore · Scopus</b><br><b>Web of Science · Embase · Google Scholar</b><br>(N_db = N_*)"] --> C["Deduplication<br>Duplicate records removed<br>(N_dup = N_*)"]
+    B["Identification — Additional Sources<br><b>Backward and forward citation chasing</b><br><b>Snowballing · Hand search of key venues</b><br>(N_other = N_*)"] --> C
+    C --> D["Title and Abstract Screening<br>Records screened<br>(N_screened = N_*)"]
+    D --> E["Excluded at Title/Abstract Stage<br>(N_excl_TA = N_*)<br>— Wrong modality or task<br>— No computational method described<br>— Single static frame; no temporal component<br>— Non-peer-reviewed or abstract-only<br>— Non-English language"] & F["Full-Text Eligibility Assessment<br>(N_fulltext = N_*)"]
+    F --> G["Excluded at Full-Text Stage<br>(N_excl_FT = N_*)<br>— Not angiographic sequences<br>— Insufficient methodological detail<br>— No evaluation or unusable evidence<br>— Duplicate or superseded publication<br>— Full text unavailable"] & H["Included in Qualitative Synthesis<br>(N_included = N_*)"]
+    H --> I["Included in Quantitative Synthesis<br>Meta-analysis, if applicable<br>(N_meta = N_*)"]
+    A -.-> SS
+    D -.-> CR
+    F -.-> CR
+
+    STR@{ shape: rect}
+     A:::identify
+     B:::identify
+     C:::dedup
+     D:::screen
+     E:::exclude
+     F:::screen
+     G:::exclude
+     H:::include
+     I:::meta
+    classDef identify fill:#1e3a5f,stroke:#2e6da4,color:#ffffff
+    classDef dedup fill:#2c2c5e,stroke:#5c5ca8,color:#ffffff
+    classDef screen fill:#1a4732,stroke:#2e8b57,color:#ffffff
+    classDef exclude fill:#6b1f1f,stroke:#c0392b,color:#ffffff
+    classDef include fill:#1a4a4a,stroke:#1abc9c,color:#ffffff
+    classDef meta fill:#4a3000,stroke:#d4a017,color:#ffffff
