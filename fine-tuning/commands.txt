@@ -106,3 +106,104 @@ python3 /data/Deep_Angiography/AngioVision/fine-tuning/custom_framework_train.py
   --pooling logsumexp \
   --num_workers 8 \
   --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints
+
+
+  python3 /data/Deep_Angiography/AngioVision/fine-tuning/custom_framework_train_timeaware.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 10 \
+  --batch_size 2 \
+  --lr 1e-4 \
+  --frame_chunk_size 16 \
+  --max_sequences_per_study 5 \
+  --pooling logsumexp \
+  --num_workers 8 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints
+
+---------------------------------------------------------------------------------------------------
+
+  python3 custom_framework_train_2.py \
+   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv  \
+   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed  \
+   --epochs 6  \
+   --num_workers 8  \
+   --max_sequences_per_study 1 \
+   --pooling logsumexp  \
+   --batch_size 16  \
+   --grad_accum 8 \
+   --frame_chunk_size 8  \
+   --amp   \
+   --vit_grad_ckpt  \
+   --vit_image_size 224
+
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/6_16_1/last.pt\
+     --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch6.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 8   --pooling logsumexp
+
+python3 calculate_score.py --pred_path /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch6.csv
+python3 plot_loss.py --source_path /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/6_16_1/6_16_1_loss.csv
+
+
+
+python3 custom_framework_train_2.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 7 \
+  --num_workers 8 \
+  --max_sequences_per_study 1 \
+  --max_frames_per_sequence 64 \
+  --pooling logsumexp \
+  --batch_size 1 \
+  --grad_accum 8 \
+  --frame_chunk_size 8 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_image_size 224
+  --freeze_text
+
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/6_1_8/last.pt\
+     --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch6.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 8   --pooling logsumexp
+
+python3 calculate_score.py --pred_path /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch7.csv
+python3 plot_loss.py --source_path /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/7_1_1/7_1_1_loss.csv
+
+
+
+
+python3 custom_framework_train_2.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 2 \
+  --num_workers 8 \
+  --max_frames_per_sequence 64 \
+  --pooling logsumexp \
+  --batch_size 1 \
+  --grad_accum 8 \
+  --frame_chunk_size 8 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_image_size 224
+  --freeze_text 
+  --freeze_vision
+
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/2_1_None/last.pt\
+     --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch2.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 8   --pooling logsumexp
+
+python3 calculate_score.py --pred_path /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch7.csv
+python3 plot_loss.py --source_path /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/2_1_None/2_1_None_loss.csv
+

@@ -21,7 +21,6 @@ def generate_frame_stats(root_dir, output_csv):
             ]
 
             if not frames_dirs:
-                # No frames directory found
                 rows.append([
                     outer_dir.name,
                     inner_dir.name,
@@ -41,6 +40,9 @@ def generate_frame_stats(root_dir, output_csv):
                     frame_count
                 ])
 
+    # 🔥 Sort by number_of_frames (index 2) in descending order
+    rows.sort(key=lambda x: x[2], reverse=True)
+
     # Write CSV
     output_csv = Path(output_csv)
     with output_csv.open("w", newline="", encoding="utf-8") as f:
@@ -58,5 +60,6 @@ def generate_frame_stats(root_dir, output_csv):
 # -----------------------------
 generate_frame_stats(
     root_dir="/data/Deep_Angiography/DICOM_Sequence_Processed",
-    output_csv="/data/Deep_Angiography/DICOM_Sequence_Processed/frame_statistics.csv"
+    output_csv="/data/Deep_Angiography/DICOM-metadata-stats/frame_statistics.csv"
 )
+
