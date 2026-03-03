@@ -168,9 +168,9 @@ python3 custom_framework_train_2.py \
   --freeze_text
 
 python3 custom_framework_validate.py \
-  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/6_1_8/last.pt\
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/7_1_1/last.pt\
      --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
-      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch6.csv \
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch7.csv \
         --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
          --device cuda   --frame_chunk_size 8   --pooling logsumexp
 

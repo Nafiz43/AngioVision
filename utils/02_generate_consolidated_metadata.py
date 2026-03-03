@@ -8,10 +8,14 @@ for files named: metadata.csv
 
 Supports TWO metadata.csv formats:
 1) Wide format (columns):
-     StudyInstanceUID, SOPInstanceUID, AccessionNumber, ContentDate (optional)
+     StudyInstanceUID, SOPInstanceUID, AccessionNumber,
+     SeriesDate (optional), AcquisitionTime (optional), ContentDate (optional)
 2) Row-wise key/value format (rows):
      Information, Value
-     where Information ∈ {StudyInstanceUID, SOPInstanceUID, AccessionNumber, ContentDate}
+     where Information ∈ {
+        StudyInstanceUID, SOPInstanceUID, AccessionNumber,
+        SeriesDate, AcquisitionTime, ContentDate
+     }
 
 Outputs:
   /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv
@@ -19,9 +23,12 @@ Outputs:
 Columns:
   StudyInstanceUID, AccessionNumber, Number of Instances, SOPInstanceUIDs
 
-NEW REQUIREMENT:
-  SOPInstanceUIDs must be ordered by ascending ContentDate per study.
-  If ContentDate is missing/unparseable for a SOP, it is placed at the end (ties broken by SOPInstanceUID).
+SORTING REQUIREMENT (UPDATED):
+  SOPInstanceUIDs must be ordered by ascending (SeriesDate, AcquisitionTime) per study.
+  - If SeriesDate is missing/unparseable => that SOP goes to the end.
+  - If AcquisitionTime is missing/unparseable => that SOP goes after those with time (same date).
+  - If both missing, falls back to ContentDate (if available), else goes to the end.
+  - Final tie-breaker: SOPInstanceUID lexicographic.
 
 Also outputs:
   <same-dir-as-out>/unmatched_SOPInstanceUIDs.csv
@@ -33,6 +40,7 @@ Definition of "unmatched":
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
@@ -49,7 +57,13 @@ TARGET_NAME = "metadata.csv"
 STUDY_KEY = "StudyInstanceUID"
 SOP_KEY = "SOPInstanceUID"
 ACCESSION_KEY = "AccessionNumber"
+
+# Existing optional
 CONTENTDATE_KEY = "ContentDate"
+
+# NEW optional keys you mentioned
+SERIESDATE_KEY = "SeriesDate"
+ACQTIME_KEY = "AcquisitionTime"
 
 
 def _norm_str(x) -> str:
@@ -61,20 +75,20 @@ def _norm_str(x) -> str:
     return s
 
 
-def _parse_content_date_to_int(x) -> Optional[int]:
+def _parse_date_to_int(x) -> Optional[int]:
     """
-    Convert ContentDate to an int YYYYMMDD for sorting.
-    Accepts common representations:
+    Convert date to int YYYYMMDD for sorting.
+    Accepts:
       - 'YYYYMMDD'
       - 'YYYY-MM-DD'
-      - timestamps parseable by pandas
+      - any pandas-parseable date string
     Returns None if missing/unparseable.
     """
     s = _norm_str(x)
     if not s:
         return None
 
-    # Fast path: 8-digit date
+    # Fast path: 8-digit date (DICOM style)
     if len(s) == 8 and s.isdigit():
         try:
             y = int(s[0:4])
@@ -85,11 +99,98 @@ def _parse_content_date_to_int(x) -> Optional[int]:
         except Exception:
             pass
 
-    # General parse
     dt = pd.to_datetime(s, errors="coerce", utc=False)
     if pd.isna(dt):
         return None
     return int(dt.strftime("%Y%m%d"))
+
+
+_TIME_DIGITS_RE = re.compile(r"^\d{2,6}(\.\d+)?$")
+
+
+def _parse_time_to_int(x) -> Optional[int]:
+    """
+    Convert time to an integer for sorting.
+    Supports common DICOM-ish times:
+      - 'HHMMSS'
+      - 'HHMMSS.ffffff'
+      - 'HH:MM:SS'
+      - 'HH:MM:SS.ffffff'
+      - 'HHMM' (treated as HHMM00)
+      - 'HH' (treated as HH0000)
+
+    Returns microseconds-from-midnight as int, or None if missing/unparseable.
+    """
+    s = _norm_str(x)
+    if not s:
+        return None
+
+    # Normalize separators
+    s2 = s.strip()
+
+    # Case 1: Contains ':' -> parse with pandas
+    if ":" in s2:
+        dt = pd.to_datetime(s2, errors="coerce")
+        if pd.isna(dt):
+            return None
+        # dt is a Timestamp with a date; use time component
+        return (
+            int(dt.hour) * 3600 * 1_000_000
+            + int(dt.minute) * 60 * 1_000_000
+            + int(dt.second) * 1_000_000
+            + int(dt.microsecond)
+        )
+
+    # Case 2: DICOM style digits, possibly fractional
+    # Strip anything non-digit/non-dot (just in case)
+    s2 = re.sub(r"[^0-9.]", "", s2)
+    if not s2:
+        return None
+
+    # Allow HH / HHMM / HHMMSS / HHMMSS.ffffff
+    if not _TIME_DIGITS_RE.match(s2):
+        # last attempt: pandas
+        dt = pd.to_datetime(s, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return (
+            int(dt.hour) * 3600 * 1_000_000
+            + int(dt.minute) * 60 * 1_000_000
+            + int(dt.second) * 1_000_000
+            + int(dt.microsecond)
+        )
+
+    # Split fractional part
+    if "." in s2:
+        main, frac = s2.split(".", 1)
+        frac = (frac[:6]).ljust(6, "0")  # microseconds
+        try:
+            micros = int(frac)
+        except Exception:
+            micros = 0
+    else:
+        main = s2
+        micros = 0
+
+    # Pad main to HHMMSS
+    if len(main) == 2:      # HH
+        main = main + "0000"
+    elif len(main) == 4:    # HHMM
+        main = main + "00"
+    elif len(main) == 6:    # HHMMSS
+        pass
+    else:
+        return None
+
+    try:
+        hh = int(main[0:2])
+        mm = int(main[2:4])
+        ss = int(main[4:6])
+        if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
+            return None
+        return hh * 3600 * 1_000_000 + mm * 60 * 1_000_000 + ss * 1_000_000 + micros
+    except Exception:
+        return None
 
 
 def _guess_kv_columns(df: pd.DataFrame) -> Optional[Tuple[str, str]]:
@@ -108,14 +209,24 @@ def _guess_kv_columns(df: pd.DataFrame) -> Optional[Tuple[str, str]]:
 def _extract_entries_from_wide(df: pd.DataFrame, src_path: str) -> List[Dict[str, str]]:
     """
     Wide format: expect SOPInstanceUID column at minimum.
-    We also capture optional StudyInstanceUID, AccessionNumber, ContentDate.
+    We also capture optional StudyInstanceUID, AccessionNumber, SeriesDate, AcquisitionTime, ContentDate.
     """
     if SOP_KEY not in df.columns:
         return []
 
-    cols_to_take = [c for c in [STUDY_KEY, SOP_KEY, ACCESSION_KEY, CONTENTDATE_KEY] if c in df.columns]
-    sub = df[cols_to_take].copy()
+    cols_to_take = [
+        c for c in [
+            STUDY_KEY,
+            SOP_KEY,
+            ACCESSION_KEY,
+            SERIESDATE_KEY,
+            ACQTIME_KEY,
+            CONTENTDATE_KEY,
+        ]
+        if c in df.columns
+    ]
 
+    sub = df[cols_to_take].copy()
     for c in sub.columns:
         sub[c] = sub[c].map(_norm_str)
 
@@ -130,6 +241,8 @@ def _extract_entries_from_wide(df: pd.DataFrame, src_path: str) -> List[Dict[str
                 STUDY_KEY: r.get(STUDY_KEY, ""),
                 SOP_KEY: r.get(SOP_KEY, ""),
                 ACCESSION_KEY: r.get(ACCESSION_KEY, ""),
+                SERIESDATE_KEY: r.get(SERIESDATE_KEY, ""),
+                ACQTIME_KEY: r.get(ACQTIME_KEY, ""),
                 CONTENTDATE_KEY: r.get(CONTENTDATE_KEY, ""),
                 "SourceMetadataPath": src_path,
             }
@@ -140,7 +253,8 @@ def _extract_entries_from_wide(df: pd.DataFrame, src_path: str) -> List[Dict[str
 def _extract_entries_from_rowwise_kv(df: pd.DataFrame, src_path: str) -> List[Dict[str, str]]:
     """
     Row-wise KV format: expect two columns like (Information, Value) or any 2-col file.
-    We look for keys StudyInstanceUID, SOPInstanceUID, AccessionNumber, ContentDate.
+    We look for keys:
+      StudyInstanceUID, SOPInstanceUID, AccessionNumber, SeriesDate, AcquisitionTime, ContentDate.
     """
     kv = _guess_kv_columns(df)
     if not kv:
@@ -148,7 +262,6 @@ def _extract_entries_from_rowwise_kv(df: pd.DataFrame, src_path: str) -> List[Di
 
     key_col, val_col = kv
     tmp = df[[key_col, val_col]].copy()
-
     tmp[key_col] = tmp[key_col].map(_norm_str)
     tmp[val_col] = tmp[val_col].map(_norm_str)
 
@@ -160,6 +273,8 @@ def _extract_entries_from_rowwise_kv(df: pd.DataFrame, src_path: str) -> List[Di
     study_uid = info.get(STUDY_KEY, "")
     sop_uid = info.get(SOP_KEY, "")
     accession = info.get(ACCESSION_KEY, "")
+    series_date = info.get(SERIESDATE_KEY, "")
+    acq_time = info.get(ACQTIME_KEY, "")
     content_date = info.get(CONTENTDATE_KEY, "")
 
     if not sop_uid:
@@ -170,6 +285,8 @@ def _extract_entries_from_rowwise_kv(df: pd.DataFrame, src_path: str) -> List[Di
             STUDY_KEY: study_uid,
             SOP_KEY: sop_uid,
             ACCESSION_KEY: accession,
+            SERIESDATE_KEY: series_date,
+            ACQTIME_KEY: acq_time,
             CONTENTDATE_KEY: content_date,
             "SourceMetadataPath": src_path,
         }
@@ -214,9 +331,9 @@ def main() -> int:
     # For counting + accession aggregation
     study_to_accession: dict[str, set[str]] = defaultdict(set)
 
-    # NEW: per-study SOP ordering by ContentDate
-    # study -> sop -> best_date_int (min date when multiple seen)
-    study_to_sop_date: dict[str, dict[str, Optional[int]]] = defaultdict(dict)
+    # Per-study ordering info:
+    # study -> sop -> (series_date_int, acq_time_int, content_date_int)
+    study_to_sop_sortinfo: dict[str, dict[str, Tuple[Optional[int], Optional[int], Optional[int]]]] = defaultdict(dict)
 
     # Unmatched SOPs (SOP present but Study missing)
     unmatched_rows: List[Dict[str, str]] = []
@@ -242,8 +359,15 @@ def main() -> int:
                 study_uid = _norm_str(e.get(STUDY_KEY, ""))
                 sop_uid = _norm_str(e.get(SOP_KEY, ""))
                 accession = _norm_str(e.get(ACCESSION_KEY, ""))
+
+                series_date_raw = _norm_str(e.get(SERIESDATE_KEY, ""))
+                acq_time_raw = _norm_str(e.get(ACQTIME_KEY, ""))
                 content_date_raw = _norm_str(e.get(CONTENTDATE_KEY, ""))
-                content_date_int = _parse_content_date_to_int(content_date_raw)
+
+                series_date_int = _parse_date_to_int(series_date_raw)
+                acq_time_int = _parse_time_to_int(acq_time_raw)
+                content_date_int = _parse_date_to_int(content_date_raw)
+
                 src_path = e.get("SourceMetadataPath", "")
 
                 if sop_uid:
@@ -252,19 +376,29 @@ def main() -> int:
                 if study_uid and sop_uid:
                     matched_sop += 1
 
-                    # Track best (earliest) content date per SOP within study
-                    prev = study_to_sop_date[study_uid].get(sop_uid)
-                    if prev is None:
-                        # if prev is None, prefer an actual date if we have it
-                        study_to_sop_date[study_uid][sop_uid] = content_date_int
-                    else:
-                        # prev is an int; keep the minimum
-                        if content_date_int is not None and content_date_int < prev:
-                            study_to_sop_date[study_uid][sop_uid] = content_date_int
+                    prev = study_to_sop_sortinfo[study_uid].get(sop_uid)
+                    new = (series_date_int, acq_time_int, content_date_int)
 
-                    # If we haven't stored this SOP yet and we have a date, store it
-                    if sop_uid not in study_to_sop_date[study_uid]:
-                        study_to_sop_date[study_uid][sop_uid] = content_date_int
+                    # If SOP appears multiple times: keep the "earliest" sort tuple.
+                    # We compare using the same ordering rules we later use for sorting.
+                    if prev is None:
+                        study_to_sop_sortinfo[study_uid][sop_uid] = new
+                    else:
+                        def _cmp_key(t: Tuple[Optional[int], Optional[int], Optional[int]]) -> Tuple[int, int, int, int, int, int]:
+                            sd, at, cd = t
+                            sd_sentinel = 99991231
+                            at_sentinel = 99999999 * 1_000_000  # big microsecond sentinel
+                            cd_sentinel = 99991231
+                            sd_val = sd if sd is not None else sd_sentinel
+                            at_val = at if at is not None else at_sentinel
+                            cd_val = cd if cd is not None else cd_sentinel
+                            sd_miss = 1 if sd is None else 0
+                            at_miss = 1 if at is None else 0
+                            cd_miss = 1 if cd is None else 0
+                            return (sd_val, sd_miss, at_val, at_miss, cd_val, cd_miss)
+
+                        if _cmp_key(new) < _cmp_key(prev):
+                            study_to_sop_sortinfo[study_uid][sop_uid] = new
 
                     if accession:
                         study_to_accession[study_uid].add(accession)
@@ -277,28 +411,37 @@ def main() -> int:
                             {
                                 "SOPInstanceUID": sop_uid,
                                 "AccessionNumber": accession,
+                                "SeriesDate": series_date_raw,
+                                "AcquisitionTime": acq_time_raw,
                                 "ContentDate": content_date_raw,
                                 "SourceMetadataPath": src_path,
                             }
                         )
 
-    # Build consolidated output with SOPs ordered by ContentDate ascending
+    # Build consolidated output with SOPs ordered by (SeriesDate, AcquisitionTime)
     out_rows = []
-    for study_uid in study_to_sop_date.keys():
-        sop_to_date = study_to_sop_date[study_uid]
+    for study_uid in study_to_sop_sortinfo.keys():
+        sop_to_info = study_to_sop_sortinfo[study_uid]
 
-        # Sort key:
-        #   1) content_date_int ascending (None goes last)
-        #   2) SOPInstanceUID lexicographically as tie-breaker
-        def _sop_sort_key(item: Tuple[str, Optional[int]]) -> Tuple[int, int, str]:
-            sop, dt_int = item
-            # Put missing dates last: use a big sentinel
-            sentinel = 99991231
-            dt_val = dt_int if dt_int is not None else sentinel
-            missing_flag = 1 if dt_int is None else 0  # ensures real dates come before missing for same sentinel
-            return (dt_val, missing_flag, sop)
+        def _sop_sort_key(item: Tuple[str, Tuple[Optional[int], Optional[int], Optional[int]]]) -> Tuple[int, int, int, int, int, int, str]:
+            sop, (sd, at, cd) = item
 
-        ordered_sops = [sop for sop, _ in sorted(sop_to_date.items(), key=_sop_sort_key)]
+            sd_sentinel = 99991231
+            at_sentinel = 99999999 * 1_000_000
+            cd_sentinel = 99991231
+
+            sd_val = sd if sd is not None else sd_sentinel
+            at_val = at if at is not None else at_sentinel
+            cd_val = cd if cd is not None else cd_sentinel
+
+            sd_miss = 1 if sd is None else 0
+            at_miss = 1 if at is None else 0
+            cd_miss = 1 if cd is None else 0
+
+            # Order: SeriesDate, AcquisitionTime, ContentDate (fallback), SOP
+            return (sd_val, sd_miss, at_val, at_miss, cd_val, cd_miss, sop)
+
+        ordered_sops = [sop for sop, _info in sorted(sop_to_info.items(), key=_sop_sort_key)]
         accession_list = sorted(study_to_accession.get(study_uid, []))
 
         out_rows.append(
@@ -312,7 +455,7 @@ def main() -> int:
 
     out_df = pd.DataFrame(out_rows)
 
-    # Keep your previous global sorting: most instances first
+    # Global sorting: most instances first
     if not out_df.empty and "Number of Instances" in out_df.columns:
         out_df = out_df.sort_values(by="Number of Instances", ascending=False)
 
@@ -322,13 +465,13 @@ def main() -> int:
     unmatched_csv = OUT_CSV.parent / "unmatched_SOPInstanceUIDs.csv"
     unmatched_df = pd.DataFrame(
         unmatched_rows,
-        columns=["SOPInstanceUID", "AccessionNumber", "ContentDate", "SourceMetadataPath"],
+        columns=["SOPInstanceUID", "AccessionNumber", "SeriesDate", "AcquisitionTime", "ContentDate", "SourceMetadataPath"],
     )
     unmatched_df.to_csv(unmatched_csv, index=False)
 
     print(f"[OK] Found {len(metadata_files)} metadata.csv files")
     print(f"[OK] Parsed {parsed_files_with_entries} metadata.csv files with usable entries")
-    print(f"[OK] Aggregated {len(study_to_sop_date)} studies")
+    print(f"[OK] Aggregated {len(study_to_sop_sortinfo)} studies")
     print(f"[OK] Wrote: {OUT_CSV}")
 
     print(f"[INFO] Total SOPInstanceUIDs seen: {total_sop_seen}")

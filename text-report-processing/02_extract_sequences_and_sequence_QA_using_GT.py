@@ -31,9 +31,9 @@ OUTPUT:
 - One JSON file per report.
 
 USAGE EXAMPLE:
-python extract_sequences_and_sequence_QA_using_GT.py \
+python3 02_extract_sequences_and_sequence_QA_using_GT.py \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
-  --gt_csv /data/Deep_Angiography/DICOM_Sequence_Processed/consolidated_metadata_GT.csv \
+  --gt_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
   --out_dir /data/Deep_Angiography/Reports/Report_List_v01_01_sequences_json \
   --model thewindmom/llama3-med42-8b
 """
