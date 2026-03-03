@@ -122,14 +122,14 @@ python3 /data/Deep_Angiography/AngioVision/fine-tuning/custom_framework_train.py
   --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints
 
 ---------------------------------------------------------------------------------------------------
-
+ 
   python3 custom_framework_train_2.py \
-   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv  \
+   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv  \
    --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
    --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed  \
    --epochs 6  \
    --num_workers 8  \
-   --max_sequences_per_study 1 \
+   --max_sequences_per_study 4 \
    --pooling logsumexp  \
    --batch_size 16  \
    --grad_accum 8 \
@@ -139,7 +139,7 @@ python3 /data/Deep_Angiography/AngioVision/fine-tuning/custom_framework_train.py
    --vit_image_size 224
 
 python3 custom_framework_validate.py \
-  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/6_16_1/last.pt\
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/6_16_4/last.pt\
      --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed  \
       --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch6.csv \
         --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
