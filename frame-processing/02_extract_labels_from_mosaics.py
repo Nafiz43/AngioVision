@@ -13,7 +13,16 @@ CSV behavior (FINAL)
 - If CSV exists, new rows are appended
 - Output directory is ALWAYS:
     <base_path>_Output/
+
+python3 02_extract_labels_from_mosaics.py \
+  --base_path /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed \
+  --model qwen3-vl:8b \
+  --mosaic_name mosaic.png \
+  --frames_subdir frames
+  --limit 10
 """
+
+
 
 import argparse
 import base64
@@ -32,19 +41,20 @@ from tqdm import tqdm
 # -----------------------------
 # Questions
 # -----------------------------
-QUESTIONS = [
-    "Which artery is catheterized?",
-    "Is variant anatomy present?",
-    "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
-    "Is there evidence of arterial or venous dissection?",
-    "Is stenosis present in any visualized vessel?",
-    "Is an endovascular stent visible in this sequence?",
+
+QA_QUESTIONS = [
+    "Is there an arterial abnormality in this angiogram? Please state yes or no.",
+    "Is there an acute arterial abnormality in this angiogram? Please state yes or no.",
+    "Is there an acute arterial injury in this angiogram? Please state yes or no.",
+    "Is there a vascular aberrancy demonstrated in this angiogram? Please state yes or no.",
+    "Is there active arterial extravasation in this angiogram? Please state yes or no.",
 ]
 
 # -----------------------------
 # Defaults
 # -----------------------------
-DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
+# DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
+DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed")
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 
 # Default model if user does not pass --model
@@ -181,13 +191,13 @@ def load_mosaics(seq_dirs, base_path, mosaic_name):
 # Main processing loop
 # -----------------------------
 def run_llm(infos, out_path, columns, model, url, timeout, delay):
-    total = len(infos) * len(QUESTIONS)
+    total = len(infos) * len(QA_QUESTIONS)
 
     with tqdm(total=total, desc="Analyzing mosaics", unit="q") as pbar:
         for info in infos:
             images = [b64_image(info.mosaic_path)] if info.ok else []
 
-            for q in QUESTIONS:
+            for q in QA_QUESTIONS:
                 row = {
                     "Timestamp": utc_timestamp(),
                     "Model Name": model,

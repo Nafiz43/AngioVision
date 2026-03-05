@@ -56,7 +56,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from transformers import ViTModel, BertModel, BertTokenizer
-
+# from configs.questions import QA_QUESTIONS
 # -----------------------------
 # HF image processor compatibility
 # -----------------------------
@@ -71,14 +71,6 @@ except Exception:
     _ViTFeatureExtractor = None
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
-QA_QUESTIONS = [
-    "Is variant anatomy present?",
-    "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
-    "Is there evidence of arterial or venous dissection?",
-    "Is stenosis present in any visualized vessel?",
-    "Is an endovascular stent visible in this sequence?",
-]
 
 QA_QUESTIONS = [
     "Is there an arterial abnormality in this angiogram? Please state yes or no.",

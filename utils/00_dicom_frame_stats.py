@@ -33,6 +33,8 @@ def generate_frame_stats(root_dir, output_csv):
         with output_csv.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
+                "outer_dir_name",
+                "inner_dir_name",
                 "number_of_frames",
                 "frames_dir_path",
                 "frames_dir_url"
@@ -51,6 +53,8 @@ def generate_frame_stats(root_dir, output_csv):
         frame_count = count_files_in_dir(frames_dir)
 
         rows.append([
+            outer_dir_name,
+            inner_dir_name,
             frame_count,
             str(frames_dir),
             path_to_file_url(frames_dir),
@@ -64,6 +68,8 @@ def generate_frame_stats(root_dir, output_csv):
     with output_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
+            "outer_dir_name",
+            "inner_dir_name",
             "number_of_frames",
             "frames_dir_path",
             "frames_dir_url"
