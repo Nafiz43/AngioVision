@@ -54,7 +54,7 @@ graph TB
 
 **Inspired by**: 
 - Pang et al. (2023) - "A survey on automatic generation of medical imaging reports based on deep learning" (PMC)
-- Artificial Intelligence Review (2025) - "Automatic radiology report generation with deep learning: a comprehensive review"
+- arXiv (2026) - "arXiv:2602.17112" (https://arxiv.org/abs/2602.17112)
 
 **Key insight**: Training medical image captioning models requires careful data preprocessing, multi-stage encoding (frame→temporal→study), and iterative validation with both NLG and clinical efficacy metrics.
 
@@ -520,7 +520,7 @@ graph TB
 
 2. **Pang, T., Li, P., & Zhao, L. (2023)**. "A survey on automatic generation of medical imaging reports based on deep learning." *Biomedical Engineering Online*. PMC10195007
 
-3. **Artificial Intelligence Review (2025)**. "Automatic radiology report generation with deep learning: a comprehensive review of methods and advances."
+3. **arXiv (2026)**. "arXiv:2602.17112". https://arxiv.org/abs/2602.17112
 
 ### Vision-Language Foundation Models:
 4. **Xu, K., Ba, J., Kiros, R., Cho, K., Courville, A., Salakhutdinov, R., Zemel, R., & Bengio, Y. (2015)**. "Show, Attend and Tell: Neural Image Caption Generation with Visual Attention." *ICML 2015*. https://arxiv.org/abs/1502.03044
