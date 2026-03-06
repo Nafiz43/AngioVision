@@ -10,8 +10,8 @@ Directory layout assumed:
 
 Efficient checkpointing (no validation):
 - Creates a run dir under --out_dir named:
-    {epochs}_{batch_size}_{max_sequences_per_study}
-  where max_sequences_per_study is "None" if not provided.
+    {epochs}_{batch_size}_{max_sequences_per_study}_{max_frames_per_sequence}
+  where max_* are "None" if not provided.
 - Saves ONLY a single rolling checkpoint:
     <run_dir>/last.pt
   which is overwritten during training.
@@ -19,21 +19,23 @@ Efficient checkpointing (no validation):
 Also:
 - Always creates a loss CSV in that run dir.
 - Loss CSV filename encodes ONLY:
-    epochs, batch_size, max_sequences_per_study
+    epochs, batch_size, max_sequences_per_study, max_frames_per_sequence
   in "_" separated format:
-    <epochs>_<batch_size>_<max_sequences_per_study>_loss.csv
+    <epochs>_<batch_size>_<max_sequences_per_study>_<max_frames_per_sequence>_loss.csv
 
-MEMORY-SAFE TRAINING (vision trainable):
-- Mixed precision (AMP) + GradScaler (--amp)
-- Gradient accumulation (--grad_accum) to keep effective batch size without OOM
-- ViT gradient checkpointing (--vit_grad_ckpt) when vision is trainable
-- Streaming frame loading (no giant PIL list kept)
-- Chunked CLIP loss (does NOT materialize full BxB logits tensor)
-- Optional resize into ViT processor (--vit_image_size)
+POST-TRAINING PIPELINE (MANDATORY):
+After training completes, this script ALWAYS runs:
+  1) custom_framework_validate.py
+  2) calculate_score.py
+  3) plot_loss.py
 
-FIX B (requested):
-- Add a hard cap on frames per sequence via --max_frames_per_sequence
-  (uniformly samples frames if sequence has more than the cap)
+using paths derived from run_name:
+  run_name = "{epochs}_{batch_size}_{max_sequences_per_study}_{max_frames_per_sequence}"
+
+Defaults are provided for:
+  --out_dir
+  --output_dir
+  --val_data_dir
 """
 
 from __future__ import annotations
@@ -43,6 +45,8 @@ import ast
 import math
 import argparse
 import csv
+import subprocess
+import sys
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -77,8 +81,8 @@ except Exception:
 def parse_sop_instance_uids(val) -> List[str]:
     """
     Handles:
-    1) CSV-quoted comma-separated string: "uid1,uid2,uid3"
-    2) python literal list/tuple: "['uid1','uid2']" or "('uid1','uid2')"
+    1) CSV-quoted comma-separated string
+    2) python literal list/tuple
     3) NaN/None/empty safely
     """
     if val is None:
@@ -88,23 +92,20 @@ def parse_sop_instance_uids(val) -> List[str]:
 
     s = str(val).strip()
 
-    # Strip wrapping quotes if present
     if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
         s = s[1:-1].strip()
 
     if not s:
         return []
 
-    # Try python-literal if it looks like one
     if s[0] in "[(":
         try:
             parsed = ast.literal_eval(s)
             if isinstance(parsed, (list, tuple)):
                 return [str(x).strip() for x in parsed if str(x).strip()]
         except Exception:
-            pass  # fall back to comma split
+            pass
 
-    # Comma-separated
     return [tok.strip() for tok in re.split(r"\s*,\s*", s) if tok.strip()]
 
 
@@ -129,25 +130,22 @@ def find_frame_files_for_sop(base_frames_dir: Path, acc: str, sop_uid: str) -> L
     Safe search order:
       1) BASE/acc/sop/frames/*.img
       2) BASE/acc/sop/*.img
-      3) BASE/acc/sop/<one-level-subdir>/*.img  (fallback)
-      4) BASE/*/acc/sop/frames/*.img            (constrained fallback)
+      3) BASE/acc/sop/<one-level-subdir>/*.img
+      4) BASE/*/acc/sop/frames/*.img
     """
     acc = str(acc).strip()
     sop_uid = str(sop_uid).strip()
 
-    # 1) expected path
     sop_dir = base_frames_dir / acc / sop_uid
     frames_dir = sop_dir / "frames"
     imgs = _list_images_in_dir(frames_dir)
     if imgs:
         return imgs
 
-    # 2) sometimes images are directly under sop dir
     imgs = _list_images_in_dir(sop_dir)
     if imgs:
         return imgs
 
-    # 3) one-level nested fallback
     if sop_dir.exists() and sop_dir.is_dir():
         nested_imgs: List[Path] = []
         for child in sop_dir.iterdir():
@@ -156,7 +154,6 @@ def find_frame_files_for_sop(base_frames_dir: Path, acc: str, sop_uid: str) -> L
         if nested_imgs:
             return sorted(nested_imgs)
 
-    # 4) constrained glob fallback
     try:
         pattern = f"*/{acc}/{sop_uid}/frames"
         for candidate in base_frames_dir.glob(pattern):
@@ -177,13 +174,6 @@ class StudyDataset(Dataset):
     Each item returns:
       - sequences: List[List[Path]]  (list of sequences; each sequence is list of frame image paths)
       - text: report string
-
-    Meta CSV expected columns:
-      - "Anon Acc #"
-      - "SOPInstanceUIDs"
-    Reports CSV expected columns:
-      - "Anon Acc #"
-      - "radrpt" (or override)
     """
 
     def __init__(
@@ -196,7 +186,7 @@ class StudyDataset(Dataset):
         sop_col: str = "SOPInstanceUIDs",
         min_frames_per_sequence: int = 1,
         max_sequences_per_study: Optional[int] = None,
-        max_frames_per_sequence: Optional[int] = None,  # <-- FIX B
+        max_frames_per_sequence: Optional[int] = None,
         drop_missing_reports: bool = True,
     ):
         self.meta = pd.read_csv(meta_csv)
@@ -208,10 +198,9 @@ class StudyDataset(Dataset):
         self.sop_col = sop_col
         self.min_frames_per_sequence = min_frames_per_sequence
         self.max_sequences_per_study = max_sequences_per_study
-        self.max_frames_per_sequence = max_frames_per_sequence  # <-- FIX B
+        self.max_frames_per_sequence = max_frames_per_sequence
         self.drop_missing_reports = drop_missing_reports
 
-        # map acc -> report text
         self.report_map: Dict[str, str] = {}
         for _, r in self.reports.iterrows():
             acc = str(r.get(self.anon_col, "")).strip()
@@ -244,32 +233,20 @@ class StudyDataset(Dataset):
         for sop in sop_uids:
             frame_files = find_frame_files_for_sop(self.base_frames_dir, acc, sop)
 
-            # -------------------------------
-            # FIX B: hard cap frames/sequence
-            # -------------------------------
             if self.max_frames_per_sequence is not None and len(frame_files) > self.max_frames_per_sequence:
-                # Uniform sampling across the full sequence
-                idxs = torch.linspace(
-                    0, len(frame_files) - 1, steps=self.max_frames_per_sequence
-                ).long().tolist()
+                idxs = torch.linspace(0, len(frame_files) - 1, steps=self.max_frames_per_sequence).long().tolist()
                 frame_files = [frame_files[i] for i in idxs]
-            # -------------------------------
 
             if len(frame_files) >= self.min_frames_per_sequence:
                 sequences.append(frame_files)
 
         text = self.report_map.get(acc, "")
-
         return {"acc": acc, "sequences": sequences, "text": text}
 
 
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     kept = [b for b in batch if b["text"] and isinstance(b["sequences"], list) and len(b["sequences"]) > 0]
-    return {
-        "acc": [b["acc"] for b in kept],
-        "sequences": [b["sequences"] for b in kept],
-        "text": [b["text"] for b in kept],
-    }
+    return {"acc": [b["acc"] for b in kept], "sequences": [b["sequences"] for b in kept], "text": [b["text"] for b in kept]}
 
 
 # ------------------------------------------------------------
@@ -279,9 +256,6 @@ POOL_CHOICES = ("max", "mean", "logsumexp")
 
 
 def pool_stack(x: torch.Tensor, mode: str) -> torch.Tensor:
-    """
-    x: (N, D) tensor -> (D,)
-    """
     if x.ndim != 2:
         raise ValueError(f"pool_stack expects (N,D), got {tuple(x.shape)}")
     if x.size(0) == 0:
@@ -368,16 +342,13 @@ class PooledCLIP(nn.Module):
         if mode == "max":
             running = torch.maximum(running, chunk_feats.max(dim=0).values)
             return running, aux
-
         if mode == "mean":
             running = running + chunk_feats.sum(dim=0)
             aux = aux + chunk_feats.size(0)
             return running, aux
-
         if mode == "logsumexp":
             running = torch.logaddexp(running, torch.logsumexp(chunk_feats, dim=0))
             return running, aux
-
         raise ValueError(f"Unknown pooling mode: {mode}")
 
     def _finalize_running(self, running, aux, mode: str) -> torch.Tensor:
@@ -423,11 +394,7 @@ class PooledCLIP(nn.Module):
                 continue
 
             if vit_image_size is not None:
-                inputs = processor(
-                    images=chunk_imgs,
-                    return_tensors="pt",
-                    size={"height": vit_image_size, "width": vit_image_size},
-                )
+                inputs = processor(images=chunk_imgs, return_tensors="pt", size={"height": vit_image_size, "width": vit_image_size})
             else:
                 inputs = processor(images=chunk_imgs, return_tensors="pt")
 
@@ -435,7 +402,7 @@ class PooledCLIP(nn.Module):
 
             with vit_ctx:
                 out = self.vit(pixel_values=pixel_values)
-                frame_emb = out.last_hidden_state[:, 0, :]  # CLS
+                frame_emb = out.last_hidden_state[:, 0, :]
                 running, aux = self._update_running(running, aux, frame_emb, pooling)
 
             del pixel_values, out, frame_emb, inputs, chunk_imgs
@@ -483,13 +450,7 @@ class PooledCLIP(nn.Module):
         study_visuals = torch.stack(study_visuals, dim=0)
         image_embeds = F.normalize(self.vision_proj(study_visuals), dim=-1)
 
-        tok = tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        ).to(device)
+        tok = tokenizer(texts, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
 
         bert_ctx = torch.no_grad() if self._bert_is_frozen() else torch.enable_grad()
         with bert_ctx:
@@ -502,12 +463,7 @@ class PooledCLIP(nn.Module):
         return image_embeds, text_embeds, logit_scale
 
 
-def clip_loss_chunked(
-    image_embeds: torch.Tensor,
-    text_embeds: torch.Tensor,
-    logit_scale: torch.Tensor,
-    chunk: int = 4,
-) -> torch.Tensor:
+def clip_loss_chunked(image_embeds: torch.Tensor, text_embeds: torch.Tensor, logit_scale: torch.Tensor, chunk: int = 4) -> torch.Tensor:
     B = image_embeds.size(0)
     device = image_embeds.device
     targets = torch.arange(B, device=device)
@@ -534,19 +490,21 @@ def clip_loss_chunked(
 # ------------------------------------------------------------
 # Run-dir + loss CSV naming/logging
 # ------------------------------------------------------------
-def _run_dir_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int]) -> str:
+def _run_dir_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int], max_frames_per_sequence: Optional[int]) -> str:
     ms = "None" if max_sequences_per_study is None else str(max_sequences_per_study)
-    return f"{epochs}_{batch_size}_{ms}"
+    mf = "None" if max_frames_per_sequence is None else str(max_frames_per_sequence)
+    return f"{epochs}_{batch_size}_{ms}_{mf}"
 
 
-def _loss_csv_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int]) -> str:
+def _loss_csv_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int], max_frames_per_sequence: Optional[int]) -> str:
     ms = "None" if max_sequences_per_study is None else str(max_sequences_per_study)
-    return f"{epochs}_{batch_size}_{ms}_loss.csv"
+    mf = "None" if max_frames_per_sequence is None else str(max_frames_per_sequence)
+    return f"{epochs}_{batch_size}_{ms}_{mf}_loss.csv"
 
 
-def _init_loss_logger(run_dir: Path, epochs: int, batch_size: int, max_sequences_per_study: Optional[int]) -> Path:
+def _init_loss_logger(run_dir: Path, epochs: int, batch_size: int, max_sequences_per_study: Optional[int], max_frames_per_sequence: Optional[int]) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
-    log_path = run_dir / _loss_csv_name(epochs, batch_size, max_sequences_per_study)
+    log_path = run_dir / _loss_csv_name(epochs, batch_size, max_sequences_per_study, max_frames_per_sequence)
 
     if (not log_path.exists()) or (log_path.stat().st_size == 0):
         with open(log_path, "w", newline="") as f:
@@ -564,16 +522,87 @@ def _append_loss_row(log_path: Path, epoch: int, step: int, batch_size: int, los
 
 def _save_last_checkpoint(run_dir: Path, model: nn.Module, opt: torch.optim.Optimizer, step: int, epoch: int):
     ckpt_path = run_dir / "last.pt"
-    torch.save(
-        {
-            "step": step,
-            "epoch": epoch,
-            "model_state": model.state_dict(),
-            "opt_state": opt.state_dict(),
-        },
-        ckpt_path,
-    )
+    torch.save({"step": step, "epoch": epoch, "model_state": model.state_dict(), "opt_state": opt.state_dict()}, ckpt_path)
     return ckpt_path
+
+
+# ------------------------------------------------------------
+# Subprocess runner helpers (MANDATORY POST-TRAINING PIPELINE)
+# ------------------------------------------------------------
+def _run_subprocess(cmd: List[str]) -> None:
+    print("\n[INFO] Running subprocess:")
+    print("       " + " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
+
+def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Path) -> None:
+    """
+    Always run:
+      1) validate
+      2) calculate_score
+      3) plot_loss
+    """
+    val_data_dir = Path(args.val_data_dir)
+    if not val_data_dir.exists():
+        raise SystemExit(f"[ERROR] Validation data dir does not exist: {val_data_dir}")
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ckpt_path = run_dir / "last.pt"
+    if not ckpt_path.exists():
+        raise SystemExit(f"[ERROR] Checkpoint not found: {ckpt_path}")
+
+    pred_csv = output_dir / f"clip_binary_qa_predictions_{run_name}.csv"
+    err_csv = output_dir / f"clip_binary_qa_errors_{run_name}.csv"
+
+    validate_device = args.validate_device
+    if validate_device is None:
+        validate_device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+
+    # 1) validate
+    validate_cmd = [
+        sys.executable,
+        args.validate_script,
+        "--checkpoint",
+        str(ckpt_path),
+        "--data_dir",
+        str(val_data_dir),
+        "--out_csv",
+        str(pred_csv),
+        "--error_csv",
+        str(err_csv),
+        "--device",
+        str(validate_device),
+        "--frame_chunk_size",
+        str(args.frame_chunk_size),
+        "--pooling",
+        str(args.pooling),
+    ]
+    _run_subprocess(validate_cmd)
+
+    # 2) calculate_score
+    score_cmd = [
+        sys.executable,
+        args.calculate_score_script,
+        "--pred_path",
+        str(pred_csv),
+    ]
+    _run_subprocess(score_cmd)
+
+    # 3) plot_loss
+    plot_cmd = [
+        sys.executable,
+        args.plot_loss_script,
+        "--source_path",
+        str(loss_csv),
+    ]
+    _run_subprocess(plot_cmd)
+
+    print("\n[INFO] Post-training pipeline complete.")
+    print(f"[INFO] Predictions: {pred_csv}")
+    print(f"[INFO] Errors:      {err_csv}")
+    print(f"[INFO] Loss CSV:    {loss_csv}")
 
 
 # ------------------------------------------------------------
@@ -601,7 +630,7 @@ def train(args):
         sop_col=args.sop_col,
         min_frames_per_sequence=args.min_frames_per_sequence,
         max_sequences_per_study=args.max_sequences_per_study,
-        max_frames_per_sequence=args.max_frames_per_sequence,  # <-- FIX B wired in
+        max_frames_per_sequence=args.max_frames_per_sequence,
         drop_missing_reports=not args.keep_missing_reports,
     )
 
@@ -650,7 +679,8 @@ def train(args):
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    run_dir = out_dir / _run_dir_name(args.epochs, args.batch_size, args.max_sequences_per_study)
+    run_name = _run_dir_name(args.epochs, args.batch_size, args.max_sequences_per_study, args.max_frames_per_sequence)
+    run_dir = out_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"[INFO] Run dir: {run_dir}")
 
@@ -659,9 +689,9 @@ def train(args):
         epochs=args.epochs,
         batch_size=args.batch_size,
         max_sequences_per_study=args.max_sequences_per_study,
+        max_frames_per_sequence=args.max_frames_per_sequence,
     )
     print(f"[INFO] Loss CSV: {loss_log_path}")
-
     print(f"[INFO] Rolling checkpoint path: {run_dir / 'last.pt'}")
 
     model.train()
@@ -744,6 +774,9 @@ def train(args):
     print(f"[INFO] Loss CSV saved at: {loss_log_path}")
     print(f"[INFO] Final rolling checkpoint saved at: {run_dir / 'last.pt'}")
 
+    # MANDATORY: always run validate -> score -> plot_loss
+    run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_log_path)
+
 
 def build_argparser():
     ap = argparse.ArgumentParser()
@@ -775,23 +808,28 @@ def build_argparser():
     ap.add_argument("--min_frames_per_sequence", type=int, default=1)
     ap.add_argument("--max_sequences_per_study", type=int, default=None)
 
-    # -------------------------------
-    # FIX B: hard cap frames/sequence
-    # -------------------------------
     ap.add_argument(
         "--max_frames_per_sequence",
         type=int,
         default=None,
         help="If set, uniformly sample at most this many frames per SOP/sequence to reduce memory/time.",
     )
-    # -------------------------------
 
     ap.add_argument("--freeze_vision", action="store_true")
     ap.add_argument("--freeze_text", action="store_true")
 
     ap.add_argument("--grad_clip", type=float, default=1.0)
 
-    ap.add_argument("--out_dir", type=str, default="./checkpoints")
+    # Defaults you asked for (these are used even if you don't pass anything)
+    ap.add_argument("--out_dir", type=str, default="/data/Deep_Angiography/AngioVision/fine-tuning/checkpoints")
+    ap.add_argument("--output_dir", type=str, default="/data/Deep_Angiography/AngioVision/fine-tuning/output")
+    ap.add_argument(
+        "--val_data_dir",
+        type=str,
+        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed",
+        help="Validation data_dir passed to custom_framework_validate.py",
+    )
+
     ap.add_argument("--keep_missing_reports", action="store_true")
 
     ap.add_argument(
@@ -822,6 +860,14 @@ def build_argparser():
     ap.add_argument("--logits_chunk", type=int, default=4, help="Chunk size for CLIP loss to avoid full BxB logits.")
     ap.add_argument("--vit_image_size", type=int, default=None, help="Force processor resize (e.g., 224) to control memory.")
     ap.add_argument("--empty_cache_each_step", action="store_true", help="Call torch.cuda.empty_cache() each step (helps fragmentation).")
+
+    # Script paths (defaults assume same directory / cwd)
+    ap.add_argument("--validate_script", type=str, default="custom_framework_validate.py")
+    ap.add_argument("--calculate_score_script", type=str, default="calculate_score.py")
+    ap.add_argument("--plot_loss_script", type=str, default="plot_loss.py")
+
+    # Optional override, but not required to run (auto-picked if None)
+    ap.add_argument("--validate_device", type=str, default=None, help="Device string for validation (e.g., cuda or cpu). Default: auto.")
 
     return ap
 
