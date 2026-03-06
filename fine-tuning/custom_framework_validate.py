@@ -72,13 +72,14 @@ except Exception:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
-QA_QUESTIONS = [
-    "Is there an arterial abnormality in this angiogram? Please state yes or no.",
-    "Is there an acute arterial abnormality in this angiogram? Please state yes or no.",
-    "Is there an acute arterial injury in this angiogram? Please state yes or no.",
-    "Is there a vascular aberrancy demonstrated in this angiogram? Please state yes or no.",
-    "Is there active arterial extravasation in this angiogram? Please state yes or no.",
-]
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from configs.questions import QA_QUESTIONS
 
 POOL_CHOICES = ("max", "mean", "logsumexp")
 
