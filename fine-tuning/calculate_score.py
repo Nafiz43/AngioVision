@@ -3,7 +3,13 @@
 import pandas as pd
 import sys
 import argparse
-from sklearn.metrics import confusion_matrix, accuracy_score
+from sklearn.metrics import (
+    confusion_matrix,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+)
 
 # ---- Default paths (used if user supplies nothing) ----
 DEFAULT_PRED_PATH = "/data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv"
@@ -123,13 +129,21 @@ def main():
 
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     acc = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
 
     print("\n===== CONFUSION MATRIX =====")
     print(f"TP: {tp}")
     print(f"TN: {tn}")
     print(f"FP: {fp}")
     print(f"FN: {fn}")
-    print(f"\nAccuracy: {acc:.4f}")
+
+    print("\n===== METRICS =====")
+    print(f"Accuracy : {acc:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall   : {recall:.4f}")
+    print(f"F1-score : {f1:.4f}")
 
 
 if __name__ == "__main__":

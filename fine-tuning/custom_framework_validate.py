@@ -470,7 +470,7 @@ def build_argparser():
     ap = argparse.ArgumentParser(description="Run CLIP-style binary QA on sequence-level validation data.")
 
     ap.add_argument("--checkpoint", required=True, type=str)
-    ap.add_argument("--data_dir", required=True, type=str)
+    ap.add_argument("--data_dir", default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed", type=str)
     ap.add_argument("--out_csv", required=True, type=str)
     ap.add_argument("--error_csv", default="", type=str, help="Optional CSV logging skip/errors per sequence dir.")
 
