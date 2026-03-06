@@ -36,6 +36,10 @@ Defaults are provided for:
   --out_dir
   --output_dir
   --val_data_dir
+
+NEW:
+- If <run_dir>/last.pt already exists, training is skipped.
+- The post-training pipeline still runs using the existing checkpoint.
 """
 
 from __future__ import annotations
@@ -553,6 +557,9 @@ def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Pat
     if not ckpt_path.exists():
         raise SystemExit(f"[ERROR] Checkpoint not found: {ckpt_path}")
 
+    if not loss_csv.exists():
+        raise SystemExit(f"[ERROR] Loss CSV not found: {loss_csv}")
+
     pred_csv = output_dir / f"clip_binary_qa_predictions_{run_name}.csv"
     err_csv = output_dir / f"clip_binary_qa_errors_{run_name}.csv"
 
@@ -560,7 +567,6 @@ def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Pat
     if validate_device is None:
         validate_device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
 
-    # 1) validate
     validate_cmd = [
         sys.executable,
         args.validate_script,
@@ -581,7 +587,6 @@ def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Pat
     ]
     _run_subprocess(validate_cmd)
 
-    # 2) calculate_score
     score_cmd = [
         sys.executable,
         args.calculate_score_script,
@@ -590,7 +595,6 @@ def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Pat
     ]
     _run_subprocess(score_cmd)
 
-    # 3) plot_loss
     plot_cmd = [
         sys.executable,
         args.plot_loss_script,
@@ -620,6 +624,45 @@ def train(args):
     frame_pooling = args.frame_pooling if args.frame_pooling else pooling_default
     sequence_pooling = args.sequence_pooling if args.sequence_pooling else pooling_default
     print(f"[INFO] pooling: default={pooling_default}, frame={frame_pooling}, sequence={sequence_pooling}")
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    run_name = _run_dir_name(
+        args.epochs,
+        args.batch_size,
+        args.max_sequences_per_study,
+        args.max_frames_per_sequence,
+    )
+    run_dir = out_dir / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    ckpt_path = run_dir / "last.pt"
+    loss_log_path = run_dir / _loss_csv_name(
+        args.epochs,
+        args.batch_size,
+        args.max_sequences_per_study,
+        args.max_frames_per_sequence,
+    )
+
+    print(f"[INFO] Run dir: {run_dir}")
+    print(f"[INFO] Loss CSV: {loss_log_path}")
+    print(f"[INFO] Rolling checkpoint path: {ckpt_path}")
+
+    # --------------------------------------------------------
+    # NEW: Skip training if checkpoint already exists
+    # --------------------------------------------------------
+    if ckpt_path.exists():
+        print(f"[INFO] Existing checkpoint found at: {ckpt_path}")
+        print("[INFO] Skipping training and using existing checkpoint.")
+        run_post_training_pipeline(
+            args=args,
+            run_name=run_name,
+            run_dir=run_dir,
+            loss_csv=loss_log_path,
+        )
+        return
+    # --------------------------------------------------------
 
     dataset = StudyDataset(
         meta_csv=Path(args.meta_csv),
@@ -676,14 +719,6 @@ def train(args):
     if use_amp:
         print("[INFO] AMP enabled.")
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    run_name = _run_dir_name(args.epochs, args.batch_size, args.max_sequences_per_study, args.max_frames_per_sequence)
-    run_dir = out_dir / run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[INFO] Run dir: {run_dir}")
-
     loss_log_path = _init_loss_logger(
         run_dir=run_dir,
         epochs=args.epochs,
@@ -691,8 +726,7 @@ def train(args):
         max_sequences_per_study=args.max_sequences_per_study,
         max_frames_per_sequence=args.max_frames_per_sequence,
     )
-    print(f"[INFO] Loss CSV: {loss_log_path}")
-    print(f"[INFO] Rolling checkpoint path: {run_dir / 'last.pt'}")
+    print(f"[INFO] Loss CSV initialized at: {loss_log_path}")
 
     model.train()
     step = 0
@@ -772,9 +806,8 @@ def train(args):
     print("[INFO] Training complete.")
     print(f"[INFO] Run dir: {run_dir}")
     print(f"[INFO] Loss CSV saved at: {loss_log_path}")
-    print(f"[INFO] Final rolling checkpoint saved at: {run_dir / 'last.pt'}")
+    print(f"[INFO] Final rolling checkpoint saved at: {ckpt_path}")
 
-    # MANDATORY: always run validate -> score -> plot_loss
     run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_log_path)
 
 
@@ -820,13 +853,12 @@ def build_argparser():
 
     ap.add_argument("--grad_clip", type=float, default=1.0)
 
-    # Defaults you asked for (these are used even if you don't pass anything)
     ap.add_argument("--out_dir", type=str, default="/data/Deep_Angiography/AngioVision/fine-tuning/checkpoints")
     ap.add_argument("--output_dir", type=str, default="/data/Deep_Angiography/AngioVision/fine-tuning/output")
     ap.add_argument(
         "--val_data_dir",
         type=str,
-        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed",
+        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed",
         help="Validation data_dir passed to custom_framework_validate.py",
     )
 
@@ -861,12 +893,10 @@ def build_argparser():
     ap.add_argument("--vit_image_size", type=int, default=None, help="Force processor resize (e.g., 224) to control memory.")
     ap.add_argument("--empty_cache_each_step", action="store_true", help="Call torch.cuda.empty_cache() each step (helps fragmentation).")
 
-    # Script paths (defaults assume same directory / cwd)
     ap.add_argument("--validate_script", type=str, default="custom_framework_validate.py")
     ap.add_argument("--calculate_score_script", type=str, default="calculate_score.py")
     ap.add_argument("--plot_loss_script", type=str, default="plot_loss.py")
 
-    # Optional override, but not required to run (auto-picked if None)
     ap.add_argument("--validate_device", type=str, default=None, help="Device string for validation (e.g., cuda or cpu). Default: auto.")
 
     return ap

@@ -7,7 +7,7 @@ from sklearn.metrics import confusion_matrix, accuracy_score
 
 # ---- Default paths (used if user supplies nothing) ----
 DEFAULT_PRED_PATH = "/data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv"
-DEFAULT_GT_PATH   = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/Test_Data_2026_02_01_v01.csv"
+DEFAULT_GT_PATH   = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
 
 
 def parse_args():

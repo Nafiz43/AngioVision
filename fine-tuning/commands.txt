@@ -208,3 +208,7 @@ python3 custom_framework_validate.py \
 python3 calculate_score.py --pred_path /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_1_4_2_3.csv
 python3 plot_loss.py --source_path /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/1_4_2_3/1_4_2_3_loss.csv
 
+
+/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM
+
+

@@ -40,6 +40,8 @@ QUESTIONS = [
     "Is an endovascular stent visible in this sequence?",
 ]
 
+
+
 # -----------------------------
 # Defaults
 # -----------------------------
@@ -61,29 +63,43 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 # Prompt
 # -----------------------------
 BASE_PROMPT = """ROLE
-You are a meticulous clinical information extraction engine for interventional radiology angiography image sequences.
+You are a clinical information extraction engine for interventional radiology angiography image sequences.
 
-WHY THIS MATTERS
-Your output will be used to build a research-grade labeled dataset. High precision is more important than guessing.
+GOAL
+Your task is to answer a single medical question about the provided angiography frames.
+
+QUESTION
+{QUESTION}
 
 SOURCE OF TRUTH
-Use ONLY the provided frames. Do not use outside medical knowledge.
+Use ONLY the provided frames. Do NOT use outside medical knowledge or assumptions.
 
-TASK
-Answer exactly ONE question:
-Question: {QUESTION}
+STRICT DECISION RULE
+You MUST produce a binary decision.
 
-STRICT RULES
-1) Do not guess. If unclear, return “Not stated” or “Unclear”.
-2) If evidence conflicts across frames, return “Conflicting”.
-3) Cite frames by filename when possible (choose from the provided filenames).
+Allowed answers:
+- YES
+- NO
+
+Interpretation:
+- Answer YES only if the evidence is clearly present in the frames.
+- If the evidence is absent, unclear, contradictory, or insufficient, answer NO.
+
+ABSOLUTE OUTPUT RULES
+1. The "answer" field MUST be exactly "YES" or "NO".
+2. No other answer values are allowed.
+3. Do NOT output "maybe", "unclear", "not stated", "unknown", or similar.
+4. Do NOT add explanations outside the JSON structure.
+5. If uncertain, default to "NO".
 
 OUTPUT FORMAT (JSON ONLY)
-Return:
-- answer
-- confidence (0–100)
-- evidence (≤3 short frame-based cues; reference filenames if possible)
-- notes
+
+{
+  "answer": "YES or NO",
+  "confidence": 0-100,
+  "evidence": ["short cue referencing frame filename", "optional second cue", "optional third cue"],
+  "notes": "brief reasoning based only on visible frame evidence"
+}
 
 FRAMES
 A set of angiography frames is attached.
