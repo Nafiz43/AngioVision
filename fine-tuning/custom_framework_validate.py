@@ -28,6 +28,10 @@ Binary QA method:
 - Compare cosine similarity between image embedding and text embeddings
 - Choose YES if sim_yes > sim_no else NO
 
+NEW:
+- After validation completes successfully, this script runs calculate_score.py
+  as a Python subprocess using the generated --out_csv file.
+
 Example:
   python3 custom_framework_validate.py \
     --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_1.pt \
@@ -37,7 +41,8 @@ Example:
     --device cuda \
     --frame_chunk_size 64 \
     --max_frames 0 \
-    --pooling max
+    --pooling max \
+    --calculate_score_script calculate_score.py
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -56,7 +63,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from transformers import ViTModel, BertModel, BertTokenizer
-# from configs.questions import QA_QUESTIONS
+
 # -----------------------------
 # HF image processor compatibility
 # -----------------------------
@@ -72,51 +79,11 @@ except Exception:
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
-from pathlib import Path
-import sys
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from configs.questions import QA_QUESTIONS
-
-# QA_QUESTIONS = [
-#     "Is the catheter tip located in the inferior mesenteric artery? Please state yes or no.",
-#     "Is there an arterial abnormality in this angiogram? Please state yes or no.",
-#     "Is contrast injected through a microcatheter (as opposed to the base catheter)? Please state yes or no.",
-#     "Is the sheath tip located in the right external iliac artery? Please state yes or no.",
-#     "Is there an acute arterial abnormality in this angiogram? Please state yes or no.",
-#     "Is the catheter tip located in the celiac artery or one of it's branches? Please state yes or no.",
-#     "Is the catheter tip located in the aorta? Please state yes or no.",
-#     "Is there an acute arterial abnormality demonstrated in this angiogram? Please state yes or no.",
-#     "Is there a chronic arterial abnormality demonstrated in this angiogram? Please state yes or no.",
-#     "Is the catheter tip located in the right internal iliac artery? Please state yes or no.",
-#     "Is the perfused organ demonstrated in this angiogram the spleen? Please state yes or no.",
-#     "Is the perfused organ demonstrated in this angiogram the liver? Please state yes or no.",
-#     "Is the catheter tip located in the superior mesenteric artery or one of it's branches? Please state yes or no.",
-#     "Is the catheter tip located in the right hepatic artery or one of it's branches? Please state yes or no.",
-#     "Is the sheath tip located in the left external iliac artery? Please state yes or no.",
-#     "Is the perfused organ demonstrated in this angiogram the kidney? Please state yes or no.",
-#     "Is there a vascular tumor demonstrated in this angiogram? Please state yes or no.",
-#     "Is the catheter tip located in the renal artery? Please state yes or no.",
-#     "Is the perfused organ demonstrated in this angiogram the bowel? Please state yes or no.",
-#     "Is the catheter tip located in the celiac artery? Please state yes or no.",
-#     "Is there a vascular aberrancy demonstrated in this angiogram? Please state yes or no.",
-#     "Is the origin of the right inferior epigastric artery opacified in this angiogram? Please state yes or no.",
-#     "Does the angiogram demonstrate competitive inflow from another mesenteric vessel? Please state yes or no.",
-#     "Is stenosis of the celiac artery, either acute or chronic, demonstrated on this angiogram? Please state yes or no.",
-#     "Is the origin of the deep circumflex iliac artery opacified in this angiogram? Please state yes or no.",
-#     "Is the left colic artery opacified in this angiogram? Please state yes or no.",
-#     "Is the catheter tip located in the left colic artery or one of it's branches? Please state yes or no.",
-#     "Does the angiogram demonstrate acute gastrointestinal bleeding? Please state yes or no.",
-#     "Are chronic atherosclerotic calcifications identified on the iliac arteries in this angiogram? Please state yes or no.",
-#     "Is the catheter tip located in the superior mesenteric artery? Please state yes or no.",
-#     "Is the gastroduodenal artery opacified in this angiogram? Please state yes or no.",
-#     "Is the catheter tip located in the gastroduodenal artery or one of it's branches? Please state yes or no.",
-#     "Is the gastroduadenal artery patent in this angiogram? Please state yes or no.",
-#     "Is the dorsal pancreatic artery opacified in this angiogram? Please state yes or no."
-# ]
 
 POOL_CHOICES = ("max", "mean", "logsumexp")
 
@@ -124,6 +91,12 @@ POOL_CHOICES = ("max", "mean", "logsumexp")
 # -----------------------------
 # Utilities
 # -----------------------------
+def _run_subprocess(cmd: List[str]) -> None:
+    print("\n[INFO] Running subprocess:")
+    print("       " + " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
+
 def get_vit_processor(vit_name: str):
     if _ViTProcessor is not None:
         return _ViTProcessor.from_pretrained(vit_name)
@@ -176,13 +149,11 @@ def read_metadata_key_value_csv(seq_dir: Path) -> Tuple[Optional[str], Optional[
     if df.empty or len(df.columns) < 2:
         return None, None, "metadata_empty_or_bad_format"
 
-    # Find the two columns (case-insensitive)
     cols = [c.strip().lower() for c in df.columns]
     try:
         info_idx = cols.index("information")
         val_idx = cols.index("value")
     except ValueError:
-        # fallback: assume first two cols are key/value
         info_idx, val_idx = 0, 1
 
     info_col = df.columns[info_idx]
@@ -195,7 +166,6 @@ def read_metadata_key_value_csv(seq_dir: Path) -> Tuple[Optional[str], Optional[
         if k:
             kv[k] = v
 
-    # Try common variants
     acc = kv.get("AccessionNumber") or kv.get("Accession Number") or kv.get("Accession")
     sop = kv.get("SOPInstanceUID") or kv.get("SOP Instance UID") or kv.get("SOPInstanceUid")
 
@@ -272,7 +242,6 @@ class PooledCLIP(nn.Module):
             nn.Linear(self.bert_hidden, embed_dim),
         )
 
-        # Exists in training checkpoints
         self.logit_scale = nn.Parameter(torch.tensor(math.log(1 / 0.07)))
 
     @torch.no_grad()
@@ -286,7 +255,7 @@ class PooledCLIP(nn.Module):
         ).to(device)
         out = self.bert(**tok)
         cls = out.last_hidden_state[:, 0, :]
-        return F.normalize(self.text_proj(cls), dim=-1)  # (N, D)
+        return F.normalize(self.text_proj(cls), dim=-1)
 
     @torch.no_grad()
     def encode_sequence_from_frames(
@@ -297,23 +266,17 @@ class PooledCLIP(nn.Module):
         frame_chunk_size: int,
         max_frames: Optional[int],
     ) -> Tuple[Optional[torch.Tensor], str]:
-        """
-        Returns (img_emb, status)
-          img_emb: (1, D) normalized projected embedding
-        status: ok or reason
-        """
         frame_paths = uniform_subsample(frame_paths, max_frames)
         if not frame_paths:
             return None, "no_frames"
 
-        # Running pooling accumulator
         if self.frame_pooling == "max":
             running = torch.full((self.vit_hidden,), -1e9, device=device)
             updated = False
         elif self.frame_pooling == "mean":
             running = torch.zeros((self.vit_hidden,), device=device)
             count = 0
-        else:  # logsumexp
+        else:
             running = torch.full((self.vit_hidden,), -float("inf"), device=device)
             updated = False
 
@@ -332,7 +295,7 @@ class PooledCLIP(nn.Module):
             pixel_values = inputs["pixel_values"].to(device)
 
             out = self.vit(pixel_values=pixel_values)
-            feats = out.last_hidden_state[:, 0, :]  # (B, hidden)
+            feats = out.last_hidden_state[:, 0, :]
 
             if self.frame_pooling == "max":
                 running = torch.maximum(running, feats.max(dim=0).values)
@@ -352,7 +315,7 @@ class PooledCLIP(nn.Module):
             if not updated:
                 return None, "no_readable_frames"
 
-        emb = F.normalize(self.vision_proj(running.unsqueeze(0)), dim=-1)  # (1,D)
+        emb = F.normalize(self.vision_proj(running.unsqueeze(0)), dim=-1)
         return emb, "ok"
 
 
@@ -398,7 +361,6 @@ def run(args):
 
     max_frames = args.max_frames if args.max_frames and args.max_frames > 0 else None
 
-    # Stream-write predictions so file is never "empty" if any success happens
     with open(out_csv, "w", newline="") as f_out:
         writer = csv.writer(f_out)
         writer.writerow(["AccessionNumber", "SOPInstanceUID", "Question", "Answer"])
@@ -439,11 +401,10 @@ def run(args):
                 error_rows.append({"seq_dir": str(seq_dir), "status": emb_status, "details": ""})
                 continue
 
-            # Answer questions
             for q in QA_QUESTIONS:
                 yes_h, no_h = make_yes_no_hypotheses(q)
-                txt_emb = model.encode_text(tokenizer, [yes_h, no_h], device=device)  # (2,D)
-                sims = (img_emb @ txt_emb.t()).squeeze(0)  # (2,)
+                txt_emb = model.encode_text(tokenizer, [yes_h, no_h], device=device)
+                sims = (img_emb @ txt_emb.t()).squeeze(0)
                 pred = "YES" if sims[0].item() > sims[1].item() else "NO"
                 writer.writerow([acc, sop, q, pred])
 
@@ -465,12 +426,30 @@ def run(args):
         pd.DataFrame(error_rows, columns=["seq_dir", "status", "details"]).to_csv(err_path, index=False)
         print(f"[INFO] Wrote error log to: {err_path}")
 
+    # --------------------------------------------------------
+    # Run calculate_score.py as Python subprocess
+    # --------------------------------------------------------
+    if not out_csv.exists():
+        raise SystemExit(f"[ERROR] Prediction CSV not found, cannot run calculate_score.py: {out_csv}")
+
+    score_cmd = [
+        sys.executable,
+        args.calculate_score_script,
+        "--pred_path",
+        str(out_csv),
+    ]
+    _run_subprocess(score_cmd)
+
 
 def build_argparser():
     ap = argparse.ArgumentParser(description="Run CLIP-style binary QA on sequence-level validation data.")
 
     ap.add_argument("--checkpoint", required=True, type=str)
-    ap.add_argument("--data_dir", default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed", type=str)
+    ap.add_argument(
+        "--data_dir",
+        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed",
+        type=str,
+    )
     ap.add_argument("--out_csv", required=True, type=str)
     ap.add_argument("--error_csv", default="", type=str, help="Optional CSV logging skip/errors per sequence dir.")
 
@@ -484,6 +463,13 @@ def build_argparser():
 
     ap.add_argument("--frame_chunk_size", default=64, type=int)
     ap.add_argument("--max_frames", default=0, type=int)
+
+    ap.add_argument(
+        "--calculate_score_script",
+        default="calculate_score.py",
+        type=str,
+        help="Path to calculate_score.py script to run after validation.",
+    )
 
     return ap
 
