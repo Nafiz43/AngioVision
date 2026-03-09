@@ -11,11 +11,14 @@ Filters rows where:
 For each sequence:
   - Goes one directory above frames_dir_path
   - Collects mosaic.png and metadata.csv
-  - Copies them into a new directory
+  - Creates a directory starting with number_of_frames
 
-Files are renamed to include frame count:
-  <number_of_frames>_mosaic.png
-  <number_of_frames>_metadata.csv
+Output layout example:
+
+OUTPUT_DIR/
+  396_v2qVCVNLfx__2.16.840.1.113883.../
+      396_mosaic.png
+      396_metadata.csv
 """
 
 import argparse
@@ -114,10 +117,10 @@ def main():
             metadata_src = seq_dir / "metadata.csv"
             mosaic_src = seq_dir / "mosaic.png"
 
-            seq_output_dir = output_dir / f"{outer_dir}__{inner_dir}"
+            # directory name now starts with frame count
+            seq_output_dir = output_dir / f"{num_frames}_{outer_dir}__{inner_dir}"
             seq_output_dir.mkdir(parents=True, exist_ok=True)
 
-            # rename with frame count
             metadata_dst = seq_output_dir / f"{num_frames}_metadata.csv"
             mosaic_dst = seq_output_dir / f"{num_frames}_mosaic.png"
 
