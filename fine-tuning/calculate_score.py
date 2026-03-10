@@ -11,27 +11,38 @@ from sklearn.metrics import (
     f1_score,
 )
 
-# ---- Default paths (used if user supplies nothing) ----
+# ---- Default paths ----
 DEFAULT_PRED_PATH = "/data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv"
 DEFAULT_GT_PATH   = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
+DEFAULT_UNMATCHED_GT_OUT = "/data/Deep_Angiography/AngioVision/fine-tuning/output/unmatched_gt_rows.csv"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Evaluate CLIP binary QA predictions against ground truth."
     )
+
     parser.add_argument(
         "--pred_path",
         type=str,
         default=DEFAULT_PRED_PATH,
         help=f"Path to prediction CSV (default: {DEFAULT_PRED_PATH})"
     )
+
     parser.add_argument(
         "--gt_path",
         type=str,
         default=DEFAULT_GT_PATH,
         help=f"Path to ground truth CSV (default: {DEFAULT_GT_PATH})"
     )
+
+    parser.add_argument(
+        "--unmatched_gt_out",
+        type=str,
+        default=DEFAULT_UNMATCHED_GT_OUT,
+        help=f"Output CSV for GT rows not matched with predictions (default: {DEFAULT_UNMATCHED_GT_OUT})"
+    )
+
     return parser.parse_args()
 
 
@@ -59,11 +70,12 @@ def main():
     args = parse_args()
 
     print("\nUsing files:")
-    print(f"Predictions:   {args.pred_path}")
-    print(f"Ground Truth:  {args.gt_path}\n")
+    print(f"Predictions:        {args.pred_path}")
+    print(f"Ground Truth:       {args.gt_path}")
+    print(f"Unmatched GT file:  {args.unmatched_gt_out}\n")
 
     pred = pd.read_csv(args.pred_path)
-    gt   = pd.read_csv(args.gt_path)
+    gt = pd.read_csv(args.gt_path)
 
     # --- verify required columns exist
     pred_required = ["AccessionNumber", "SOPInstanceUID", "Question", "Answer"]
@@ -72,18 +84,18 @@ def main():
     require_cols(pred, pred_required, tag="PRED")
     require_cols(gt, gt_required, tag="GT")
 
-    # --- normalize key fields
+    # --- normalize all key fields to make matching case-insensitive
     pred["AccessionNumber"] = normalize_str_series(pred["AccessionNumber"])
     pred["SOPInstanceUID"]  = normalize_str_series(pred["SOPInstanceUID"])
     pred["Question"]        = normalize_str_series(pred["Question"])
     pred["Answer"]          = normalize_str_series(pred["Answer"])
 
-    gt["Accession"]        = normalize_str_series(gt["Accession"])
-    gt["SOPInstanceUID"]   = normalize_str_series(gt["SOPInstanceUID"])
-    gt["Question"]         = normalize_str_series(gt["Question"])
-    gt["Answer"]           = normalize_str_series(gt["Answer"])
+    gt["Accession"]         = normalize_str_series(gt["Accession"])
+    gt["SOPInstanceUID"]    = normalize_str_series(gt["SOPInstanceUID"])
+    gt["Question"]          = normalize_str_series(gt["Question"])
+    gt["Answer"]            = normalize_str_series(gt["Answer"])
 
-    # --- keep only yes/no
+    # --- keep only yes/no after normalization
     pred = keep_yes_no(pred, "Answer", "PRED")
     gt   = keep_yes_no(gt, "Answer", "GT")
 
@@ -102,7 +114,7 @@ def main():
         "Answer": "answer_gt",
     })[["accession", "sopinstanceuid", "question", "answer_gt"]].copy()
 
-    # --- merge
+    # --- merge using normalized lowercase fields
     merged = pd.merge(
         pred_std,
         gt_std,
@@ -115,12 +127,32 @@ def main():
     print(f"GT rows   (yes/no): {len(gt_std)}")
     print(f"Matched rows:       {len(merged)}")
 
+    # --- find GT rows not present in predictions
+    pred_keys = pred_std[["accession", "sopinstanceuid", "question"]].drop_duplicates()
+
+    gt_unmatched = pd.merge(
+        gt_std,
+        pred_keys,
+        how="left",
+        on=["accession", "sopinstanceuid", "question"],
+        indicator=True
+    )
+
+    gt_unmatched = gt_unmatched[gt_unmatched["_merge"] == "left_only"].copy()
+    gt_unmatched = gt_unmatched.drop(columns=["_merge"])
+
+    gt_unmatched.to_csv(args.unmatched_gt_out, index=False)
+
+    print(f"GT rows not in matched rows: {len(gt_unmatched)}")
+    print(f"Saved to: {args.unmatched_gt_out}")
+
     if len(merged) == 0:
         print("\nERROR: No matches after merge.")
         print("Possible causes:")
         print("- Accession formatting differs")
         print("- SOPInstanceUID mismatch")
         print("- Question text differs")
+        print("- Extra spaces or punctuation differences remain")
         sys.exit(1)
 
     # --- map yes/no to 1/0
@@ -128,6 +160,7 @@ def main():
     y_pred = merged["answer_pred"].map({"yes": 1, "no": 0})
 
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
     acc = accuracy_score(y_true, y_pred)
     precision = precision_score(y_true, y_pred, zero_division=0)
     recall = recall_score(y_true, y_pred, zero_division=0)

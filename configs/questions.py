@@ -8,7 +8,9 @@
 
 
 QA_QUESTIONS = [
+    "Is the perfused organ demonstrated in this angiogram the kideny? please state yes or no.",
     "Is the catheter tip located in the inferior mesenteric artery? Please state yes or no.",
+    "is the catheter tip located in the right external iliac artery? please state yes or no.",
     "Is there an arterial abnormality in this angiogram? Please state yes or no.",
     "Is contrast injected through a microcatheter (as opposed to the base catheter)? Please state yes or no.",
     "Is the sheath tip located in the right external iliac artery? Please state yes or no.",
