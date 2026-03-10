@@ -84,7 +84,7 @@ def main():
     require_cols(pred, pred_required, tag="PRED")
     require_cols(gt, gt_required, tag="GT")
 
-    # --- normalize all key fields to make matching case-insensitive
+    # --- normalize all relevant fields to make matching case-insensitive
     pred["AccessionNumber"] = normalize_str_series(pred["AccessionNumber"])
     pred["SOPInstanceUID"]  = normalize_str_series(pred["SOPInstanceUID"])
     pred["Question"]        = normalize_str_series(pred["Question"])
@@ -114,12 +114,12 @@ def main():
         "Answer": "answer_gt",
     })[["accession", "sopinstanceuid", "question", "answer_gt"]].copy()
 
-    # --- merge using normalized lowercase fields
+    # --- relaxed merge: ignore accession, match only on SOP + question
     merged = pd.merge(
         pred_std,
         gt_std,
         how="inner",
-        on=["accession", "sopinstanceuid", "question"]
+        on=["sopinstanceuid", "question"]
     )
 
     print("\nCounts:")
@@ -127,14 +127,14 @@ def main():
     print(f"GT rows   (yes/no): {len(gt_std)}")
     print(f"Matched rows:       {len(merged)}")
 
-    # --- find GT rows not present in predictions
-    pred_keys = pred_std[["accession", "sopinstanceuid", "question"]].drop_duplicates()
+    # --- find GT rows not present in predictions (ignoring accession)
+    pred_keys = pred_std[["sopinstanceuid", "question"]].drop_duplicates()
 
     gt_unmatched = pd.merge(
         gt_std,
         pred_keys,
         how="left",
-        on=["accession", "sopinstanceuid", "question"],
+        on=["sopinstanceuid", "question"],
         indicator=True
     )
 
@@ -149,7 +149,6 @@ def main():
     if len(merged) == 0:
         print("\nERROR: No matches after merge.")
         print("Possible causes:")
-        print("- Accession formatting differs")
         print("- SOPInstanceUID mismatch")
         print("- Question text differs")
         print("- Extra spaces or punctuation differences remain")
