@@ -336,21 +336,62 @@ python3 custom_framework_train_2.py \
   --vit_image_size 224 \
   --freeze_text 
 
+trial 1:
 
+  python3 custom_framework_train_2.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 21 \
+  --num_workers 32 \
+  --max_sequences_per_study 1\
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 32 \
+  --grad_accum 2 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text 
 
+trial 2:
     python3 custom_framework_train_2.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --epochs 50 \
-  --num_workers 8 \
-  --max_sequences_per_study 1 \
-  --max_frames_per_sequence 64 \
+  --epochs 10 \
+  --num_workers 32 \
+  --max_sequences_per_study 16\
+  --max_frames_per_sequence 32 \
   --pooling logsumexp \
-  --batch_size 1 \
-  --grad_accum 8 \
-  --frame_chunk_size 8 \
+  --batch_size 16 \
+  --grad_accum 2 \
+  --frame_chunk_size 32 \
   --amp \
   --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text 
+
+
+
+  trial 3:
+    python3 custom_framework_train_2.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 8 \
+  --num_workers 32 \
+  --max_sequences_per_study 4\
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 16 \
+  --grad_accum 1 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
   --vit_image_size 224 \
   --freeze_text 

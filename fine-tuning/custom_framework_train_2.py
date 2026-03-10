@@ -4,42 +4,6 @@ custom_framework_train.py
 
 AngioVision fine-tuning: (Study) frames -> ViT -> pool -> visual embedding
 Align visual embedding with report text embedding (BERT) using CLIP-style contrastive loss.
-
-Directory layout assumed:
-  BASE/<Anon Acc #>/<SOPInstanceUID>/frames/<image files>
-
-Efficient checkpointing (no validation):
-- Creates a run dir under --out_dir named:
-    {epochs}_{batch_size}_{max_sequences_per_study}_{max_frames_per_sequence}
-  where max_* are "None" if not provided.
-- Saves ONLY a single rolling checkpoint:
-    <run_dir>/last.pt
-  which is overwritten during training.
-
-Also:
-- Always creates a loss CSV in that run dir.
-- Loss CSV filename encodes ONLY:
-    epochs, batch_size, max_sequences_per_study, max_frames_per_sequence
-  in "_" separated format:
-    <epochs>_<batch_size>_<max_sequences_per_study>_<max_frames_per_sequence>_loss.csv
-
-POST-TRAINING PIPELINE (MANDATORY):
-After training completes, this script ALWAYS runs:
-  1) custom_framework_validate.py
-  2) calculate_score.py
-  3) plot_loss.py
-
-using paths derived from run_name:
-  run_name = "{epochs}_{batch_size}_{max_sequences_per_study}_{max_frames_per_sequence}"
-
-Defaults are provided for:
-  --out_dir
-  --output_dir
-  --val_data_dir
-
-NEW:
-- If <run_dir>/last.pt already exists, training is skipped.
-- The post-training pipeline still runs using the existing checkpoint.
 """
 
 from __future__ import annotations
@@ -64,7 +28,6 @@ from PIL import Image
 
 from transformers import ViTModel, BertModel, BertTokenizer
 
-
 # ------------------------------------------------------------
 # Transformers image processor compatibility
 # ------------------------------------------------------------
@@ -83,12 +46,6 @@ except Exception:
 # Robust SOPInstanceUIDs parser
 # ------------------------------------------------------------
 def parse_sop_instance_uids(val) -> List[str]:
-    """
-    Handles:
-    1) CSV-quoted comma-separated string
-    2) python literal list/tuple
-    3) NaN/None/empty safely
-    """
     if val is None:
         return []
     if isinstance(val, float) and pd.isna(val):
@@ -127,16 +84,6 @@ def _list_images_in_dir(d: Path) -> List[Path]:
 
 
 def find_frame_files_for_sop(base_frames_dir: Path, acc: str, sop_uid: str) -> List[Path]:
-    """
-    Expected layout:
-      BASE/<Anon Acc #>/<SOPInstanceUID>/frames/*.img
-
-    Safe search order:
-      1) BASE/acc/sop/frames/*.img
-      2) BASE/acc/sop/*.img
-      3) BASE/acc/sop/<one-level-subdir>/*.img
-      4) BASE/*/acc/sop/frames/*.img
-    """
     acc = str(acc).strip()
     sop_uid = str(sop_uid).strip()
 
@@ -174,12 +121,6 @@ def find_frame_files_for_sop(base_frames_dir: Path, acc: str, sop_uid: str) -> L
 # Dataset
 # ------------------------------------------------------------
 class StudyDataset(Dataset):
-    """
-    Each item returns:
-      - sequences: List[List[Path]]  (list of sequences; each sequence is list of frame image paths)
-      - text: report string
-    """
-
     def __init__(
         self,
         meta_csv: Path,
@@ -250,7 +191,11 @@ class StudyDataset(Dataset):
 
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     kept = [b for b in batch if b["text"] and isinstance(b["sequences"], list) and len(b["sequences"]) > 0]
-    return {"acc": [b["acc"] for b in kept], "sequences": [b["sequences"] for b in kept], "text": [b["text"] for b in kept]}
+    return {
+        "acc": [b["acc"] for b in kept],
+        "sequences": [b["sequences"] for b in kept],
+        "text": [b["text"] for b in kept],
+    }
 
 
 # ------------------------------------------------------------
@@ -296,6 +241,8 @@ class PooledCLIP(nn.Module):
         freeze_text: bool = False,
         frame_pooling: str = "max",
         sequence_pooling: str = "max",
+        vit_trainable_blocks: int = 3,
+        vit_unfreeze_patch_embed: bool = False,
     ):
         super().__init__()
         if frame_pooling not in POOL_CHOICES:
@@ -328,9 +275,56 @@ class PooledCLIP(nn.Module):
         if freeze_vision:
             for p in self.vit.parameters():
                 p.requires_grad = False
+        else:
+            self._configure_partial_vit_finetuning(
+                vit_trainable_blocks=vit_trainable_blocks,
+                vit_unfreeze_patch_embed=vit_unfreeze_patch_embed,
+            )
+
         if freeze_text:
             for p in self.bert.parameters():
                 p.requires_grad = False
+
+    def _configure_partial_vit_finetuning(
+        self,
+        vit_trainable_blocks: int,
+        vit_unfreeze_patch_embed: bool,
+    ) -> None:
+        # Freeze everything first
+        for p in self.vit.parameters():
+            p.requires_grad = False
+
+        layers = None
+        if hasattr(self.vit, "encoder") and hasattr(self.vit.encoder, "layer"):
+            layers = self.vit.encoder.layer
+
+        if layers is None:
+            raise RuntimeError("Could not locate ViT encoder layers at self.vit.encoder.layer")
+
+        num_layers = len(layers)
+        n = max(0, min(int(vit_trainable_blocks), num_layers))
+
+        # Unfreeze last N transformer blocks
+        if n > 0:
+            for block in layers[-n:]:
+                for p in block.parameters():
+                    p.requires_grad = True
+
+        # Unfreeze final layernorm
+        if hasattr(self.vit, "layernorm") and self.vit.layernorm is not None:
+            for p in self.vit.layernorm.parameters():
+                p.requires_grad = True
+
+        # Optional pooler
+        if hasattr(self.vit, "pooler") and self.vit.pooler is not None:
+            for p in self.vit.pooler.parameters():
+                p.requires_grad = True
+
+        # Optional patch embeddings
+        if vit_unfreeze_patch_embed:
+            if hasattr(self.vit, "embeddings") and self.vit.embeddings is not None:
+                for p in self.vit.embeddings.parameters():
+                    p.requires_grad = True
 
     @torch.no_grad()
     def _init_running(self, device, d: int, mode: str):
@@ -398,7 +392,11 @@ class PooledCLIP(nn.Module):
                 continue
 
             if vit_image_size is not None:
-                inputs = processor(images=chunk_imgs, return_tensors="pt", size={"height": vit_image_size, "width": vit_image_size})
+                inputs = processor(
+                    images=chunk_imgs,
+                    return_tensors="pt",
+                    size={"height": vit_image_size, "width": vit_image_size},
+                )
             else:
                 inputs = processor(images=chunk_imgs, return_tensors="pt")
 
@@ -467,7 +465,12 @@ class PooledCLIP(nn.Module):
         return image_embeds, text_embeds, logit_scale
 
 
-def clip_loss_chunked(image_embeds: torch.Tensor, text_embeds: torch.Tensor, logit_scale: torch.Tensor, chunk: int = 4) -> torch.Tensor:
+def clip_loss_chunked(
+    image_embeds: torch.Tensor,
+    text_embeds: torch.Tensor,
+    logit_scale: torch.Tensor,
+    chunk: int = 4,
+) -> torch.Tensor:
     B = image_embeds.size(0)
     device = image_embeds.device
     targets = torch.arange(B, device=device)
@@ -494,19 +497,35 @@ def clip_loss_chunked(image_embeds: torch.Tensor, text_embeds: torch.Tensor, log
 # ------------------------------------------------------------
 # Run-dir + loss CSV naming/logging
 # ------------------------------------------------------------
-def _run_dir_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int], max_frames_per_sequence: Optional[int]) -> str:
+def _run_dir_name(
+    epochs: int,
+    batch_size: int,
+    max_sequences_per_study: Optional[int],
+    max_frames_per_sequence: Optional[int],
+) -> str:
     ms = "None" if max_sequences_per_study is None else str(max_sequences_per_study)
     mf = "None" if max_frames_per_sequence is None else str(max_frames_per_sequence)
     return f"{epochs}_{batch_size}_{ms}_{mf}"
 
 
-def _loss_csv_name(epochs: int, batch_size: int, max_sequences_per_study: Optional[int], max_frames_per_sequence: Optional[int]) -> str:
+def _loss_csv_name(
+    epochs: int,
+    batch_size: int,
+    max_sequences_per_study: Optional[int],
+    max_frames_per_sequence: Optional[int],
+) -> str:
     ms = "None" if max_sequences_per_study is None else str(max_sequences_per_study)
     mf = "None" if max_frames_per_sequence is None else str(max_frames_per_sequence)
     return f"{epochs}_{batch_size}_{ms}_{mf}_loss.csv"
 
 
-def _init_loss_logger(run_dir: Path, epochs: int, batch_size: int, max_sequences_per_study: Optional[int], max_frames_per_sequence: Optional[int]) -> Path:
+def _init_loss_logger(
+    run_dir: Path,
+    epochs: int,
+    batch_size: int,
+    max_sequences_per_study: Optional[int],
+    max_frames_per_sequence: Optional[int],
+) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / _loss_csv_name(epochs, batch_size, max_sequences_per_study, max_frames_per_sequence)
 
@@ -524,14 +543,29 @@ def _append_loss_row(log_path: Path, epoch: int, step: int, batch_size: int, los
         w.writerow([epoch, step, batch_size, f"{loss_val:.8f}", f"{loss_ema:.8f}"])
 
 
-def _save_last_checkpoint(run_dir: Path, model: nn.Module, opt: torch.optim.Optimizer, step: int, epoch: int):
+def _checkpoint_payload(model: nn.Module, opt: torch.optim.Optimizer, step: int, epoch: int) -> Dict[str, Any]:
+    return {
+        "step": step,
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "opt_state": opt.state_dict(),
+    }
+
+
+def _save_last_checkpoint(run_dir: Path, model: nn.Module, opt: torch.optim.Optimizer, step: int, epoch: int) -> Path:
     ckpt_path = run_dir / "last.pt"
-    torch.save({"step": step, "epoch": epoch, "model_state": model.state_dict(), "opt_state": opt.state_dict()}, ckpt_path)
+    torch.save(_checkpoint_payload(model, opt, step, epoch), ckpt_path)
+    return ckpt_path
+
+
+def _save_epoch_checkpoint(run_dir: Path, model: nn.Module, opt: torch.optim.Optimizer, step: int, epoch: int) -> Path:
+    ckpt_path = run_dir / f"epoch_{epoch}.pt"
+    torch.save(_checkpoint_payload(model, opt, step, epoch), ckpt_path)
     return ckpt_path
 
 
 # ------------------------------------------------------------
-# Subprocess runner helpers (MANDATORY POST-TRAINING PIPELINE)
+# Subprocess runner helpers
 # ------------------------------------------------------------
 def _run_subprocess(cmd: List[str]) -> None:
     print("\n[INFO] Running subprocess:")
@@ -540,12 +574,6 @@ def _run_subprocess(cmd: List[str]) -> None:
 
 
 def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Path) -> None:
-    """
-    Always run:
-      1) validate
-      2) calculate_score
-      3) plot_loss
-    """
     val_data_dir = Path(args.val_data_dir)
     if not val_data_dir.exists():
         raise SystemExit(f"[ERROR] Validation data dir does not exist: {val_data_dir}")
@@ -610,6 +638,105 @@ def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Pat
 
 
 # ------------------------------------------------------------
+# Trainable parameter helpers
+# ------------------------------------------------------------
+def count_trainable_params(module: nn.Module) -> int:
+    return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+
+def count_all_params(module: nn.Module) -> int:
+    return sum(p.numel() for p in module.parameters())
+
+
+def print_trainable_summary(model: "PooledCLIP") -> None:
+    total = count_all_params(model)
+    trainable = count_trainable_params(model)
+
+    print(f"[INFO] Total params:      {total:,}")
+    print(f"[INFO] Trainable params:  {trainable:,}")
+    print(f"[INFO] Frozen params:     {total - trainable:,}")
+
+    if hasattr(model.vit, "encoder") and hasattr(model.vit.encoder, "layer"):
+        n_layers = len(model.vit.encoder.layer)
+        trainable_blocks = []
+        for i, block in enumerate(model.vit.encoder.layer):
+            block_trainable = any(p.requires_grad for p in block.parameters())
+            if block_trainable:
+                trainable_blocks.append(i)
+        print(f"[INFO] ViT trainable encoder blocks: {trainable_blocks} / total={n_layers}")
+
+    vit_embeddings_trainable = (
+        hasattr(model.vit, "embeddings")
+        and model.vit.embeddings is not None
+        and any(p.requires_grad for p in model.vit.embeddings.parameters())
+    )
+    print(f"[INFO] ViT embeddings trainable: {vit_embeddings_trainable}")
+
+    vit_ln_trainable = (
+        hasattr(model.vit, "layernorm")
+        and model.vit.layernorm is not None
+        and any(p.requires_grad for p in model.vit.layernorm.parameters())
+    )
+    print(f"[INFO] ViT final layernorm trainable: {vit_ln_trainable}")
+    print(f"[INFO] BERT trainable: {any(p.requires_grad for p in model.bert.parameters())}")
+    print(f"[INFO] vision_proj trainable: {any(p.requires_grad for p in model.vision_proj.parameters())}")
+    print(f"[INFO] text_proj trainable: {any(p.requires_grad for p in model.text_proj.parameters())}")
+
+
+def build_optimizer(model: "PooledCLIP", args) -> torch.optim.Optimizer:
+    vision_backbone_params = [p for p in model.vit.parameters() if p.requires_grad]
+    text_backbone_params = [p for p in model.bert.parameters() if p.requires_grad]
+
+    head_params = []
+    head_params.extend([p for p in model.vision_proj.parameters() if p.requires_grad])
+    head_params.extend([p for p in model.text_proj.parameters() if p.requires_grad])
+    if model.logit_scale.requires_grad:
+        head_params.append(model.logit_scale)
+
+    param_groups = []
+
+    if vision_backbone_params:
+        param_groups.append(
+            {
+                "params": vision_backbone_params,
+                "lr": args.vision_backbone_lr,
+                "weight_decay": args.weight_decay,
+            }
+        )
+
+    if text_backbone_params:
+        param_groups.append(
+            {
+                "params": text_backbone_params,
+                "lr": args.text_lr,
+                "weight_decay": args.weight_decay,
+            }
+        )
+
+    if head_params:
+        param_groups.append(
+            {
+                "params": head_params,
+                "lr": args.head_lr,
+                "weight_decay": args.weight_decay,
+            }
+        )
+
+    if not param_groups:
+        raise ValueError("No trainable parameters found. Check freeze settings.")
+
+    print("[INFO] Optimizer parameter groups:")
+    if vision_backbone_params:
+        print(f"       vision backbone: {sum(p.numel() for p in vision_backbone_params):,} params, lr={args.vision_backbone_lr}")
+    if text_backbone_params:
+        print(f"       text backbone:   {sum(p.numel() for p in text_backbone_params):,} params, lr={args.text_lr}")
+    if head_params:
+        print(f"       projection/head: {sum(p.numel() for p in head_params):,} params, lr={args.head_lr}")
+
+    return torch.optim.AdamW(param_groups)
+
+
+# ------------------------------------------------------------
 # Train
 # ------------------------------------------------------------
 def train(args):
@@ -648,10 +775,8 @@ def train(args):
     print(f"[INFO] Run dir: {run_dir}")
     print(f"[INFO] Loss CSV: {loss_log_path}")
     print(f"[INFO] Rolling checkpoint path: {ckpt_path}")
+    print(f"[INFO] Per-epoch checkpoints will be stored as: {run_dir / 'epoch_<N>.pt'}")
 
-    # --------------------------------------------------------
-    # NEW: Skip training if checkpoint already exists
-    # --------------------------------------------------------
     if ckpt_path.exists():
         print(f"[INFO] Existing checkpoint found at: {ckpt_path}")
         print("[INFO] Skipping training and using existing checkpoint.")
@@ -662,7 +787,6 @@ def train(args):
             loss_csv=loss_log_path,
         )
         return
-    # --------------------------------------------------------
 
     dataset = StudyDataset(
         meta_csv=Path(args.meta_csv),
@@ -699,7 +823,11 @@ def train(args):
         freeze_text=args.freeze_text,
         frame_pooling=frame_pooling,
         sequence_pooling=sequence_pooling,
+        vit_trainable_blocks=args.vit_trainable_blocks,
+        vit_unfreeze_patch_embed=args.vit_unfreeze_patch_embed,
     ).to(device)
+
+    print_trainable_summary(model)
 
     if args.vit_grad_ckpt and (not args.freeze_vision):
         if hasattr(model.vit, "gradient_checkpointing_enable"):
@@ -708,11 +836,7 @@ def train(args):
             model.vit.config.use_cache = False
         print("[INFO] ViT gradient checkpointing enabled.")
 
-    opt = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
+    opt = build_optimizer(model, args)
 
     use_amp = bool(args.amp and device.type == "cuda")
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -801,12 +925,29 @@ def train(args):
             if args.empty_cache_each_step and device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        _save_last_checkpoint(run_dir=run_dir, model=model, opt=opt, step=step, epoch=epoch + 1)
+        last_ckpt = _save_last_checkpoint(
+            run_dir=run_dir,
+            model=model,
+            opt=opt,
+            step=step,
+            epoch=epoch + 1,
+        )
+        epoch_ckpt = _save_epoch_checkpoint(
+            run_dir=run_dir,
+            model=model,
+            opt=opt,
+            step=step,
+            epoch=epoch + 1,
+        )
+
+        print(f"[INFO] Saved rolling checkpoint: {last_ckpt}")
+        print(f"[INFO] Saved epoch checkpoint:   {epoch_ckpt}")
 
     print("[INFO] Training complete.")
     print(f"[INFO] Run dir: {run_dir}")
     print(f"[INFO] Loss CSV saved at: {loss_log_path}")
     print(f"[INFO] Final rolling checkpoint saved at: {ckpt_path}")
+    print(f"[INFO] Per-epoch checkpoints saved under: {run_dir}")
 
     run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_log_path)
 
@@ -829,7 +970,11 @@ def build_argparser():
 
     ap.add_argument("--batch_size", type=int, default=2)
     ap.add_argument("--epochs", type=int, default=1)
-    ap.add_argument("--lr", type=float, default=1e-4)
+
+    # Separate LRs for stability/efficiency
+    ap.add_argument("--vision_backbone_lr", type=float, default=1e-5)
+    ap.add_argument("--head_lr", type=float, default=1e-4)
+    ap.add_argument("--text_lr", type=float, default=5e-5)
     ap.add_argument("--weight_decay", type=float, default=0.01)
 
     ap.add_argument("--num_workers", type=int, default=4)
@@ -850,6 +995,19 @@ def build_argparser():
 
     ap.add_argument("--freeze_vision", action="store_true")
     ap.add_argument("--freeze_text", action="store_true")
+
+    # New: partial ViT fine-tuning controls
+    ap.add_argument(
+        "--vit_trainable_blocks",
+        type=int,
+        default=3,
+        help="Number of final ViT encoder blocks to unfreeze/train. Ignored if --freeze_vision is set.",
+    )
+    ap.add_argument(
+        "--vit_unfreeze_patch_embed",
+        action="store_true",
+        help="Also unfreeze ViT patch/image embeddings. Usually keep this OFF initially.",
+    )
 
     ap.add_argument("--grad_clip", type=float, default=1.0)
 

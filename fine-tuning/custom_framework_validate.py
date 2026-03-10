@@ -2,7 +2,7 @@
 """
 custom_framework_validate.py
 
-Run CLIP-style binary QA on validation sequence directories using a trained checkpoint.
+Run CLIP-style binary QA on validation sequence directories using one or more trained checkpoints.
 
 DATA LAYOUT (your validation set):
   DATA_DIR/
@@ -20,8 +20,8 @@ metadata.csv format (IMPORTANT):
   ...
 
 OUTPUT:
-- --out_csv: AccessionNumber,SOPInstanceUID,Question,Answer
-- --error_csv (optional): seq_dir,status,details
+- --out_csv: final/best prediction CSV
+- --error_csv (optional): final/best error CSV
 
 Binary QA method:
 - For each question, we build YES/NO hypothesis texts
@@ -29,15 +29,40 @@ Binary QA method:
 - Choose YES if sim_yes > sim_no else NO
 
 NEW:
-- After validation completes successfully, this script runs calculate_score.py
-  as a Python subprocess using the generated --out_csv file.
+- --checkpoint can be either:
+    1) a single checkpoint file (.pt), or
+    2) a run directory containing epoch checkpoints
+- If a directory is given:
+    * evaluate all epoch_*.pt checkpoints
+    * if none exist, evaluate last.pt if available
+- For each checkpoint:
+    * validation is run
+    * calculate_score.py is run as a subprocess
+    * stdout is parsed to extract accuracy
+- The checkpoint with the best accuracy is reported
+- The best checkpoint's prediction CSV is copied to --out_csv
+- The best checkpoint's error CSV is copied to --error_csv if requested
 
-Example:
+Examples:
+
+Single checkpoint:
   python3 custom_framework_validate.py \
-    --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/checkpoint_epoch_1.pt \
-    --data_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed \
-    --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv \
-    --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv \
+    --checkpoint /path/to/epoch_3.pt \
+    --data_dir /path/to/DICOM_Sequence_Processed \
+    --out_csv /path/to/output/preds.csv \
+    --error_csv /path/to/output/errors.csv \
+    --device cuda \
+    --frame_chunk_size 64 \
+    --max_frames 0 \
+    --pooling max \
+    --calculate_score_script calculate_score.py
+
+Run directory:
+  python3 custom_framework_validate.py \
+    --checkpoint /path/to/checkpoints/10_4_16_64 \
+    --data_dir /path/to/DICOM_Sequence_Processed \
+    --out_csv /path/to/output/preds.csv \
+    --error_csv /path/to/output/errors.csv \
     --device cuda \
     --frame_chunk_size 64 \
     --max_frames 0 \
@@ -50,10 +75,12 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import pandas as pd
 import torch
@@ -95,6 +122,48 @@ def _run_subprocess(cmd: List[str]) -> None:
     print("\n[INFO] Running subprocess:")
     print("       " + " ".join(cmd))
     subprocess.run(cmd, check=True)
+
+
+def _run_subprocess_capture(cmd: List[str]) -> subprocess.CompletedProcess:
+    print("\n[INFO] Running subprocess:")
+    print("       " + " ".join(cmd))
+    cp = subprocess.run(cmd, check=True, text=True, capture_output=True)
+    if cp.stdout:
+        print(cp.stdout, end="" if cp.stdout.endswith("\n") else "\n")
+    if cp.stderr:
+        print(cp.stderr, end="" if cp.stderr.endswith("\n") else "\n", file=sys.stderr)
+    return cp
+
+
+def parse_accuracy_from_score_output(text: str) -> Optional[float]:
+    """
+    Tries to parse accuracy from calculate_score.py stdout.
+
+    Supports patterns like:
+      Accuracy: 0.845
+      accuracy = 0.845
+      Accuracy: 84.5%
+      accuracy score: 84.5%
+    Returns accuracy in [0,1] if found, else None.
+    """
+    patterns = [
+        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
+        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)",
+    ]
+
+    text_lower = text.lower()
+
+    for pat in patterns:
+        m = re.search(pat, text_lower, flags=re.IGNORECASE)
+        if m:
+            val = float(m.group(1))
+            if "%" in m.group(0):
+                return val / 100.0
+            if val > 1.0:
+                return val / 100.0
+            return val
+
+    return None
 
 
 def get_vit_processor(vit_name: str):
@@ -209,6 +278,53 @@ def make_yes_no_hypotheses(question: str) -> Tuple[str, str]:
     return (f"Yes. {question}", f"No. {question}")
 
 
+def checkpoint_sort_key(p: Path):
+    name = p.stem
+    m = re.match(r"epoch_(\d+)$", name)
+    if m:
+        return (0, int(m.group(1)))
+    if name == "last":
+        return (1, float("inf"))
+    return (2, name)
+
+
+def discover_checkpoints(checkpoint_arg: str) -> List[Path]:
+    """
+    If checkpoint_arg is:
+      - a file: return [file]
+      - a directory:
+          * return sorted epoch_*.pt if any
+          * else return [last.pt] if available
+    """
+    p = Path(checkpoint_arg)
+
+    if p.is_file():
+        return [p]
+
+    if not p.exists():
+        raise SystemExit(f"[ERROR] Checkpoint path does not exist: {p}")
+
+    if not p.is_dir():
+        raise SystemExit(f"[ERROR] Checkpoint path is neither file nor directory: {p}")
+
+    epoch_ckpts = sorted(
+        [x for x in p.iterdir() if x.is_file() and re.fullmatch(r"epoch_\d+\.pt", x.name)],
+        key=checkpoint_sort_key,
+    )
+    if epoch_ckpts:
+        return epoch_ckpts
+
+    last_ckpt = p / "last.pt"
+    if last_ckpt.exists() and last_ckpt.is_file():
+        return [last_ckpt]
+
+    raise SystemExit(f"[ERROR] No checkpoint files found in directory: {p}")
+
+
+def checkpoint_label(ckpt_path: Path) -> str:
+    return ckpt_path.stem
+
+
 # -----------------------------
 # Model (must match your training architecture)
 # -----------------------------
@@ -307,6 +423,8 @@ class PooledCLIP(nn.Module):
                 running = torch.logaddexp(running, torch.logsumexp(feats, dim=0))
                 updated = True
 
+            del inputs, pixel_values, out, feats, imgs
+
         if self.frame_pooling == "mean":
             if count <= 0:
                 return None, "no_readable_frames"
@@ -328,31 +446,42 @@ def load_checkpoint(model: nn.Module, ckpt_path: Path, device: torch.device):
         print(f"[WARN] Missing keys (showing up to 20): {missing[:20]}")
     if unexpected:
         print(f"[WARN] Unexpected keys (showing up to 20): {unexpected[:20]}")
-    print("[INFO] Checkpoint loaded.")
+    print(f"[INFO] Checkpoint loaded: {ckpt_path}")
 
 
-def run(args):
-    device = torch.device("cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu")
-    print(f"[INFO] device = {device}")
-
-    processor = get_vit_processor(args.vit_name)
-    tokenizer = BertTokenizer.from_pretrained(args.bert_name)
-
-    frame_pooling = args.frame_pooling if args.frame_pooling else args.pooling
-
-    model = PooledCLIP(
-        vit_name=args.vit_name,
-        bert_name=args.bert_name,
-        embed_dim=args.embed_dim,
-        frame_pooling=frame_pooling,
-    ).to(device)
+def run_single_checkpoint(
+    model: nn.Module,
+    tokenizer,
+    processor,
+    ckpt_path: Path,
+    device: torch.device,
+    args,
+) -> Dict[str, Any]:
+    """
+    Runs prediction generation + calculate_score.py for one checkpoint.
+    Returns dict with paths and parsed accuracy.
+    """
     model.eval()
-
-    load_checkpoint(model, Path(args.checkpoint), device=device)
+    load_checkpoint(model, ckpt_path, device=device)
 
     data_dir = Path(args.data_dir)
-    out_csv = Path(args.out_csv)
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    if not data_dir.exists():
+        raise SystemExit(f"[ERROR] Validation data dir does not exist: {data_dir}")
+
+    final_out_csv = Path(args.out_csv)
+    final_out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    error_csv_requested = bool(args.error_csv)
+    final_error_csv = Path(args.error_csv) if error_csv_requested else None
+    if final_error_csv is not None:
+        final_error_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    label = checkpoint_label(ckpt_path)
+
+    temp_out_csv = final_out_csv.parent / f"{final_out_csv.stem}__{label}{final_out_csv.suffix or '.csv'}"
+    temp_err_csv = None
+    if final_error_csv is not None:
+        temp_err_csv = final_error_csv.parent / f"{final_error_csv.stem}__{label}{final_error_csv.suffix or '.csv'}"
 
     error_rows = []
     n_total = 0
@@ -361,12 +490,12 @@ def run(args):
 
     max_frames = args.max_frames if args.max_frames and args.max_frames > 0 else None
 
-    with open(out_csv, "w", newline="") as f_out:
+    with open(temp_out_csv, "w", newline="") as f_out:
         writer = csv.writer(f_out)
         writer.writerow(["AccessionNumber", "SOPInstanceUID", "Question", "Answer"])
 
         seq_dirs = sorted([p for p in data_dir.iterdir() if p.is_dir()])
-        for seq_dir in tqdm(seq_dirs, desc="Sequences", dynamic_ncols=True):
+        for seq_dir in tqdm(seq_dirs, desc=f"Sequences [{label}]", dynamic_ncols=True):
             n_total += 1
 
             acc, sop, meta_status = read_metadata_key_value_csv(seq_dir)
@@ -410,41 +539,141 @@ def run(args):
 
             n_ok += 1
 
-    print(f"[INFO] Wrote predictions to: {out_csv}")
+    print(f"[INFO] Wrote predictions to: {temp_out_csv}")
 
     print("\n[SUMMARY]")
-    print(f"  Total sequence dirs seen: {n_total}")
+    print(f"  Checkpoint:              {ckpt_path.name}")
+    print(f"  Total sequence dirs:     {n_total}")
     print(f"  Successfully predicted:  {n_ok}")
     if skip_counts:
         print("  Skipped counts:")
         for k, v in sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"    {k}: {v}")
 
-    if args.error_csv:
-        err_path = Path(args.error_csv)
-        err_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(error_rows, columns=["seq_dir", "status", "details"]).to_csv(err_path, index=False)
-        print(f"[INFO] Wrote error log to: {err_path}")
+    if temp_err_csv is not None:
+        pd.DataFrame(error_rows, columns=["seq_dir", "status", "details"]).to_csv(temp_err_csv, index=False)
+        print(f"[INFO] Wrote error log to: {temp_err_csv}")
 
-    # --------------------------------------------------------
-    # Run calculate_score.py as Python subprocess
-    # --------------------------------------------------------
-    if not out_csv.exists():
-        raise SystemExit(f"[ERROR] Prediction CSV not found, cannot run calculate_score.py: {out_csv}")
+    if not temp_out_csv.exists():
+        raise SystemExit(f"[ERROR] Prediction CSV not found, cannot run calculate_score.py: {temp_out_csv}")
 
     score_cmd = [
         sys.executable,
         args.calculate_score_script,
         "--pred_path",
-        str(out_csv),
+        str(temp_out_csv),
     ]
-    _run_subprocess(score_cmd)
+    cp = _run_subprocess_capture(score_cmd)
+
+    combined_output = ""
+    if cp.stdout:
+        combined_output += cp.stdout
+    if cp.stderr:
+        combined_output += "\n" + cp.stderr
+
+    accuracy = parse_accuracy_from_score_output(combined_output)
+    if accuracy is None:
+        print(f"[WARN] Could not parse accuracy from calculate_score.py output for {ckpt_path.name}")
+
+    return {
+        "checkpoint": ckpt_path,
+        "label": label,
+        "pred_csv": temp_out_csv,
+        "error_csv": temp_err_csv,
+        "accuracy": accuracy,
+        "n_total": n_total,
+        "n_ok": n_ok,
+    }
+
+
+def run(args):
+    device = torch.device("cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu")
+    print(f"[INFO] device = {device}")
+
+    checkpoints = discover_checkpoints(args.checkpoint)
+    print(f"[INFO] Found {len(checkpoints)} checkpoint(s) to evaluate:")
+    for ck in checkpoints:
+        print(f"  - {ck}")
+
+    processor = get_vit_processor(args.vit_name)
+    tokenizer = BertTokenizer.from_pretrained(args.bert_name)
+
+    frame_pooling = args.frame_pooling if args.frame_pooling else args.pooling
+
+    model = PooledCLIP(
+        vit_name=args.vit_name,
+        bert_name=args.bert_name,
+        embed_dim=args.embed_dim,
+        frame_pooling=frame_pooling,
+    ).to(device)
+    model.eval()
+
+    results: List[Dict[str, Any]] = []
+    for ckpt_path in checkpoints:
+        print("\n" + "=" * 80)
+        print(f"[INFO] Evaluating checkpoint: {ckpt_path}")
+        print("=" * 80)
+        result = run_single_checkpoint(
+            model=model,
+            tokenizer=tokenizer,
+            processor=processor,
+            ckpt_path=ckpt_path,
+            device=device,
+            args=args,
+        )
+        results.append(result)
+
+    if not results:
+        raise SystemExit("[ERROR] No checkpoints were evaluated.")
+
+    valid_results = [r for r in results if r["accuracy"] is not None]
+    if valid_results:
+        best = max(valid_results, key=lambda x: x["accuracy"])
+    else:
+        best = results[-1]
+        print("[WARN] No accuracy could be parsed from any calculate_score.py output.")
+        print("[WARN] Falling back to the last evaluated checkpoint as best.")
+
+    final_out_csv = Path(args.out_csv)
+    final_out_csv.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(best["pred_csv"], final_out_csv)
+
+    if args.error_csv and best["error_csv"] is not None and Path(best["error_csv"]).exists():
+        final_error_csv = Path(args.error_csv)
+        final_error_csv.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(best["error_csv"], final_error_csv)
+
+    print("\n" + "#" * 80)
+    print("[FINAL CHECKPOINT COMPARISON]")
+    print("#" * 80)
+    for r in results:
+        acc_str = "N/A" if r["accuracy"] is None else f"{r['accuracy']:.6f}"
+        print(
+            f"  {r['checkpoint'].name:<20}  "
+            f"accuracy={acc_str:<12}  "
+            f"pred_csv={r['pred_csv'].name}"
+        )
+
+    print("\n[BEST CHECKPOINT]")
+    print(f"  Checkpoint: {best['checkpoint']}")
+    if best["accuracy"] is not None:
+        print(f"  Best accuracy: {best['accuracy']:.6f}")
+    else:
+        print("  Best accuracy: N/A")
+    print(f"  Best prediction CSV copied to: {final_out_csv}")
+    if args.error_csv and best["error_csv"] is not None:
+        print(f"  Best error CSV copied to: {args.error_csv}")
 
 
 def build_argparser():
     ap = argparse.ArgumentParser(description="Run CLIP-style binary QA on sequence-level validation data.")
 
-    ap.add_argument("--checkpoint", required=True, type=str)
+    ap.add_argument(
+        "--checkpoint",
+        required=True,
+        type=str,
+        help="Checkpoint .pt file OR directory containing epoch checkpoints.",
+    )
     ap.add_argument(
         "--data_dir",
         default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed",
