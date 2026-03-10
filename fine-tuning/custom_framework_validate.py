@@ -38,36 +38,15 @@ NEW:
 - For each checkpoint:
     * validation is run
     * calculate_score.py is run as a subprocess
-    * stdout is parsed to extract accuracy
+    * stdout/stderr is parsed to extract TP/TN/FP/FN/Accuracy/F1
 - The checkpoint with the best accuracy is reported
 - The best checkpoint's prediction CSV is copied to --out_csv
 - The best checkpoint's error CSV is copied to --error_csv if requested
 
-Examples:
-
-Single checkpoint:
-  python3 custom_framework_validate.py \
-    --checkpoint /path/to/epoch_3.pt \
-    --data_dir /path/to/DICOM_Sequence_Processed \
-    --out_csv /path/to/output/preds.csv \
-    --error_csv /path/to/output/errors.csv \
-    --device cuda \
-    --frame_chunk_size 64 \
-    --max_frames 0 \
-    --pooling max \
-    --calculate_score_script calculate_score.py
-
-Run directory:
-  python3 custom_framework_validate.py \
-    --checkpoint /path/to/checkpoints/10_4_16_64 \
-    --data_dir /path/to/DICOM_Sequence_Processed \
-    --out_csv /path/to/output/preds.csv \
-    --error_csv /path/to/output/errors.csv \
-    --device cuda \
-    --frame_chunk_size 64 \
-    --max_frames 0 \
-    --pooling max \
-    --calculate_score_script calculate_score.py
+EFFICIENCY UPDATE:
+- Only asks questions for sequences whose SOPInstanceUID appears in --validation_csv
+- Only asks the specific questions listed for that SOPInstanceUID in the validation CSV
+- Sequences not present in validation CSV are skipped
 """
 
 from __future__ import annotations
@@ -110,20 +89,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from configs.questions import QA_QUESTIONS
-
 POOL_CHOICES = ("max", "mean", "logsumexp")
 
 
 # -----------------------------
 # Utilities
 # -----------------------------
-def _run_subprocess(cmd: List[str]) -> None:
-    print("\n[INFO] Running subprocess:")
-    print("       " + " ".join(cmd))
-    subprocess.run(cmd, check=True)
-
-
 def _run_subprocess_capture(cmd: List[str]) -> subprocess.CompletedProcess:
     print("\n[INFO] Running subprocess:")
     print("       " + " ".join(cmd))
@@ -135,35 +106,83 @@ def _run_subprocess_capture(cmd: List[str]) -> subprocess.CompletedProcess:
     return cp
 
 
-def parse_accuracy_from_score_output(text: str) -> Optional[float]:
+def parse_score_output(text: str) -> Dict[str, Optional[float]]:
     """
-    Tries to parse accuracy from calculate_score.py stdout.
+    Tries to parse TP, TN, FP, FN, Accuracy, and F1-score
+    from calculate_score.py stdout/stderr.
 
-    Supports patterns like:
-      Accuracy: 0.845
-      accuracy = 0.845
-      Accuracy: 84.5%
-      accuracy score: 84.5%
-    Returns accuracy in [0,1] if found, else None.
+    Returns:
+        {
+            "tp": int or None,
+            "tn": int or None,
+            "fp": int or None,
+            "fn": int or None,
+            "accuracy": float in [0,1] or None,
+            "f1": float in [0,1] or None,
+        }
     """
-    patterns = [
-        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
-        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)",
-    ]
+    out = {
+        "tp": None,
+        "tn": None,
+        "fp": None,
+        "fn": None,
+        "accuracy": None,
+        "f1": None,
+    }
 
     text_lower = text.lower()
 
-    for pat in patterns:
-        m = re.search(pat, text_lower, flags=re.IGNORECASE)
-        if m:
-            val = float(m.group(1))
-            if "%" in m.group(0):
-                return val / 100.0
-            if val > 1.0:
-                return val / 100.0
-            return val
+    def _parse_int(patterns: List[str]) -> Optional[int]:
+        for pat in patterns:
+            m = re.search(pat, text_lower, flags=re.IGNORECASE)
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    pass
+        return None
 
-    return None
+    def _parse_float_metric(patterns: List[str]) -> Optional[float]:
+        for pat in patterns:
+            m = re.search(pat, text_lower, flags=re.IGNORECASE)
+            if m:
+                try:
+                    val = float(m.group(1))
+                    if "%" in m.group(0) or val > 1.0:
+                        val = val / 100.0
+                    return val
+                except Exception:
+                    pass
+        return None
+
+    out["tp"] = _parse_int([
+        r"\btp\b\s*[:=]\s*([0-9]+)",
+        r"true\s*positives?\s*[:=]\s*([0-9]+)",
+    ])
+    out["tn"] = _parse_int([
+        r"\btn\b\s*[:=]\s*([0-9]+)",
+        r"true\s*negatives?\s*[:=]\s*([0-9]+)",
+    ])
+    out["fp"] = _parse_int([
+        r"\bfp\b\s*[:=]\s*([0-9]+)",
+        r"false\s*positives?\s*[:=]\s*([0-9]+)",
+    ])
+    out["fn"] = _parse_int([
+        r"\bfn\b\s*[:=]\s*([0-9]+)",
+        r"false\s*negatives?\s*[:=]\s*([0-9]+)",
+    ])
+
+    out["accuracy"] = _parse_float_metric([
+        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
+        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)",
+    ])
+
+    out["f1"] = _parse_float_metric([
+        r"f1(?:-score|\s*score)?\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
+        r"f1(?:-score|\s*score)?\s*[:=]\s*([0-9]*\.?[0-9]+)",
+    ])
+
+    return out
 
 
 def get_vit_processor(vit_name: str):
@@ -194,6 +213,65 @@ def uniform_subsample(paths: List[Path], max_frames: Optional[int]) -> List[Path
         return paths
     idxs = torch.linspace(0, len(paths) - 1, steps=max_frames).long().tolist()
     return [paths[i] for i in idxs]
+
+
+def normalize_str(x: Any) -> str:
+    if x is None:
+        return ""
+    s = str(x).strip()
+    if s.lower() == "nan":
+        return ""
+    return s
+
+
+def normalize_question(q: Any) -> str:
+    q = normalize_str(q)
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+def load_validation_question_lookup(validation_csv: str) -> Dict[str, List[str]]:
+    """
+    Build lookup:
+      SOPInstanceUID -> list of questions present in GT
+
+    Only those questions will be asked for each sequence.
+    """
+    path = Path(validation_csv)
+    if not path.exists():
+        raise SystemExit(f"[ERROR] Validation CSV does not exist: {path}")
+
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        raise SystemExit(f"[ERROR] Could not read validation CSV: {path} ({type(e).__name__}: {e})")
+
+    required_cols = {"SOPInstanceUID", "Question"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise SystemExit(f"[ERROR] Validation CSV missing required columns: {sorted(missing)}")
+
+    lookup: Dict[str, List[str]] = {}
+
+    for _, row in df.iterrows():
+        sop = normalize_str(row.get("SOPInstanceUID"))
+        q = normalize_question(row.get("Question"))
+
+        if not sop or not q:
+            continue
+
+        if sop not in lookup:
+            lookup[sop] = []
+
+        if q not in lookup[sop]:
+            lookup[sop].append(q)
+
+    print(f"[INFO] Loaded validation lookup from: {path}")
+    print(f"[INFO] Unique SOPInstanceUIDs in GT: {len(lookup)}")
+    total_q = sum(len(v) for v in lookup.values())
+    print(f"[INFO] Total SOP-question pairs in GT: {total_q}")
+
+    return lookup
 
 
 def read_metadata_key_value_csv(seq_dir: Path) -> Tuple[Optional[str], Optional[str], str]:
@@ -456,10 +534,11 @@ def run_single_checkpoint(
     ckpt_path: Path,
     device: torch.device,
     args,
+    validation_lookup: Dict[str, List[str]],
 ) -> Dict[str, Any]:
     """
     Runs prediction generation + calculate_score.py for one checkpoint.
-    Returns dict with paths and parsed accuracy.
+    Returns dict with paths and parsed metrics.
     """
     model.eval()
     load_checkpoint(model, ckpt_path, device=device)
@@ -504,6 +583,20 @@ def run_single_checkpoint(
                 error_rows.append({"seq_dir": str(seq_dir), "status": meta_status, "details": ""})
                 continue
 
+            sop_norm = normalize_str(sop)
+            relevant_questions = validation_lookup.get(sop_norm, [])
+            if not relevant_questions:
+                s = "no_gt_questions_for_sop"
+                skip_counts[s] = skip_counts.get(s, 0) + 1
+                error_rows.append(
+                    {
+                        "seq_dir": str(seq_dir),
+                        "status": s,
+                        "details": f"SOPInstanceUID={sop}",
+                    }
+                )
+                continue
+
             frames_dir = find_frames_dir(seq_dir)
             if frames_dir is None:
                 s = "missing_frames_dir"
@@ -530,7 +623,7 @@ def run_single_checkpoint(
                 error_rows.append({"seq_dir": str(seq_dir), "status": emb_status, "details": ""})
                 continue
 
-            for q in QA_QUESTIONS:
+            for q in relevant_questions:
                 yes_h, no_h = make_yes_no_hypotheses(q)
                 txt_emb = model.encode_text(tokenizer, [yes_h, no_h], device=device)
                 sims = (img_emb @ txt_emb.t()).squeeze(0)
@@ -571,16 +664,33 @@ def run_single_checkpoint(
     if cp.stderr:
         combined_output += "\n" + cp.stderr
 
-    accuracy = parse_accuracy_from_score_output(combined_output)
-    if accuracy is None:
+    metrics = parse_score_output(combined_output)
+
+    if metrics["accuracy"] is None:
         print(f"[WARN] Could not parse accuracy from calculate_score.py output for {ckpt_path.name}")
+    if metrics["f1"] is None:
+        print(f"[WARN] Could not parse F1-score from calculate_score.py output for {ckpt_path.name}")
+
+    print("\n[CHECKPOINT METRICS]")
+    print(f"  Checkpoint: {ckpt_path.name}")
+    print(f"  TP: {metrics['tp'] if metrics['tp'] is not None else 'N/A'}")
+    print(f"  TN: {metrics['tn'] if metrics['tn'] is not None else 'N/A'}")
+    print(f"  FP: {metrics['fp'] if metrics['fp'] is not None else 'N/A'}")
+    print(f"  FN: {metrics['fn'] if metrics['fn'] is not None else 'N/A'}")
+    print(f"  Accuracy: {metrics['accuracy']:.6f}" if metrics["accuracy"] is not None else "  Accuracy: N/A")
+    print(f"  F1-score: {metrics['f1']:.6f}" if metrics["f1"] is not None else "  F1-score: N/A")
 
     return {
         "checkpoint": ckpt_path,
         "label": label,
         "pred_csv": temp_out_csv,
         "error_csv": temp_err_csv,
-        "accuracy": accuracy,
+        "accuracy": metrics["accuracy"],
+        "f1": metrics["f1"],
+        "tp": metrics["tp"],
+        "tn": metrics["tn"],
+        "fp": metrics["fp"],
+        "fn": metrics["fn"],
         "n_total": n_total,
         "n_ok": n_ok,
     }
@@ -600,6 +710,8 @@ def run(args):
 
     frame_pooling = args.frame_pooling if args.frame_pooling else args.pooling
 
+    validation_lookup = load_validation_question_lookup(args.validation_csv)
+
     model = PooledCLIP(
         vit_name=args.vit_name,
         bert_name=args.bert_name,
@@ -610,9 +722,9 @@ def run(args):
 
     results: List[Dict[str, Any]] = []
     for ckpt_path in checkpoints:
-        print("\n" + "=" * 80)
+        print("\n" + "=" * 100)
         print(f"[INFO] Evaluating checkpoint: {ckpt_path}")
-        print("=" * 80)
+        print("=" * 100)
         result = run_single_checkpoint(
             model=model,
             tokenizer=tokenizer,
@@ -620,6 +732,7 @@ def run(args):
             ckpt_path=ckpt_path,
             device=device,
             args=args,
+            validation_lookup=validation_lookup,
         )
         results.append(result)
 
@@ -643,23 +756,47 @@ def run(args):
         final_error_csv.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(best["error_csv"], final_error_csv)
 
-    print("\n" + "#" * 80)
+    print("\n" + "#" * 160)
     print("[FINAL CHECKPOINT COMPARISON]")
-    print("#" * 80)
+    print("#" * 160)
+    print(
+        f"{'Checkpoint':<20} "
+        f"{'TP':>8} "
+        f"{'TN':>8} "
+        f"{'FP':>8} "
+        f"{'FN':>8} "
+        f"{'Accuracy':>12} "
+        f"{'F1':>12} "
+        f"{'Pred CSV':<40}"
+    )
+
     for r in results:
-        acc_str = "N/A" if r["accuracy"] is None else f"{r['accuracy']:.6f}"
+        tp_str = "N/A" if r.get("tp") is None else str(r["tp"])
+        tn_str = "N/A" if r.get("tn") is None else str(r["tn"])
+        fp_str = "N/A" if r.get("fp") is None else str(r["fp"])
+        fn_str = "N/A" if r.get("fn") is None else str(r["fn"])
+        acc_str = "N/A" if r.get("accuracy") is None else f"{r['accuracy']:.6f}"
+        f1_str = "N/A" if r.get("f1") is None else f"{r['f1']:.6f}"
+
         print(
-            f"  {r['checkpoint'].name:<20}  "
-            f"accuracy={acc_str:<12}  "
-            f"pred_csv={r['pred_csv'].name}"
+            f"{r['checkpoint'].name:<20} "
+            f"{tp_str:>8} "
+            f"{tn_str:>8} "
+            f"{fp_str:>8} "
+            f"{fn_str:>8} "
+            f"{acc_str:>12} "
+            f"{f1_str:>12} "
+            f"{r['pred_csv'].name:<40}"
         )
 
     print("\n[BEST CHECKPOINT]")
     print(f"  Checkpoint: {best['checkpoint']}")
-    if best["accuracy"] is not None:
-        print(f"  Best accuracy: {best['accuracy']:.6f}")
-    else:
-        print("  Best accuracy: N/A")
+    print(f"  TP: {best['tp'] if best.get('tp') is not None else 'N/A'}")
+    print(f"  TN: {best['tn'] if best.get('tn') is not None else 'N/A'}")
+    print(f"  FP: {best['fp'] if best.get('fp') is not None else 'N/A'}")
+    print(f"  FN: {best['fn'] if best.get('fn') is not None else 'N/A'}")
+    print(f"  Best accuracy: {best['accuracy']:.6f}" if best.get("accuracy") is not None else "  Best accuracy: N/A")
+    print(f"  Best F1-score: {best['f1']:.6f}" if best.get("f1") is not None else "  Best F1-score: N/A")
     print(f"  Best prediction CSV copied to: {final_out_csv}")
     if args.error_csv and best["error_csv"] is not None:
         print(f"  Best error CSV copied to: {args.error_csv}")
@@ -681,6 +818,13 @@ def build_argparser():
     )
     ap.add_argument("--out_csv", required=True, type=str)
     ap.add_argument("--error_csv", default="", type=str, help="Optional CSV logging skip/errors per sequence dir.")
+
+    ap.add_argument(
+        "--validation_csv",
+        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv",
+        type=str,
+        help="Validation CSV containing ground-truth rows. Only questions present here will be asked per SOPInstanceUID.",
+    )
 
     ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     ap.add_argument("--vit_name", default="google/vit-base-patch16-224-in21k", type=str)
