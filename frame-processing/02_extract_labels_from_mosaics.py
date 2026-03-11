@@ -1,298 +1,342 @@
 #!/usr/bin/env python3
+
 """
-extract_labels_from_mosaics.py
+Validation Mosaic QA + Evaluation (STRICT YES/NO VERSION)
 
-Stage 2 only: Discover INNER sequence dirs (same rule as stage 1),
-read an EXISTING mosaic image from each sequence dir, and query an LLM (Ollama)
-for each anatomical-level question.
-
-CSV behavior (FINAL)
-- Adds: Timestamp, Model Name
-- Removes: mosaic_file column
-- Appends row-by-row (never rewrites the full file)
-- If CSV exists, new rows are appended
-- Output directory is ALWAYS:
-    <base_path>_Output/
-
-python3 02_extract_labels_from_mosaics.py \
-  --base_path /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed \
-  --model qwen3-vl:8b \
-  --mosaic_name mosaic.png \
-  --frames_subdir frames
-  --limit 10
+Pipeline:
+1. Discover validation sequence directories
+2. Load validation CSV (ground truth)
+3. Match rows using SOPInstanceUID
+4. Send mosaic image to VLM
+5. Ask validation question
+6. Force binary prediction yes/no
+7. Compute evaluation metrics
 """
-
-
 
 import argparse
 import base64
-import json
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from tqdm import tqdm
 
+
+DEFAULT_BASE_PATH = Path(
+"/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed"
+)
+
+DEFAULT_GT_CSV = Path(
+"/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
+)
+
+DEFAULT_MODEL = "qwen3-vl:32b"
+DEFAULT_URL = "http://localhost:11434/api/chat"
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+
+
 # -----------------------------
-# Questions
+# STRICT PROMPT
 # -----------------------------
+BASE_PROMPT = """
+You are a medical image analysis system.
 
-QA_QUESTIONS = [
-    "Is there an arterial abnormality in this angiogram? Please state yes or no.",
-    "Is there an acute arterial abnormality in this angiogram? Please state yes or no.",
-    "Is there an acute arterial injury in this angiogram? Please state yes or no.",
-    "Is there a vascular aberrancy demonstrated in this angiogram? Please state yes or no.",
-    "Is there active arterial extravasation in this angiogram? Please state yes or no.",
-]
+You will be shown an angiography mosaic image containing multiple frames.
 
-# -----------------------------
-# Defaults
-# -----------------------------
-# DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
-DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed")
-DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
+Answer the question using ONLY the image.
 
-# Default model if user does not pass --model
-DEFAULT_MODEL_NAME = "qwen3-vl:32b"
-# "qwen3-vl:32b"
-
-DEFAULT_TIMEOUT_S = 180
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
-BASE_PROMPT = """ROLE
-You are a meticulous clinical information extraction engine for interventional radiology angiography image sequences.
-
-WHY THIS MATTERS
-Your output will be used to build a research-grade labeled dataset. High precision is more important than guessing.
-
-SOURCE OF TRUTH
-Use ONLY the provided image. Do not use outside medical knowledge.
-
-TASK
-Answer exactly ONE question:
 Question: {QUESTION}
 
-IMPORTANT CONTEXT (MOSAIC)
-You are given ONE mosaic (spliced) image that contains multiple frames tiled in reading order (left-to-right, top-to-bottom).
-Treat each tile as an individual frame.
-
 STRICT RULES
-1) Do not guess. If unclear, return “Not stated” or “Unclear”.
-2) If evidence conflicts across tiles, return “Conflicting”.
-3) Cite frames by filename when possible.
+- Output must be exactly ONE word.
+- Allowed answers:
+yes
+no
 
-OUTPUT FORMAT (JSON ONLY)
-Return:
-- answer
-- confidence (0–100)
-- evidence (≤3 short cues)
+Do NOT output:
+- explanations
+- punctuation
+- JSON
+- additional text
+- confidence
 - notes
+
+VALID OUTPUT
+yes
+no
+
+FINAL ANSWER:
 """
-
-
-# -----------------------------
-# CSV helpers (append-only)
-# -----------------------------
-def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
-    if out_path.exists() and out_path.stat().st_size > 0:
-        return
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(columns=columns).to_csv(out_path, index=False)
-
-
-def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
-    ordered = {c: row.get(c) for c in columns}
-    pd.DataFrame([ordered]).to_csv(out_path, mode="a", header=False, index=False)
-
-
-# -----------------------------
-# Directory discovery
-# -----------------------------
-def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
-    seq_dirs: List[Path] = []
-    for d in base_path.rglob("*"):
-        if not d.is_dir():
-            continue
-        frames_dir = d / frames_subdir
-        if not frames_dir.exists():
-            continue
-        if any(p.suffix.lower() in IMAGE_EXTS for p in frames_dir.iterdir()):
-            seq_dirs.append(d)
-    return sorted(seq_dirs, key=lambda p: p.as_posix())
 
 
 # -----------------------------
 # Helpers
 # -----------------------------
-def b64_image(path: Path) -> str:
-    return base64.b64encode(path.read_bytes()).decode("utf-8")
 
-
-def build_prompt(question: str) -> str:
-    return BASE_PROMPT.format(QUESTION=question)
-
-
-def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
-    try:
-        return json.loads(text.strip())
-    except Exception:
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end != -1:
-            try:
-                return json.loads(text[start : end + 1])
-            except Exception:
-                return None
-    return None
-
-
-def ollama_chat_with_images(prompt, images_b64, model, url, timeout):
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt, "images": images_b64}],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-    r = requests.post(url, json=payload, timeout=timeout)
-    r.raise_for_status()
-    return r.json()["message"]["content"]
-
-
-def utc_timestamp() -> str:
+def utc_timestamp():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-@dataclass
-class SequenceMosaicInfo:
-    seq_dir: Path
-    seq_rel: str
-    mosaic_path: Path
-    ok: bool
-    error: Optional[str] = None
+def b64_image(path: Path):
+    return base64.b64encode(path.read_bytes()).decode()
 
 
-def load_mosaics(seq_dirs, base_path, mosaic_name):
-    infos = []
-    for d in seq_dirs:
-        rel = d.relative_to(base_path).as_posix()
-        mp = d / mosaic_name
-        infos.append(
-            SequenceMosaicInfo(d, rel, mp, mp.exists(), None if mp.exists() else "Missing mosaic")
-        )
-    return infos
+def normalize_binary(x):
 
+    if x is None:
+        return None
 
-# -----------------------------
-# Main processing loop
-# -----------------------------
-def run_llm(infos, out_path, columns, model, url, timeout, delay):
-    total = len(infos) * len(QA_QUESTIONS)
+    s = str(x).strip().lower()
 
-    with tqdm(total=total, desc="Analyzing mosaics", unit="q") as pbar:
-        for info in infos:
-            images = [b64_image(info.mosaic_path)] if info.ok else []
+    if s.startswith("yes"):
+        return "yes"
 
-            for q in QA_QUESTIONS:
-                row = {
-                    "Timestamp": utc_timestamp(),
-                    "Model Name": model,
-                    "sequence_dir": info.seq_rel,
-                    "question": q,
-                }
+    if s.startswith("no"):
+        return "no"
 
-                if not images:
-                    row.update(
-                        dict(answer="Not stated", confidence=0, evidence="[]", notes=info.error)
-                    )
-                else:
-                    try:
-                        raw = ollama_chat_with_images(build_prompt(q), images, model, url, timeout)
-                        parsed = safe_parse_json(raw)
-                        if not parsed:
-                            raise ValueError("Non-JSON response")
-                        row.update(
-                            dict(
-                                answer=parsed.get("answer"),
-                                confidence=parsed.get("confidence"),
-                                evidence=json.dumps(parsed.get("evidence", [])),
-                                notes=parsed.get("notes"),
-                            )
-                        )
-                    except Exception as e:
-                        row.update(
-                            dict(answer="Unclear", confidence=0, evidence="[]", notes=str(e)[:200])
-                        )
-
-                append_csv_row(out_path, row, columns)
-                pbar.update(1)
-                if delay:
-                    time.sleep(delay)
+    return None
 
 
 # -----------------------------
-# Entrypoint
+# Ollama Call
 # -----------------------------
+
+def query_model(prompt, image_b64, model, url):
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [image_b64],
+            }
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0,
+            "num_predict": 2
+        },
+    }
+
+    r = requests.post(url, json=payload, timeout=180)
+    r.raise_for_status()
+
+    return r.json()["message"]["content"]
+
+
+# -----------------------------
+# Directory Discovery
+# -----------------------------
+
+def find_sequence_dirs(base_path, frames_subdir):
+
+    seq_dirs = []
+
+    for d in base_path.rglob("*"):
+
+        if not d.is_dir():
+            continue
+
+        frames_dir = d / frames_subdir
+
+        if not frames_dir.exists():
+            continue
+
+        try:
+            has_images = any(
+                p.suffix.lower() in IMAGE_EXTS for p in frames_dir.iterdir()
+            )
+        except Exception:
+            has_images = False
+
+        if has_images:
+            seq_dirs.append(d)
+
+    return sorted(seq_dirs)
+
+
+# -----------------------------
+# Metadata Reader
+# -----------------------------
+
+def read_metadata(metadata_path):
+
+    if not metadata_path.exists():
+        return {}
+
+    df = pd.read_csv(metadata_path)
+
+    info = {}
+
+    for _, r in df.iterrows():
+        k = str(r["Information"]).strip()
+        v = str(r["Value"]).strip()
+        info[k] = v
+
+    return info
+
+
+# -----------------------------
+# Main
+# -----------------------------
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
 
-    parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
-    parser.add_argument("--delay", type=float, default=0.0)
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
+    parser.add_argument("--gt_csv", type=Path, default=DEFAULT_GT_CSV)
+
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--url", default=DEFAULT_URL)
+
     parser.add_argument("--frames_subdir", default="frames")
     parser.add_argument("--mosaic_name", default="mosaic.png")
+
     parser.add_argument("--limit", type=int, default=None)
 
     args = parser.parse_args()
 
-    seq_dirs = find_sequence_dirs(args.base_path, args.frames_subdir)
+    gt = pd.read_csv(args.gt_csv)
+
     if args.limit:
-        seq_dirs = seq_dirs[:args.limit]
-    infos = load_mosaics(seq_dirs, args.base_path, args.mosaic_name)
+        gt = gt.head(args.limit)
 
-    # 🔥 OUTPUT PATH FIX (as requested)
+    seq_dirs = find_sequence_dirs(args.base_path, args.frames_subdir)
+
+    sop_map = {}
+
+    for d in seq_dirs:
+
+        metadata = read_metadata(d / "metadata.csv")
+
+        sop = metadata.get("SOPInstanceUID")
+
+        if sop:
+            sop_map[sop] = d
+
     output_root = Path(f"{args.base_path}_Output")
-    out_csv = output_root / "mosaics_extracted_labels.csv"
+    output_root.mkdir(exist_ok=True)
 
-    columns = [
-        "Timestamp",
-        "Model Name",
-        "sequence_dir",
-        "question",
-        "answer",
-        "confidence",
-        "evidence",
-        "notes",
-    ]
+    pred_csv = output_root / "validation_predictions.csv"
+    metrics_csv = output_root / "validation_metrics.csv"
 
-    ensure_csv_header(out_csv, columns)
+    rows = []
 
-    print(f"Sequences found: {len(seq_dirs)}")
-    print(f"Output CSV: {out_csv}")
-    print(f"Model: {args.model}")
+    print("Validation rows:", len(gt))
+    print("Sequence dirs:", len(seq_dirs))
 
-    run_llm(
-        infos=infos,
-        out_path=out_csv,
-        columns=columns,
-        model=args.model,
-        url=args.url,
-        timeout=args.timeout,
-        delay=args.delay,
+    with tqdm(total=len(gt)) as pbar:
+
+        for _, r in gt.iterrows():
+
+            sop = str(r["SOPInstanceUID"])
+            question = str(r["Question"])
+            gt_answer = str(r["Answer"])
+
+            seq_dir = sop_map.get(sop)
+
+            pred = "unclear"
+
+            if seq_dir:
+
+                mosaic = seq_dir / args.mosaic_name
+
+                if mosaic.exists():
+
+                    prompt = BASE_PROMPT.format(QUESTION=question)
+
+                    try:
+
+                        raw = query_model(
+                            prompt,
+                            b64_image(mosaic),
+                            args.model,
+                            args.url
+                        )
+
+                        raw = raw.strip().lower()
+
+                        if raw.startswith("yes"):
+                            pred = "yes"
+
+                        elif raw.startswith("no"):
+                            pred = "no"
+
+                    except Exception:
+                        pred = "unclear"
+
+            rows.append(
+                {
+                    "timestamp": utc_timestamp(),
+                    "SOPInstanceUID": sop,
+                    "question": question,
+                    "gt_answer": gt_answer,
+                    "pred_answer": pred,
+                }
+            )
+
+            pbar.update(1)
+
+    df = pd.DataFrame(rows)
+
+    df.to_csv(pred_csv, index=False)
+
+    # -----------------------------
+    # Metrics
+    # -----------------------------
+
+    df["gt_norm"] = df["gt_answer"].apply(normalize_binary)
+    df["pred_norm"] = df["pred_answer"].apply(normalize_binary)
+
+    eval_df = df.dropna(subset=["gt_norm", "pred_norm"])
+
+    if len(eval_df) > 0:
+
+        y_true = eval_df["gt_norm"].map({"yes":1,"no":0})
+        y_pred = eval_df["pred_norm"].map({"yes":1,"no":0})
+
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred)
+        recall = recall_score(y_true, y_pred)
+        f1 = f1_score(y_true, y_pred)
+
+    else:
+
+        accuracy = precision = recall = f1 = None
+
+    metrics = pd.DataFrame(
+        [
+            {"metric":"accuracy","value":accuracy},
+            {"metric":"precision","value":precision},
+            {"metric":"recall","value":recall},
+            {"metric":"f1","value":f1},
+        ]
     )
 
-    print("Done ✔ Incremental results preserved.")
+    metrics.to_csv(metrics_csv, index=False)
+
+    print("\n===== FINAL METRICS =====")
+
+    print("Accuracy :", accuracy)
+    print("Precision:", precision)
+    print("Recall   :", recall)
+    print("F1       :", f1)
+
+    print("\nPredictions saved:", pred_csv)
+    print("Metrics saved:", metrics_csv)
 
 
 if __name__ == "__main__":
+
     try:
         main()
     except KeyboardInterrupt:
-        print("\nInterrupted — partial results saved.", file=sys.stderr)
-        raise
+        print("\nInterrupted", file=sys.stderr)

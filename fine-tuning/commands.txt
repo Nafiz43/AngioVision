@@ -406,14 +406,14 @@ python3 custom_framework_validate.py \
 
 
 python3 custom_framework_validate.py \
-  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/11_16_4_32/\
-      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_11_16_4_32.csv \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/10_16_16_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_10_16_16_32.csv \
         --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
          --device cuda   --frame_chunk_size 32   --pooling logsumexp
 
 
 python3 custom_framework_validate.py \
-  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/10_16_16_32/\
-      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_10_16_16_32.csv \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/21_32_1_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_21_32_1_32.csv \
         --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
          --device cuda   --frame_chunk_size 32   --pooling logsumexp
