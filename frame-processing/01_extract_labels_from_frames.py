@@ -1,375 +1,633 @@
 #!/usr/bin/env python3
 """
-extract_labels_from_frames.py
+02_extract_labels_from_mosaics_validation_only.py
 
-Automates extraction of structured clinical labels from angiography image sequences
-using a multimodal LLM (Qwen-2.5VL) served via Ollama.
+Validation-only pipeline:
+- Reads validation CSV as ground truth
+- Finds corresponding mosaic.png files in sequence directories
+- Asks an Ollama VLM only the questions present in the validation CSV
+- Applies strict post-processing so outputs become only YES/NO
+- Treats unclear / not visible / cannot say / can not say / similar answers as NO
+- Matching and normalization are case-insensitive
+- Appends predictions row-by-row to CSV
+- Computes accuracy, precision, recall, and F1 score against validation ground truth
 
-Dataset layout assumed:
-  base_path/<outer_dir>/<dicom_uid_dir>/frames/*.png
+Expected validation CSV columns:
+  SOPInstanceUID, Question, Answer
+Optional columns:
+  AccessionNumber
 
-Key properties:
-- Discovers INNER dicom_uid_dir folders as sequence dirs
-- Reads frames ONLY per dicom directory
-- Appends results row-by-row to a persistent CSV
-- Adds timestamp + model name to every row
+Expected sequence directory layout:
+  <base_path>/
+    <sequence_dir_1>/
+      mosaic.png
+      metadata.csv
+    <sequence_dir_2>/
+      mosaic.png
+      metadata.csv
+    ...
+
+metadata.csv format:
+  Information,Value
+  SOPInstanceUID,1.2.3...
+  AccessionNumber,12345
+  ...
+
+Example:
+python3 02_extract_labels_from_mosaics_validation_only.py \
+  --base_path /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed \
+  --validation_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv \
+  --model llava:13b \
+  --output_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_predictions.csv \
+  --metrics_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_metrics.csv \
+  --errors_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_errors.csv \
+  --skip_existing
 """
 
-import argparse
-import base64
+import os
+import re
 import csv
-import json
-import sys
-import time
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+import base64
+import argparse
+import subprocess
+from datetime import datetime
+from typing import Dict, List, Optional
 
-import requests
+import pandas as pd
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from tqdm import tqdm
 
-# -----------------------------
-# Questions
-# -----------------------------
-QUESTIONS = [
-    "Which artery is catheterized?",
-    "Is variant anatomy present?",
-    "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
-    "Is there evidence of arterial or venous dissection?",
-    "Is stenosis present in any visualized vessel?",
-    "Is an endovascular stent visible in this sequence?",
-]
 
-
-
-# -----------------------------
+# ----------------------------
 # Defaults
-# -----------------------------
-DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
-DEFAULT_OUTPUT_ROOT_SUFFIX = "_Output"
+# ----------------------------
+DEFAULT_BASE_PATH = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed"
+DEFAULT_VALIDATION_CSV = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
+DEFAULT_MODEL = "llama3:8b"
 
-DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
-
-# Default model if user does not pass --model
-DEFAULT_MODEL_NAME = "qwen3-vl:32b"
-# "llama3.2-vision:11b"
-# "qwen3-vl:32b"
-
-DEFAULT_TIMEOUT_S = 180
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
-# -----------------------------
-# Prompt
-# -----------------------------
-BASE_PROMPT = """ROLE
-You are a clinical information extraction engine for interventional radiology angiography image sequences.
-
-GOAL
-Your task is to answer a single medical question about the provided angiography frames.
-
-QUESTION
-{QUESTION}
-
-SOURCE OF TRUTH
-Use ONLY the provided frames. Do NOT use outside medical knowledge or assumptions.
-
-STRICT DECISION RULE
-You MUST produce a binary decision.
-
-Allowed answers:
-- YES
-- NO
-
-Interpretation:
-- Answer YES only if the evidence is clearly present in the frames.
-- If the evidence is absent, unclear, contradictory, or insufficient, answer NO.
-
-ABSOLUTE OUTPUT RULES
-1. The "answer" field MUST be exactly "YES" or "NO".
-2. No other answer values are allowed.
-3. Do NOT output "maybe", "unclear", "not stated", "unknown", or similar.
-4. Do NOT add explanations outside the JSON structure.
-5. If uncertain, default to "NO".
-
-OUTPUT FORMAT (JSON ONLY)
-
-{
-  "answer": "YES or NO",
-  "confidence": 0-100,
-  "evidence": ["short cue referencing frame filename", "optional second cue", "optional third cue"],
-  "notes": "brief reasoning based only on visible frame evidence"
-}
-
-FRAMES
-A set of angiography frames is attached.
-"""
-
-# -----------------------------
-# CSV helpers (append-only)
-# -----------------------------
-def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if out_path.exists() and out_path.stat().st_size > 0:
-        return
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
-        writer.writeheader()
+DEFAULT_OUTPUT_CSV = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_predictions.csv"
+DEFAULT_METRICS_CSV = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_metrics.csv"
+DEFAULT_ERRORS_CSV = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_errors.csv"
 
 
-def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
-    ensure_csv_header(out_path, columns)
-    ordered = {c: row.get(c) for c in columns}
-    with out_path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
-        writer.writerow(ordered)
+# ----------------------------
+# Utility functions
+# ----------------------------
+def now_ts() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+def normalize_text(x: object) -> str:
+    """
+    Generic case-insensitive normalization for matching.
+    """
+    if pd.isna(x):
+        return ""
+    s = str(x).strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
 
-# -----------------------------
-# Sequence discovery
-# -----------------------------
-def _has_images_in_dir(d: Path) -> bool:
+
+def normalize_gt_answer(raw_answer: object) -> str:
+    """
+    Normalize ground-truth answers into YES/NO.
+    Case-insensitive.
+    """
+    if pd.isna(raw_answer):
+        return "NO"
+
+    ans = normalize_text(raw_answer)
+
+    yes_like = {
+        "yes", "y", "true", "1", "present", "positive"
+    }
+    no_like = {
+        "no", "n", "false", "0", "absent", "negative",
+        "unclear", "not visible", "cannot say", "can not say",
+        "can't say", "cant say", "unable to determine",
+        "cannot determine", "can not determine", "not sure",
+        "unknown", "indeterminate", "not identifiable",
+        "not seen", "not clear", "not possible to determine"
+    }
+
+    if ans in yes_like:
+        return "YES"
+    if ans in no_like:
+        return "NO"
+
+    if "yes" in ans or "present" in ans or "positive" in ans:
+        return "YES"
+
+    if any(term in ans for term in [
+        "no",
+        "unclear",
+        "not visible",
+        "cannot say",
+        "can not say",
+        "can't say",
+        "cant say",
+        "unable to determine",
+        "cannot determine",
+        "can not determine",
+        "not sure",
+        "unknown",
+        "indeterminate",
+        "not identifiable",
+        "not seen",
+        "not clear",
+        "not possible to determine",
+        "absent",
+        "negative"
+    ]):
+        return "NO"
+
+    return "NO"
+
+
+def normalize_llm_answer(raw_answer: object) -> str:
+    """
+    Normalize LLM output to strict YES/NO.
+
+    Rules:
+    - Case-insensitive
+    - 'unclear', 'not visible', 'cannot say', 'can not say', etc. -> NO
+    - explicit yes-like -> YES
+    - explicit no-like / uncertain / visibility-limited -> NO
+    - fallback -> NO
+    """
+    if raw_answer is None:
+        return "NO"
+
+    ans = normalize_text(raw_answer)
+
+    yes_terms = {
+        "yes",
+        "y",
+    }
+
+    no_terms = {
+        "no",
+        "n",
+        "unclear",
+        "not visible",
+        "cannot say",
+        "can not say",
+        "cant say",
+        "can't say",
+        "unable to determine",
+        "not sure",
+        "unknown",
+        "indeterminate",
+        "not identifiable",
+        "not seen",
+        "not clear",
+        "not possible to determine",
+        "cannot determine",
+        "can not determine",
+    }
+
+    if ans in yes_terms:
+        return "YES"
+
+    if ans in no_terms:
+        return "NO"
+
+    if "yes" in ans:
+        return "YES"
+
+    if any(term in ans for term in [
+        "no",
+        "unclear",
+        "not visible",
+        "cannot say",
+        "can not say",
+        "can't say",
+        "cant say",
+        "unable to determine",
+        "cannot determine",
+        "can not determine",
+        "not sure",
+        "unknown",
+        "indeterminate",
+        "not identifiable",
+        "not seen",
+        "not clear",
+        "not possible to determine",
+    ]):
+        return "NO"
+
+    return "NO"
+
+
+def load_metadata_csv(metadata_path: str) -> Dict[str, str]:
+    """
+    Reads metadata.csv with columns [Information, Value] into a dict.
+    Matching is case-insensitive for keys.
+    """
+    out = {}
     try:
-        return any(
-            p.is_file() and p.suffix.lower() in IMAGE_EXTS
-            for p in d.iterdir()
+        df = pd.read_csv(metadata_path)
+        if "Information" not in df.columns or "Value" not in df.columns:
+            return out
+
+        for _, row in df.iterrows():
+            key = normalize_text(row["Information"])
+            val = "" if pd.isna(row["Value"]) else str(row["Value"]).strip()
+            out[key] = val
+    except Exception:
+        return out
+
+    return out
+
+
+def encode_image_base64(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
+def build_prompt(question: str) -> str:
+    """
+    Very strict prompt:
+    - answer must be only YES or NO
+    - no explanation
+    - if uncertain or not visible, answer NO
+    """
+    return (
+        "You are analyzing a medical mosaic image.\n"
+        f"Question: {question}\n\n"
+        "Rules:\n"
+        "1. Respond with exactly one word only: YES or NO.\n"
+        "2. Do not provide any explanation.\n"
+        "3. Do not provide punctuation.\n"
+        "4. If the finding is unclear, uncertain, not visible, cannot be determined, or you cannot say, respond NO.\n"
+        "5. Output must be exactly YES or NO.\n"
+    )
+
+
+def call_ollama_vlm(model: str, image_path: str, question: str, timeout: int = 180) -> str:
+    """
+    Calls Ollama using `ollama run <model>` with a strict prompt.
+    Feeds image as base64 inside the prompt text.
+
+    If your local model expects a different interface, update only this function.
+    """
+    prompt = build_prompt(question)
+    image_b64 = encode_image_base64(image_path)
+
+    payload = (
+        f"{prompt}\n"
+        f"Image (base64): {image_b64}\n"
+    )
+
+    try:
+        proc = subprocess.run(
+            ["ollama", "run", model],
+            input=payload,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
         )
+
+        raw = (proc.stdout or "").strip()
+        if not raw and proc.stderr:
+            raw = proc.stderr.strip()
+
+        return raw
+    except subprocess.TimeoutExpired:
+        return "NO"
     except Exception:
-        return False
+        return "NO"
 
 
-def discover_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
-    seq_dirs = []
-    seen = set()
+def ensure_parent_dir(file_path: str) -> None:
+    parent = os.path.dirname(os.path.abspath(file_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
-    for frames_dir in base_path.rglob(frames_subdir):
-        if not frames_dir.is_dir():
+
+def append_row_csv(csv_path: str, row: Dict, fieldnames: List[str]) -> None:
+    ensure_parent_dir(csv_path)
+    file_exists = os.path.exists(csv_path)
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+# ----------------------------
+# Index building
+# ----------------------------
+def build_sequence_index(base_path: str) -> Dict[str, Dict[str, str]]:
+    """
+    Build an index:
+      normalized SOPInstanceUID -> {
+          "sop_uid": original,
+          "accession_number": ...,
+          "sequence_dir": ...,
+          "mosaic_path": ...,
+          "metadata_path": ...
+      }
+
+    Only includes sequence dirs that have BOTH metadata.csv and mosaic.png.
+    """
+    seq_index = {}
+
+    if not os.path.isdir(base_path):
+        raise FileNotFoundError(f"Base path not found: {base_path}")
+
+    for item in os.listdir(base_path):
+        seq_dir = os.path.join(base_path, item)
+        if not os.path.isdir(seq_dir):
             continue
-        if not _has_images_in_dir(frames_dir):
+
+        metadata_path = os.path.join(seq_dir, "metadata.csv")
+        mosaic_path = os.path.join(seq_dir, "mosaic.png")
+
+        if not os.path.isfile(metadata_path):
+            continue
+        if not os.path.isfile(mosaic_path):
             continue
 
-        seq_dir = frames_dir.parent
-        key = seq_dir.resolve()
-        if key not in seen:
-            seen.add(key)
-            seq_dirs.append(seq_dir)
+        meta = load_metadata_csv(metadata_path)
+        sop_uid = meta.get("sopinstanceuid", "").strip()
+        accession = meta.get("accessionnumber", "").strip()
 
-    seq_dirs.sort(key=lambda p: p.as_posix())
-    return seq_dirs
+        if not sop_uid:
+            continue
 
+        seq_index[normalize_text(sop_uid)] = {
+            "sop_uid": sop_uid,
+            "accession_number": accession,
+            "sequence_dir": seq_dir,
+            "mosaic_path": mosaic_path,
+            "metadata_path": metadata_path,
+        }
 
-def get_outer_and_inner(seq_dir: Path, base_path: Path) -> Tuple[str, str]:
-    inner = seq_dir.name
-    try:
-        rel = seq_dir.relative_to(base_path)
-        outer = rel.parts[0] if len(rel.parts) >= 2 else ""
-    except Exception:
-        outer = seq_dir.parent.name
-    return outer, inner
-
-# -----------------------------
-# Frame utilities
-# -----------------------------
-def list_frame_files(seq_dir: Path, frames_subdir: str) -> List[Path]:
-    frames_dir = seq_dir / frames_subdir
-
-    if frames_dir.exists():
-        frames = [
-            p for p in frames_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-        ]
-        if frames:
-            return sorted(frames, key=lambda p: p.name)
-
-    frames = [
-        p for p in seq_dir.rglob("*")
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-    ]
-    return sorted(frames, key=lambda p: p.as_posix())
+    return seq_index
 
 
-def pick_frames(frames: List[Path], max_frames: int, stride: int) -> List[Path]:
-    stride = max(1, stride)
-    sampled = frames[::stride]
+# ----------------------------
+# Validation loading
+# ----------------------------
+def detect_column(df: pd.DataFrame, candidates: List[str], required: bool = True) -> Optional[str]:
+    """
+    Find the first matching column name case-insensitively.
+    """
+    norm_map = {normalize_text(c): c for c in df.columns}
+    for cand in candidates:
+        if normalize_text(cand) in norm_map:
+            return norm_map[normalize_text(cand)]
 
-    if max_frames and len(sampled) > max_frames:
-        if max_frames == 1:
-            return [sampled[len(sampled) // 2]]
-        step = (len(sampled) - 1) / (max_frames - 1)
-        idxs = [round(i * step) for i in range(max_frames)]
-        sampled = [sampled[i] for i in idxs]
-
-    return sampled
-
-
-def b64_image(path: Path) -> str:
-    return base64.b64encode(path.read_bytes()).decode("utf-8")
-
-# -----------------------------
-# Ollama helpers
-# -----------------------------
-def build_prompt(question: str, frame_names: List[str]) -> str:
-    names = "\n".join(frame_names) if frame_names else "(none)"
-    return BASE_PROMPT.format(QUESTION=question) + f"\nFRAME FILENAMES\n{names}\n"
-
-
-def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
-    try:
-        return json.loads(text)
-    except Exception:
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end != -1:
-            try:
-                return json.loads(text[start:end + 1])
-            except Exception:
-                return None
+    if required:
+        raise ValueError(
+            f"Could not find required column. Expected one of: {candidates}. "
+            f"Available columns: {list(df.columns)}"
+        )
     return None
 
 
-def ollama_chat_with_images(prompt, images_b64, model, url, timeout):
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt, "images": images_b64}],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-    r = requests.post(url, json=payload, timeout=timeout)
-    r.raise_for_status()
-    return r.json()["message"]["content"]
+def load_validation_csv(validation_csv: str) -> pd.DataFrame:
+    df = pd.read_csv(validation_csv)
 
-# -----------------------------
-# Main
-# -----------------------------
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
+    sop_col = detect_column(df, ["SOPInstanceUID", "sopinstanceuid", "SOP UID", "SOP_UID"])
+    q_col = detect_column(df, ["Question", "question"])
+    a_col = detect_column(df, ["Answer", "answer", "GroundTruth", "ground_truth"])
 
-    parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
-    parser.add_argument("--frames_subdir", type=str, default="frames")
-    parser.add_argument("--max_frames", type=int, default=24)
-    parser.add_argument("--stride", type=int, default=5)
-    parser.add_argument("--delay", type=float, default=0.0)
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--debug", action="store_true")
+    accession_col = detect_column(
+        df,
+        ["AccessionNumber", "accessionnumber", "Accession Number"],
+        required=False
+    )
+
+    out = pd.DataFrame({
+        "SOPInstanceUID": df[sop_col].astype(str),
+        "Question": df[q_col].astype(str),
+        "GT_Answer_Raw": df[a_col].astype(str),
+    })
+
+    if accession_col is not None:
+        out["AccessionNumber"] = df[accession_col].astype(str)
+    else:
+        out["AccessionNumber"] = ""
+
+    out["SOP_norm"] = out["SOPInstanceUID"].apply(normalize_text)
+    out["Question_norm"] = out["Question"].apply(normalize_text)
+    out["GT_Answer"] = out["GT_Answer_Raw"].apply(normalize_gt_answer)
+
+    out = out.dropna(subset=["SOPInstanceUID", "Question"])
+    out = out[out["SOP_norm"] != ""].copy()
+    out = out[out["Question_norm"] != ""].copy()
+
+    return out
+
+
+# ----------------------------
+# Main pipeline
+# ----------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run validation-only LLM mosaic QA and compute metrics."
+    )
+    parser.add_argument("--base_path", type=str, default=DEFAULT_BASE_PATH)
+    parser.add_argument("--validation_csv", type=str, default=DEFAULT_VALIDATION_CSV)
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
+    parser.add_argument("--output_csv", type=str, default=DEFAULT_OUTPUT_CSV)
+    parser.add_argument("--metrics_csv", type=str, default=DEFAULT_METRICS_CSV)
+    parser.add_argument("--errors_csv", type=str, default=DEFAULT_ERRORS_CSV)
+    parser.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Skip rows already present in output_csv based on SOPInstanceUID + Question."
+    )
     args = parser.parse_args()
 
-    seq_dirs = discover_sequence_dirs(args.base_path, args.frames_subdir)
-    if args.limit:
-        seq_dirs = seq_dirs[:args.limit]
+    print(f"[{now_ts()}] Loading validation CSV: {args.validation_csv}")
+    val_df = load_validation_csv(args.validation_csv)
+    print(f"[{now_ts()}] Validation rows loaded: {len(val_df)}")
 
-    # ✅ OUTPUT ROOT FIX
-    output_root = args.base_path.parent / (args.base_path.name + DEFAULT_OUTPUT_ROOT_SUFFIX)
-    output_root.mkdir(parents=True, exist_ok=True)
+    print(f"[{now_ts()}] Building sequence index from: {args.base_path}")
+    seq_index = build_sequence_index(args.base_path)
+    print(f"[{now_ts()}] Indexed sequences with metadata + mosaic: {len(seq_index)}")
+    print(f"[{now_ts()}] Using model: {args.model}")
 
-    out_path = output_root / "frames_extracted_labels.csv"
 
-    out_cols = [
-        "timestamp_utc",
-        "model_name",
-        "outer_dir",
-        "dicom_dir",
-        "sequence_path",
-        "num_frames_found",
-        "num_frames_sent",
-        "question",
-        "answer",
-        "confidence",
-        "evidence",
-        "notes",
+    existing_keys = set()
+    if args.skip_existing and os.path.exists(args.output_csv):
+        try:
+            existing_df = pd.read_csv(args.output_csv)
+            if {"SOPInstanceUID", "Question"}.issubset(existing_df.columns):
+                existing_keys = set(
+                    zip(
+                        existing_df["SOPInstanceUID"].astype(str).map(normalize_text),
+                        existing_df["Question"].astype(str).map(normalize_text),
+                    )
+                )
+                print(f"[{now_ts()}] Existing prediction rows detected: {len(existing_keys)}")
+        except Exception as e:
+            print(f"[WARN] Could not load existing output CSV for skip_existing: {e}")
+
+    pred_fieldnames = [
+        "Timestamp",
+        "Model Name",
+        "AccessionNumber",
+        "SOPInstanceUID",
+        "Question",
+        "GroundTruth",
+        "Predicted",
+        "Raw_LLM_Output",
+        "sequence_dir",
+        "mosaic_path",
     ]
 
-    ensure_csv_header(out_path, out_cols)
+    error_fieldnames = [
+        "Timestamp",
+        "Model Name",
+        "AccessionNumber",
+        "SOPInstanceUID",
+        "Question",
+        "status",
+        "details",
+    ]
 
-    print(f"Sequences found: {len(seq_dirs)}")
-    print(f"Output CSV: {out_path}")
-    print(f"Model: {args.model}")
+    all_gt = []
+    all_pred = []
+    processed = 0
+    skipped = 0
+    errors = 0
+    unmatched = 0
 
-    with tqdm(total=len(seq_dirs) * len(QUESTIONS), desc="Analyzing") as pbar:
-        for seq_dir in seq_dirs:
-            outer, inner = get_outer_and_inner(seq_dir, args.base_path)
-            frames = list_frame_files(seq_dir, args.frames_subdir)
-            selected = pick_frames(frames, args.max_frames, args.stride)
+    for _, row in tqdm(val_df.iterrows(), total=len(val_df), desc="Running LLM QA"):
+        sop_uid = str(row["SOPInstanceUID"]).strip()
+        sop_norm = row["SOP_norm"]
+        question = str(row["Question"]).strip()
+        question_norm = row["Question_norm"]
+        gt_answer = row["GT_Answer"]
+        accession_from_val = str(row.get("AccessionNumber", "")).strip()
 
-            images_b64 = [b64_image(p) for p in selected]
-            frame_names = [p.name for p in selected]
+        key = (sop_norm, question_norm)
+        if key in existing_keys:
+            skipped += 1
+            continue
 
-            for q in QUESTIONS:
-                ts = utc_now_iso()
+        seq_info = seq_index.get(sop_norm)
+        if seq_info is None:
+            unmatched += 1
+            append_row_csv(
+                args.errors_csv,
+                {
+                    "Timestamp": now_ts(),
+                    "Model Name": args.model,
+                    "AccessionNumber": accession_from_val,
+                    "SOPInstanceUID": sop_uid,
+                    "Question": question,
+                    "status": "NO_MATCHING_SEQUENCE",
+                    "details": "Could not find sequence dir by SOPInstanceUID (case-insensitive).",
+                },
+                error_fieldnames
+            )
+            continue
 
-                if not images_b64:
-                    append_csv_row(out_path, {
-                        "timestamp_utc": ts,
-                        "model_name": args.model,
-                        "outer_dir": outer,
-                        "dicom_dir": inner,
-                        "sequence_path": str(seq_dir),
-                        "num_frames_found": len(frames),
-                        "num_frames_sent": 0,
-                        "question": q,
-                        "answer": "Not stated",
-                        "confidence": 0,
-                        "evidence": "[]",
-                        "notes": "No usable frames",
-                    }, out_cols)
-                    pbar.update(1)
-                    continue
+        accession = seq_info["accession_number"] or accession_from_val
+        mosaic_path = seq_info["mosaic_path"]
+        sequence_dir = seq_info["sequence_dir"]
 
-                try:
-                    raw = ollama_chat_with_images(
-                        build_prompt(q, frame_names),
-                        images_b64,
-                        args.model,
-                        args.url,
-                        args.timeout,
-                    )
-                    parsed = safe_parse_json(raw) or {}
+        try:
+            raw_llm_output = call_ollama_vlm(
+                model=args.model,
+                image_path=mosaic_path,
+                question=question
+            )
+            pred_answer = normalize_llm_answer(raw_llm_output)
 
-                    append_csv_row(out_path, {
-                        "timestamp_utc": ts,
-                        "model_name": args.model,
-                        "outer_dir": outer,
-                        "dicom_dir": inner,
-                        "sequence_path": str(seq_dir),
-                        "num_frames_found": len(frames),
-                        "num_frames_sent": len(images_b64),
-                        "question": q,
-                        "answer": parsed.get("answer"),
-                        "confidence": parsed.get("confidence"),
-                        "evidence": json.dumps(parsed.get("evidence", [])),
-                        "notes": parsed.get("notes", ""),
-                    }, out_cols)
+            append_row_csv(
+                args.output_csv,
+                {
+                    "Timestamp": now_ts(),
+                    "Model Name": args.model,
+                    "AccessionNumber": accession,
+                    "SOPInstanceUID": sop_uid,
+                    "Question": question,
+                    "GroundTruth": gt_answer,
+                    "Predicted": pred_answer,
+                    "Raw_LLM_Output": raw_llm_output,
+                    "sequence_dir": sequence_dir,
+                    "mosaic_path": mosaic_path,
+                },
+                pred_fieldnames
+            )
 
-                except Exception as e:
-                    append_csv_row(out_path, {
-                        "timestamp_utc": ts,
-                        "model_name": args.model,
-                        "outer_dir": outer,
-                        "dicom_dir": inner,
-                        "sequence_path": str(seq_dir),
-                        "num_frames_found": len(frames),
-                        "num_frames_sent": len(images_b64),
-                        "question": q,
-                        "answer": "Unclear",
-                        "confidence": 0,
-                        "evidence": "[]",
-                        "notes": str(e)[:200],
-                    }, out_cols)
+            all_gt.append(gt_answer)
+            all_pred.append(pred_answer)
+            processed += 1
 
-                pbar.update(1)
-                if args.delay:
-                    time.sleep(args.delay)
+        except Exception as e:
+            errors += 1
+            append_row_csv(
+                args.errors_csv,
+                {
+                    "Timestamp": now_ts(),
+                    "Model Name": args.model,
+                    "AccessionNumber": accession,
+                    "SOPInstanceUID": sop_uid,
+                    "Question": question,
+                    "status": "LLM_CALL_FAILED",
+                    "details": str(e),
+                },
+                error_fieldnames
+            )
 
-    print("Done ✔ CSV appended incrementally.")
+    print(f"\n[{now_ts()}] Finished.")
+    print(f"Processed: {processed}")
+    print(f"Skipped existing: {skipped}")
+    print(f"Unmatched sequences: {unmatched}")
+    print(f"Errors: {errors}")
+
+    if len(all_gt) == 0:
+        print("[WARN] No predictions were produced, so no metrics were computed.")
+        return
+
+    y_true = [1 if x == "YES" else 0 for x in all_gt]
+    y_pred = [1 if x == "YES" else 0 for x in all_pred]
+
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+
+    metrics_row = {
+        "Timestamp": now_ts(),
+        "Model Name": args.model,
+        "Validation CSV": args.validation_csv,
+        "Base Path": args.base_path,
+        "Total Evaluated Rows": len(all_gt),
+        "Accuracy": accuracy,
+        "Precision": precision,
+        "Recall": recall,
+        "F1 Score": f1,
+        "Processed": processed,
+        "Skipped Existing": skipped,
+        "Unmatched Sequences": unmatched,
+        "Errors": errors,
+    }
+
+    metrics_df = pd.DataFrame([metrics_row])
+    ensure_parent_dir(args.metrics_csv)
+    if os.path.exists(args.metrics_csv):
+        old_df = pd.read_csv(args.metrics_csv)
+        metrics_df = pd.concat([old_df, metrics_df], ignore_index=True)
+
+    metrics_df.to_csv(args.metrics_csv, index=False)
+
+    print("\n=== FINAL METRICS ===")
+    print(f"Accuracy : {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall   : {recall:.4f}")
+    print(f"F1 Score : {f1:.4f}")
+    print(f"Metrics CSV saved to: {args.metrics_csv}")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("Interrupted — partial results preserved.", file=sys.stderr)
-        raise
+    main()
