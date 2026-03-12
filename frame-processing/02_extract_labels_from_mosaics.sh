@@ -14,17 +14,12 @@ mkdir -p $OUTPUT_DIR
 
 
 MODELS=(
-"thiagomoraes/medgemma-27b-it:Q4_K_S"
 "qwen3-vl:8b"
 "gemma3:27b"
 "llava:34b"
 "llama3.2-vision:11b"
 "gpt-oss:20b"
-"thewindmom/llama3-med42-8b:latest"
 "qwen3-vl:32b"
-"thewindmom/llama3-med42-70b:latest"
-"meditron:70b"
-"llama3:8b"
 )
 
 for MODEL in "${MODELS[@]}"
