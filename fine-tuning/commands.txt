@@ -417,3 +417,22 @@ python3 custom_framework_validate.py \
       --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_21_32_1_32.csv \
         --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
          --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
+trial 4:
+    python3 custom_framework_train_2.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 12 \
+  --num_workers 32 \
+  --max_sequences_per_study 16\
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 1 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text 
