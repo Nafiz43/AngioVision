@@ -6,7 +6,7 @@
 
 SCRIPT="02_extract_labels_from_mosaics.py"
 
-BASE_PATH="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed"
+BASE_PATH="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed"
 VAL_CSV="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
 
 OUTPUT_DIR="model_runs"

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-02_extract_labels_from_mosaics_validation_only.py
+02_extract_labels_from_mosaics.py
 
 Validation-only pipeline:
 - Reads validation CSV as ground truth
 - Finds corresponding mosaic.png files in sequence directories
 - Asks an Ollama VLM only the questions present in the validation CSV
+- Uses Ollama local API with temperature = 0 for deterministic inference
 - Applies strict post-processing so outputs become only YES/NO
 - Treats unclear / not visible / cannot say / can not say / similar answers as NO
 - Matching and normalization are case-insensitive
 - Appends predictions row-by-row to CSV
-- Computes accuracy, precision, recall, F1 score, and TP/TN/FP/FN against validation ground truth
+- Computes accuracy, precision, recall, F1 score, and TP/TN/FP/FN
 
 Expected validation CSV columns:
   SOPInstanceUID, Question, Answer
@@ -33,13 +34,10 @@ metadata.csv format:
   AccessionNumber,12345
 
 Example:
-python3 02_extract_labels_from_mosaics_validation_only.py \
+python3 02_extract_labels_from_mosaics.py \
+  --model llama3.2-vision:11b \
   --base_path /data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed \
   --validation_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv \
-  --model llava:13b \
-  --output_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_predictions.csv \
-  --metrics_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_metrics.csv \
-  --errors_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_errors.csv \
   --skip_existing
 """
 
@@ -48,11 +46,11 @@ import re
 import csv
 import base64
 import argparse
-import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional
 
 import pandas as pd
+import requests
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -68,7 +66,8 @@ from tqdm import tqdm
 # ----------------------------
 DEFAULT_BASE_PATH = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed"
 DEFAULT_VALIDATION_CSV = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
-DEFAULT_MODEL = "llava:13b"
+DEFAULT_MODEL = "llama3.2-vision:11b"
+DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"
 
 DEFAULT_OUTPUT_CSV = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_predictions.csv"
 DEFAULT_METRICS_CSV = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/llm_validation_metrics.csv"
@@ -103,7 +102,7 @@ def normalize_gt_answer(raw_answer: object) -> str:
         "can't say", "cant say", "unable to determine",
         "cannot determine", "can not determine", "not sure",
         "unknown", "indeterminate", "not identifiable",
-        "not seen", "not clear", "not possible to determine"
+        "not seen", "not clear", "not possible to determine",
     }
 
     if ans in yes_like:
@@ -213,43 +212,49 @@ def encode_image_base64(image_path: str) -> str:
 
 def build_prompt(question: str) -> str:
     return (
-        "You are analyzing a medical mosaic image.\n"
+        "You are analyzing a medical angiography mosaic image.\n"
+        "Answer the question using only visible image evidence.\n\n"
         f"Question: {question}\n\n"
-        "Rules:\n"
-        "1. Respond with exactly one word only: YES or NO.\n"
-        "2. Do not provide any explanation.\n"
-        "3. Do not provide punctuation.\n"
-        "4. If the finding is unclear, uncertain, not visible, cannot be determined, or you cannot say, respond NO.\n"
-        "5. Output must be exactly YES or NO.\n"
+        "Instructions:\n"
+        "- Respond with exactly one word: YES or NO\n"
+        "- Do not explain your answer\n"
+        "- Do not add punctuation or extra words\n"
+        "- If the finding is not clearly visible, answer NO\n"
+        "- If the image is ambiguous, uncertain, low-quality, incomplete, or cannot confirm the finding, answer NO\n"
+        "- Only answer YES when the finding is clearly supported by the image\n"
+        "- Output must be exactly YES or NO\n"
     )
 
 
-def call_ollama_vlm(model: str, image_path: str, question: str, timeout: int = 180) -> str:
+def call_ollama_vlm(
+    model: str,
+    image_path: str,
+    question: str,
+    ollama_url: str = DEFAULT_OLLAMA_URL,
+    timeout: int = 180,
+) -> str:
     prompt = build_prompt(question)
     image_b64 = encode_image_base64(image_path)
 
-    payload = (
-        f"{prompt}\n"
-        f"Image (base64): {image_b64}\n"
-    )
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "images": [image_b64],
+        "stream": False,
+        "options": {
+            "temperature": 0
+        }
+    }
 
     try:
-        proc = subprocess.run(
-            ["ollama", "run", model, "--temperature", "0"],
-            input=payload,
-            text=True,
-            capture_output=True,
+        resp = requests.post(
+            ollama_url,
+            json=payload,
             timeout=timeout,
-            check=False,
         )
-
-        raw = (proc.stdout or "").strip()
-        if not raw and proc.stderr:
-            raw = proc.stderr.strip()
-
-        return raw
-    except subprocess.TimeoutExpired:
-        return "NO"
+        resp.raise_for_status()
+        data = resp.json()
+        return (data.get("response") or "").strip()
     except Exception:
         return "NO"
 
@@ -373,6 +378,8 @@ def main():
     parser.add_argument("--base_path", type=str, default=DEFAULT_BASE_PATH)
     parser.add_argument("--validation_csv", type=str, default=DEFAULT_VALIDATION_CSV)
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
+    parser.add_argument("--ollama_url", type=str, default=DEFAULT_OLLAMA_URL)
+    parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--output_csv", type=str, default=DEFAULT_OUTPUT_CSV)
     parser.add_argument("--metrics_csv", type=str, default=DEFAULT_METRICS_CSV)
     parser.add_argument("--errors_csv", type=str, default=DEFAULT_ERRORS_CSV)
@@ -384,6 +391,8 @@ def main():
     args = parser.parse_args()
 
     print(f"[{now_ts()}] Using model: {args.model}")
+    print(f"[{now_ts()}] Ollama URL: {args.ollama_url}")
+    print(f"[{now_ts()}] Temperature: 0")
     print(f"[{now_ts()}] Loading validation CSV: {args.validation_csv}")
     val_df = load_validation_csv(args.validation_csv)
     print(f"[{now_ts()}] Validation rows loaded: {len(val_df)}")
@@ -476,7 +485,9 @@ def main():
             raw_llm_output = call_ollama_vlm(
                 model=args.model,
                 image_path=mosaic_path,
-                question=question
+                question=question,
+                ollama_url=args.ollama_url,
+                timeout=args.timeout,
             )
             pred_answer = normalize_llm_answer(raw_llm_output)
 
@@ -540,6 +551,7 @@ def main():
     metrics_row = {
         "Timestamp": now_ts(),
         "Model Name": args.model,
+        "Temperature": 0,
         "Validation CSV": args.validation_csv,
         "Base Path": args.base_path,
         "Total Evaluated Rows": len(all_gt),
