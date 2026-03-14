@@ -15,6 +15,8 @@ Eligibility criteria (based on metadata.csv inside each sequence_dir):
   RadiationSetting == "GR"
   AND
   SeriesDescription contains "DSA" or "CO 2"
+  AND
+  PositionerMotion == "STATIC"
 
 Behavior:
 - Keeps only eligible sequence directories
@@ -25,6 +27,7 @@ metadata.csv format expected:
   Information,Value
   RadiationSetting,GR
   SeriesDescription,DSA
+  PositionerMotion,STATIC
   ...
 
 Usage:
@@ -76,6 +79,7 @@ def load_metadata_kv(metadata_csv: Path) -> Dict[str, str]:
       Information,Value
       RadiationSetting,GR
       SeriesDescription,DSA
+      PositionerMotion,STATIC
     """
     data: Dict[str, str] = {}
 
@@ -122,12 +126,16 @@ def is_eligible_sequence_dir(sequence_dir: Path) -> Tuple[bool, str]:
 
     radiation_setting = normalize_value(metadata.get("RadiationSetting")).upper()
     series_description = normalize_value(metadata.get("SeriesDescription")).upper()
+    positioner_motion = normalize_value(metadata.get("PositionerMotion")).upper()
 
     if radiation_setting != "GR":
         return False, f"RadiationSetting={radiation_setting!r}"
 
     if not ("DSA" in series_description or "CO 2" in series_description):
         return False, f"SeriesDescription={series_description!r}"
+
+    if positioner_motion != "STATIC":
+        return False, f"PositionerMotion={positioner_motion!r}"
 
     return True, "eligible"
 
