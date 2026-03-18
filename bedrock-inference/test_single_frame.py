@@ -2,7 +2,7 @@ import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
 # MODEL_ID = "anthropic.claude-3-haiku-20240307-v1:0"
-MODEL_ID = "anthropic.claude-3-haiku-20240307-v1:0"
+MODEL_ID = "arn:aws:bedrock:us-west-2:944446239581:inference-profile/global.anthropic.claude-sonnet-4-6"
 
 REGION = "us-west-2"
 
