@@ -1016,7 +1016,7 @@ def build_argparser():
     ap.add_argument(
         "--val_data_dir",
         type=str,
-        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed",
+        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed_Augmented",
         help="Validation data_dir passed to custom_framework_validate.py",
     )
 

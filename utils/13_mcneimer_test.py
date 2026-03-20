@@ -19,7 +19,7 @@ BASELINE_FILES = {
 }
 
 FT_DIR = "/data/Deep_Angiography/AngioVision/fine-tuning/output"
-OUTPUT_CSV = "/data/Deep_Angiography/AngioVision/fine-tuning/output/statistical_comparison_all_baselines_vs_all_finetuned_with_controls.csv"
+OUTPUT_CSV = "/data/Deep_Angiography/AngioVision/fine-tuning/statistical-test-result/statistical_comparison_all_baselines_vs_all_finetuned_with_controls.csv"
 
 MERGE_COLS = ["AccessionNumber", "SOPInstanceUID", "Question"]
 
