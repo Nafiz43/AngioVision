@@ -19,7 +19,7 @@ BASELINE_FILES = {
 }
 
 FT_DIR = "/data/Deep_Angiography/AngioVision/fine-tuning/output"
-OUTPUT_CSV = "/data/Deep_Angiography/AngioVision/fine-tuning/output/statistical_comparison_all_baselines_vs_all_finetuned.csv"
+OUTPUT_CSV = "/data/Deep_Angiography/AngioVision/fine-tuning/statistical-test-result/statistical_comparison_all_baselines_vs_all_finetuned.csv"
 
 MERGE_COLS = ["AccessionNumber", "SOPInstanceUID", "Question"]
 
@@ -29,6 +29,7 @@ ALPHA = 0.15
 # Bootstrap settings
 N_BOOTSTRAP = 2000
 RANDOM_SEED = 42
+
 
 # =========================================================
 # HELPERS
@@ -82,7 +83,7 @@ def safe_key_normalization(df):
 
 def load_baseline_predictions(path):
     """
-    Expected columns:
+    Expected baseline columns:
     Timestamp, Model Name, AccessionNumber, SOPInstanceUID, Question,
     GroundTruth, Predicted, Raw_LLM_Output, sequence_dir, mosaic_path
     """
@@ -111,7 +112,7 @@ def load_baseline_predictions(path):
 
 def load_finetuned_predictions(path):
     """
-    Expected columns:
+    Expected fine-tuned columns:
     AccessionNumber, SOPInstanceUID, Question, Answer
     """
     df = pd.read_csv(path)
@@ -138,7 +139,7 @@ def bootstrap_accuracy_test(df_merged, n_bootstrap=2000, alpha=0.15, seed=42):
     Bootstrap confidence interval for accuracy difference:
         delta = accuracy(fine_tuned) - accuracy(baseline)
 
-    Significant if CI does not include 0.
+    Significant if the CI does not include 0.
     """
     rng = np.random.default_rng(seed)
 
@@ -471,10 +472,21 @@ def main():
         na_position="last"
     ).drop(columns=["significance_sort_key"]).reset_index(drop=True)
 
+    # =========================================================
+    # SAVE + FINAL PRINT
+    # =========================================================
     results_df.to_csv(OUTPUT_CSV, index=False)
 
-    print(f"Saved results to:\n{OUTPUT_CSV}\n")
-    print(results_df.to_string(index=False))
+    abs_path = os.path.abspath(OUTPUT_CSV)
+
+    print("\n" + "=" * 80)
+    print("McNemar + Bootstrap Analysis Complete")
+    print("=" * 80)
+    print(f"Results saved to:\n{abs_path}")
+    print("=" * 80 + "\n")
+
+    print("Preview of results:\n")
+    print(results_df.head(10).to_string(index=False))
 
 
 if __name__ == "__main__":

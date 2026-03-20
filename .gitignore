@@ -29,4 +29,5 @@ dist/
 .coverage   
 /fine-tuning/checkpoints/
 /fine-tuning/output/
+/fine-tuning/statistical-test-result
 /frame-processing/model_runs/
