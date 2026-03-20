@@ -19,16 +19,19 @@ BASELINE_FILES = {
 }
 
 FT_DIR = "/data/Deep_Angiography/AngioVision/fine-tuning/output"
-OUTPUT_CSV = "/data/Deep_Angiography/AngioVision/fine-tuning/statistical-test-result/statistical_comparison_all_baselines_vs_all_finetuned.csv"
+OUTPUT_CSV = "/data/Deep_Angiography/AngioVision/fine-tuning/output/statistical_comparison_all_baselines_vs_all_finetuned_with_controls.csv"
 
 MERGE_COLS = ["AccessionNumber", "SOPInstanceUID", "Question"]
 
-# Less strict threshold, as requested
+# User-requested looser threshold
 ALPHA = 0.15
 
 # Bootstrap settings
 N_BOOTSTRAP = 2000
-RANDOM_SEED = 42
+BOOTSTRAP_SEED = 42
+
+# Random baseline settings
+RANDOM_BASELINE_SEED = 12345
 
 
 # =========================================================
@@ -43,7 +46,7 @@ def normalize_text(x):
 def normalize_binary(x):
     """
     Convert common binary label formats into 0/1.
-    Adjust these mappings if your labels use a custom scheme.
+    Adjust mappings if your labels use a custom scheme.
     """
     x_norm = normalize_text(x)
 
@@ -134,12 +137,42 @@ def load_finetuned_predictions(path):
     return df
 
 
+def build_control_baselines_from_reference(reference_df, random_seed=12345):
+    """
+    Build three synthetic baseline models on the same matched keys:
+      1) Random_Seeded
+      2) All_Yes
+      3) All_No
+
+    reference_df must contain:
+      AccessionNumber, SOPInstanceUID, Question, y_true
+    """
+    ref = reference_df[MERGE_COLS + ["y_true"]].drop_duplicates().copy()
+
+    rng = np.random.default_rng(random_seed)
+
+    random_df = ref.copy()
+    random_df["baseline_pred"] = rng.integers(0, 2, size=len(random_df))
+
+    all_yes_df = ref.copy()
+    all_yes_df["baseline_pred"] = 1
+
+    all_no_df = ref.copy()
+    all_no_df["baseline_pred"] = 0
+
+    controls = {
+        f"Random_Seeded_{random_seed}": random_df,
+        "All_Yes_Model": all_yes_df,
+        "All_No_Model": all_no_df,
+    }
+    return controls
+
+
 def bootstrap_accuracy_test(df_merged, n_bootstrap=2000, alpha=0.15, seed=42):
     """
-    Bootstrap confidence interval for accuracy difference:
-        delta = accuracy(fine_tuned) - accuracy(baseline)
-
-    Significant if the CI does not include 0.
+    Bootstrap CI for delta accuracy:
+        fine-tuned accuracy - baseline accuracy
+    Significant if CI does not include 0.
     """
     rng = np.random.default_rng(seed)
 
@@ -335,7 +368,7 @@ def compare_one_pair(baseline_df, baseline_name, ft_df, ft_name, alpha=0.15, n_b
         merged,
         n_bootstrap=n_bootstrap,
         alpha=alpha,
-        seed=RANDOM_SEED
+        seed=BOOTSTRAP_SEED
     )
 
     out = {}
@@ -366,10 +399,34 @@ def main():
         except Exception as e:
             ft_data[ft_model_name] = e
 
-    # Compare each baseline against each fine-tuned file
+    # Build a reference df for control baselines using Gemma's matched key space
+    control_baselines = {}
+    try:
+        gemma_reference = load_baseline_predictions(BASELINE_FILES["Gemma3_27B"])
+        control_baselines = build_control_baselines_from_reference(
+            gemma_reference,
+            random_seed=RANDOM_BASELINE_SEED
+        )
+    except Exception as e:
+        print(f"Warning: could not create control baselines from Gemma reference: {e}")
+
+    # Combine real baselines + synthetic controls
+    all_baselines = {}
+
     for baseline_name, baseline_path in BASELINE_FILES.items():
+        all_baselines[baseline_name] = baseline_path
+
+    for control_name, control_df in control_baselines.items():
+        all_baselines[control_name] = control_df
+
+    # Compare each baseline against each fine-tuned file
+    for baseline_name, baseline_source in all_baselines.items():
+        # baseline_source may be a path or an already-built dataframe
         try:
-            baseline_df = load_baseline_predictions(baseline_path)
+            if isinstance(baseline_source, pd.DataFrame):
+                baseline_df = baseline_source.copy()
+            else:
+                baseline_df = load_baseline_predictions(baseline_source)
         except Exception as e:
             for ft_model_name in ft_data.keys():
                 results.append({
@@ -386,14 +443,14 @@ def main():
                     "mcnemar_p_value": np.nan,
                     "significant_at_alpha": "No",
                     "mcnemar_winner": "Comparison failed",
-                    "mcnemar_interpretation": f"Could not load baseline file: {str(e)}",
+                    "mcnemar_interpretation": f"Could not load baseline source: {str(e)}",
                     "baseline_accuracy": np.nan,
                     "fine_tuned_accuracy": np.nan,
                     "delta_accuracy_ft_minus_baseline": np.nan,
                     "bootstrap_ci_lower": np.nan,
                     "bootstrap_ci_upper": np.nan,
                     "bootstrap_significant_at_alpha": "No",
-                    "bootstrap_interpretation": "Bootstrap comparison was not run because the baseline file could not be loaded.",
+                    "bootstrap_interpretation": "Bootstrap comparison was not run because the baseline source could not be loaded.",
                 })
             continue
 
@@ -450,7 +507,7 @@ def main():
                     "mcnemar_p_value": np.nan,
                     "significant_at_alpha": "No",
                     "mcnemar_winner": "Comparison failed",
-                    "mcnemar_interpretation": f"Error during McNemar comparison: {str(e)}",
+                    "mcnemar_interpretation": f"Error during comparison: {str(e)}",
                     "baseline_accuracy": np.nan,
                     "fine_tuned_accuracy": np.nan,
                     "delta_accuracy_ft_minus_baseline": np.nan,
@@ -462,7 +519,7 @@ def main():
 
     results_df = pd.DataFrame(results)
 
-    # Sort: Yes first, then No, then by McNemar p-value ascending
+    # Sort rows: significance Yes on top, No below, then by McNemar p-value
     significance_order = {"Yes": 0, "No": 1}
     results_df["significance_sort_key"] = results_df["significant_at_alpha"].map(significance_order).fillna(2)
 
@@ -472,11 +529,8 @@ def main():
         na_position="last"
     ).drop(columns=["significance_sort_key"]).reset_index(drop=True)
 
-    # =========================================================
-    # SAVE + FINAL PRINT
-    # =========================================================
+    # Save
     results_df.to_csv(OUTPUT_CSV, index=False)
-
     abs_path = os.path.abspath(OUTPUT_CSV)
 
     print("\n" + "=" * 80)
@@ -486,7 +540,7 @@ def main():
     print("=" * 80 + "\n")
 
     print("Preview of results:\n")
-    print(results_df.head(10).to_string(index=False))
+    print(results_df.head(15).to_string(index=False))
 
 
 if __name__ == "__main__":
