@@ -1,189 +1,201 @@
 #!/usr/bin/env python3
 """
-filter_sequence_dirs_by_metadata_nested.py
-
-Directory structure assumed:
-  BASE_DIR/
-    <accession_dir>/
-      <sequence_dir>/
-        metadata.csv
-        frames/
-        mosaic.png
-        ...
-
-Eligibility criteria (based on metadata.csv inside each sequence_dir):
-  RadiationSetting == "GR"
-  AND
-  SeriesDescription contains "DSA" or "CO 2"
-  AND
-  PositionerMotion == "STATIC"
-
-Behavior:
-- Keeps only eligible sequence directories
-- Removes ineligible sequence directories when --apply is used
-- Accession directories are not removed automatically
-
-metadata.csv format expected:
-  Information,Value
-  RadiationSetting,GR
-  SeriesDescription,DSA
-  PositionerMotion,STATIC
-  ...
-
-Usage:
-  Dry run:
-    python3 filter_sequence_dirs_by_metadata_nested.py \
-      --base_dir /data/Deep_Angiography/DICOM_Sequence_Processed
-
-  Actually delete ineligible sequence dirs:
-    python3 filter_sequence_dirs_by_metadata_nested.py \
-      --base_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-      --apply
+filter_sequence_dirs_by_metadata_and_frames.py
 """
+
+from __future__ import annotations
 
 import argparse
 import csv
+import os
 import shutil
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
+from tqdm import tqdm
+
+
+# =========================================================
+# EASY CONFIG (EDIT HERE OR VIA ENV VARS)
+# =========================================================
+DEFAULT_BASE_DIR = Path(
+    os.getenv("SEQ_BASE_DIR", "/data/Deep_Angiography/DICOM_Sequence_Processed")
+)
+
+# Remove sequences with frame_count <= this
+DEFAULT_MIN_FRAMES = int(os.getenv("SEQ_MIN_FRAMES", "2"))
+
+# Set SEQ_APPLY=1 to delete by default
+DEFAULT_APPLY = os.getenv("SEQ_APPLY", "0").lower() in {"1", "true", "yes"}
+
+VALID_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+
+REQUIRED_RADIATION_SETTING = "GR"
+REQUIRED_POSITIONER_MOTION = "STATIC"
+SERIES_DESCRIPTION_KEYWORDS = ("DSA", "CO 2")
+
+METADATA_FILENAME = "metadata.csv"
+FRAMES_DIRNAME = "frames"
+
+
+# =========================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Filter nested sequence directories by metadata.csv criteria."
-    )
-    parser.add_argument(
-        "--base_dir",
-        type=str,
-        default="/data/Deep_Angiography/DICOM_Sequence_Processed",
-        help="Base directory containing accession dirs, each with sequence dirs."
-    )
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="Actually delete non-matching sequence directories."
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base_dir", type=str, default=str(DEFAULT_BASE_DIR))
+    parser.add_argument("--apply", action="store_true", default=DEFAULT_APPLY)
+    parser.add_argument("--min_frames", type=int, default=DEFAULT_MIN_FRAMES)
+    parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
 
 def normalize_value(x: Optional[str]) -> str:
-    if x is None:
-        return ""
-    return str(x).strip()
+    return "" if x is None else str(x).strip()
 
 
 def load_metadata_kv(metadata_csv: Path) -> Dict[str, str]:
-    """
-    Reads metadata.csv in key-value format, e.g.:
-
-      Information,Value
-      RadiationSetting,GR
-      SeriesDescription,DSA
-      PositionerMotion,STATIC
-    """
     data: Dict[str, str] = {}
 
-    with metadata_csv.open("r", newline="", encoding="utf-8", errors="replace") as f:
+    with metadata_csv.open("r", encoding="utf-8", errors="replace") as f:
         reader = csv.reader(f)
         rows = list(reader)
 
     if not rows:
         return data
 
-    start_idx = 0
-    if len(rows[0]) >= 2:
-        c1 = normalize_value(rows[0][0]).lower()
-        c2 = normalize_value(rows[0][1]).lower()
-        if (c1, c2) in {
-            ("information", "value"),
-            ("key", "value"),
-            ("field", "value"),
-            ("attribute", "value"),
-        }:
-            start_idx = 1
+    start_idx = 1 if len(rows[0]) >= 2 else 0
 
     for row in rows[start_idx:]:
         if len(row) < 2:
             continue
         key = normalize_value(row[0])
-        value = normalize_value(row[1])
+        val = normalize_value(row[1])
         if key:
-            data[key] = value
+            data[key] = val
 
     return data
 
 
-def is_eligible_sequence_dir(sequence_dir: Path) -> Tuple[bool, str]:
-    metadata_csv = sequence_dir / "metadata.csv"
+def count_valid_frames(frames_dir: Path) -> int:
+    return sum(
+        1 for f in frames_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in VALID_EXTS
+    )
+
+
+def is_eligible(sequence_dir: Path, min_frames: int) -> Tuple[bool, str]:
+    metadata_csv = sequence_dir / METADATA_FILENAME
+    frames_dir = sequence_dir / FRAMES_DIRNAME
 
     if not metadata_csv.exists():
-        return False, "metadata.csv missing"
+        return False, "no_metadata"
+
+    if not frames_dir.exists():
+        return False, "no_frames_dir"
 
     try:
         metadata = load_metadata_kv(metadata_csv)
-    except Exception as e:
-        return False, f"failed to read metadata.csv: {e}"
+    except Exception:
+        return False, "metadata_error"
 
-    radiation_setting = normalize_value(metadata.get("RadiationSetting")).upper()
-    series_description = normalize_value(metadata.get("SeriesDescription")).upper()
-    positioner_motion = normalize_value(metadata.get("PositionerMotion")).upper()
+    rs = normalize_value(metadata.get("RadiationSetting")).upper()
+    sd = normalize_value(metadata.get("SeriesDescription")).upper()
+    pm = normalize_value(metadata.get("PositionerMotion")).upper()
 
-    if radiation_setting != "GR":
-        return False, f"RadiationSetting={radiation_setting!r}"
+    if rs != REQUIRED_RADIATION_SETTING:
+        return False, "bad_radiation"
 
-    if not ("DSA" in series_description or "CO 2" in series_description):
-        return False, f"SeriesDescription={series_description!r}"
+    if not any(k in sd for k in SERIES_DESCRIPTION_KEYWORDS):
+        return False, "bad_series"
 
-    if positioner_motion != "STATIC":
-        return False, f"PositionerMotion={positioner_motion!r}"
+    if pm != REQUIRED_POSITIONER_MOTION:
+        return False, "bad_motion"
 
-    return True, "eligible"
+    try:
+        n_frames = count_valid_frames(frames_dir)
+    except Exception:
+        return False, "frame_count_error"
+
+    if n_frames <= min_frames:
+        return False, "too_few_frames"
+
+    return True, "ok"
+
+
+def gather_sequence_dirs(base_dir: Path) -> Tuple[List[Path], int]:
+    accession_dirs = [p for p in base_dir.iterdir() if p.is_dir()]
+    sequence_dirs = []
+
+    for acc in accession_dirs:
+        for seq in acc.iterdir():
+            if seq.is_dir():
+                sequence_dirs.append(seq)
+
+    return sequence_dirs, len(accession_dirs)
 
 
 def main():
     args = parse_args()
     base_dir = Path(args.base_dir)
 
-    if not base_dir.exists() or not base_dir.is_dir():
-        raise SystemExit(f"Invalid base directory: {base_dir}")
+    if not base_dir.exists():
+        raise SystemExit(f"Invalid base dir: {base_dir}")
 
-    accession_dirs = [p for p in sorted(base_dir.iterdir()) if p.is_dir()]
+    sequence_dirs, total_accessions = gather_sequence_dirs(base_dir)
 
-    total_accessions = 0
-    total_sequences = 0
-    kept_sequences = 0
-    removed_sequences = 0
+    kept = 0
+    removed = 0
 
-    for accession_dir in accession_dirs:
-        total_accessions += 1
-        sequence_dirs = [p for p in sorted(accession_dir.iterdir()) if p.is_dir()]
+    stats = {
+        "metadata": 0,
+        "frames_dir": 0,
+        "frame_count": 0,
+        "other": 0
+    }
 
-        for sequence_dir in sequence_dirs:
-            total_sequences += 1
-            ok, reason = is_eligible_sequence_dir(sequence_dir)
+    for seq_dir in tqdm(sequence_dirs, desc="Filtering", unit="seq"):
+        ok, reason = is_eligible(seq_dir, args.min_frames)
 
-            rel_path = sequence_dir.relative_to(base_dir)
+        if ok:
+            kept += 1
+        else:
+            removed += 1
 
-            if ok:
-                kept_sequences += 1
-                print(f"[KEEP]   {rel_path}  -> {reason}")
+            if reason == "too_few_frames":
+                stats["frame_count"] += 1
+            elif reason == "no_frames_dir":
+                stats["frames_dir"] += 1
+            elif reason.startswith("bad") or reason == "no_metadata":
+                stats["metadata"] += 1
             else:
-                removed_sequences += 1
-                print(f"[REMOVE] {rel_path}  -> {reason}")
-                if args.apply:
-                    shutil.rmtree(sequence_dir)
+                stats["other"] += 1
+
+            if args.verbose:
+                tqdm.write(f"[REMOVE] {seq_dir} -> {reason}")
+
+            if args.apply:
+                try:
+                    shutil.rmtree(seq_dir)
+                except Exception:
+                    stats["other"] += 1
 
     print("\n===== SUMMARY =====")
-    print(f"Accession dirs scanned : {total_accessions}")
-    print(f"Sequence dirs scanned  : {total_sequences}")
-    print(f"Kept sequence dirs     : {kept_sequences}")
-    print(f"Removed sequence dirs  : {removed_sequences}")
+    print(f"Base dir            : {base_dir}")
+    print(f"Apply deletion      : {args.apply}")
+    print(f"Min frames          : {args.min_frames}")
+    print(f"Accessions          : {total_accessions}")
+    print(f"Sequences           : {len(sequence_dirs)}")
+    print(f"Kept                : {kept}")
+    print(f"Removed             : {removed}")
+    print(f"  - metadata        : {stats['metadata']}")
+    print(f"  - frames missing  : {stats['frames_dir']}")
+    print(f"  - <= frames       : {stats['frame_count']}")
+    print(f"  - other           : {stats['other']}")
 
-    if args.apply:
-        print("\nDeletion applied.")
+    if not args.apply:
+        print("\n(DRY RUN — nothing deleted)")
     else:
-        print("\nDry-run only. No sequence directories were deleted.")
-        print("Use --apply to actually remove non-eligible sequence directories.")
+        print("\nDeletion applied.")
 
 
 if __name__ == "__main__":

@@ -559,17 +559,17 @@ python3 custom_framework_validate.py \
 
 
 
-    python3 custom_framework_train_skip_frames.py \
+    python3 train_biobert.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --epochs 15 \
+  --epochs 10 \
   --num_workers 32 \
-  --max_sequences_per_study 4\
+  --max_sequences_per_study 16\
   --max_frames_per_sequence 32 \
   --pooling logsumexp \
   --batch_size 4 \
-  --grad_accum 1 \
+  --grad_accum 4 \
   --frame_chunk_size 32 \
   --amp \
   --vit_grad_ckpt \
@@ -579,3 +579,49 @@ python3 custom_framework_validate.py \
 
 
   /data/Deep_Angiography/Validation_Data/test-data
+
+
+  python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 16 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25
+
+
+  python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25
