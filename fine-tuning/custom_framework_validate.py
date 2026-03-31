@@ -47,6 +47,13 @@ EFFICIENCY UPDATE:
 - Only asks questions for sequences whose SOPInstanceUID appears in --validation_csv
 - Only asks the specific questions listed for that SOPInstanceUID in the validation CSV
 - Sequences not present in validation CSV are skipped
+
+SEQUENCE REPEAT UPDATE:
+- During validation, each sequence representation can be repeated N times
+  before final pooling/projection using --sequence_repeat_factor.
+- This is intended to better mimic study-level training setups where a study
+  may contain multiple sequences.
+- IMPORTANT: repeating the SAME sequence does not add new information.
 """
 
 from __future__ import annotations
@@ -410,13 +417,20 @@ class PooledCLIP(nn.Module):
     """
     Inference version matching training:
     ViT + projection, BERT + projection, CLIP-style embedding space.
-    Validation: each sequence dir is one "study" (single sequence), so we pool only over frames.
+
+    Updated validation path:
+    - pool frames within a sequence
+    - optionally repeat the sequence representation N times
+    - pool across the repeated pseudo-sequences
+    - project + normalize
     """
 
-    def __init__(self, vit_name: str, bert_name: str, embed_dim: int, frame_pooling: str):
+    def __init__(self, vit_name: str, bert_name: str, embed_dim: int, frame_pooling: str, sequence_pooling: str):
         super().__init__()
         if frame_pooling not in POOL_CHOICES:
             raise ValueError(f"frame_pooling must be one of {POOL_CHOICES}, got {frame_pooling}")
+        if sequence_pooling not in POOL_CHOICES:
+            raise ValueError(f"sequence_pooling must be one of {POOL_CHOICES}, got {sequence_pooling}")
 
         self.vit = ViTModel.from_pretrained(vit_name)
         self.bert = BertModel.from_pretrained(bert_name)
@@ -424,6 +438,7 @@ class PooledCLIP(nn.Module):
         self.vit_hidden = self.vit.config.hidden_size
         self.bert_hidden = self.bert.config.hidden_size
         self.frame_pooling = frame_pooling
+        self.sequence_pooling = sequence_pooling
 
         self.vision_proj = nn.Sequential(
             nn.Linear(self.vit_hidden, self.vit_hidden),
@@ -451,6 +466,26 @@ class PooledCLIP(nn.Module):
         cls = out.last_hidden_state[:, 0, :]
         return F.normalize(self.text_proj(cls), dim=-1)
 
+    def _pool_tensor(self, x: torch.Tensor, mode: str) -> torch.Tensor:
+        """
+        x: [N, D]
+        returns: [D]
+        """
+        if x.ndim != 2:
+            raise ValueError(f"_pool_tensor expected 2D tensor [N, D], got shape {tuple(x.shape)}")
+
+        if x.size(0) == 0:
+            raise ValueError("Cannot pool an empty tensor.")
+
+        if mode == "max":
+            return x.max(dim=0).values
+        if mode == "mean":
+            return x.mean(dim=0)
+        if mode == "logsumexp":
+            return torch.logsumexp(x, dim=0)
+
+        raise ValueError(f"Unsupported pooling mode: {mode}")
+
     @torch.no_grad()
     def encode_sequence_from_frames(
         self,
@@ -459,20 +494,21 @@ class PooledCLIP(nn.Module):
         device: torch.device,
         frame_chunk_size: int,
         max_frames: Optional[int],
+        sequence_repeat_factor: int,
     ) -> Tuple[Optional[torch.Tensor], str]:
+        """
+        Steps:
+          1) Read frames
+          2) Pool frame CLS features into a single sequence feature
+          3) Repeat that sequence feature `sequence_repeat_factor` times
+          4) Pool across repeated pseudo-sequences
+          5) Project and normalize
+        """
         frame_paths = uniform_subsample(frame_paths, max_frames)
         if not frame_paths:
             return None, "no_frames"
 
-        if self.frame_pooling == "max":
-            running = torch.full((self.vit_hidden,), -1e9, device=device)
-            updated = False
-        elif self.frame_pooling == "mean":
-            running = torch.zeros((self.vit_hidden,), device=device)
-            count = 0
-        else:
-            running = torch.full((self.vit_hidden,), -float("inf"), device=device)
-            updated = False
+        collected_frame_feats = []
 
         for i in range(0, len(frame_paths), frame_chunk_size):
             chunk = frame_paths[i : i + frame_chunk_size]
@@ -489,29 +525,23 @@ class PooledCLIP(nn.Module):
             pixel_values = inputs["pixel_values"].to(device)
 
             out = self.vit(pixel_values=pixel_values)
-            feats = out.last_hidden_state[:, 0, :]
+            feats = out.last_hidden_state[:, 0, :]  # [chunk, vit_hidden]
+            collected_frame_feats.append(feats)
 
-            if self.frame_pooling == "max":
-                running = torch.maximum(running, feats.max(dim=0).values)
-                updated = True
-            elif self.frame_pooling == "mean":
-                running = running + feats.sum(dim=0)
-                count += feats.size(0)
-            else:
-                running = torch.logaddexp(running, torch.logsumexp(feats, dim=0))
-                updated = True
+            del inputs, pixel_values, out, imgs
 
-            del inputs, pixel_values, out, feats, imgs
+        if not collected_frame_feats:
+            return None, "no_readable_frames"
 
-        if self.frame_pooling == "mean":
-            if count <= 0:
-                return None, "no_readable_frames"
-            running = running / float(count)
-        else:
-            if not updated:
-                return None, "no_readable_frames"
+        all_frame_feats = torch.cat(collected_frame_feats, dim=0)  # [num_frames, vit_hidden]
+        sequence_feat = self._pool_tensor(all_frame_feats, self.frame_pooling)  # [vit_hidden]
 
-        emb = F.normalize(self.vision_proj(running.unsqueeze(0)), dim=-1)
+        repeat_n = max(1, int(sequence_repeat_factor))
+        repeated_sequences = sequence_feat.unsqueeze(0).repeat(repeat_n, 1)  # [repeat_n, vit_hidden]
+
+        study_like_feat = self._pool_tensor(repeated_sequences, self.sequence_pooling)  # [vit_hidden]
+
+        emb = F.normalize(self.vision_proj(study_like_feat.unsqueeze(0)), dim=-1)
         return emb, "ok"
 
 
@@ -617,6 +647,7 @@ def run_single_checkpoint(
                 device=device,
                 frame_chunk_size=args.frame_chunk_size,
                 max_frames=max_frames,
+                sequence_repeat_factor=args.sequence_repeat_factor,
             )
             if emb_status != "ok" or img_emb is None:
                 skip_counts[emb_status] = skip_counts.get(emb_status, 0) + 1
@@ -638,6 +669,8 @@ def run_single_checkpoint(
     print(f"  Checkpoint:              {ckpt_path.name}")
     print(f"  Total sequence dirs:     {n_total}")
     print(f"  Successfully predicted:  {n_ok}")
+    print(f"  Sequence repeat factor:  {args.sequence_repeat_factor}")
+    print(f"  Sequence pooling:        {args.sequence_pooling}")
     if skip_counts:
         print("  Skipped counts:")
         for k, v in sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0])):
@@ -709,6 +742,7 @@ def run(args):
     tokenizer = BertTokenizer.from_pretrained(args.bert_name)
 
     frame_pooling = args.frame_pooling if args.frame_pooling else args.pooling
+    sequence_pooling = args.sequence_pooling if args.sequence_pooling else args.pooling
 
     validation_lookup = load_validation_question_lookup(args.validation_csv)
 
@@ -717,6 +751,7 @@ def run(args):
         bert_name=args.bert_name,
         embed_dim=args.embed_dim,
         frame_pooling=frame_pooling,
+        sequence_pooling=sequence_pooling,
     ).to(device)
     model.eval()
 
@@ -813,7 +848,7 @@ def build_argparser():
     )
     ap.add_argument(
         "--data_dir",
-        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed",
+        default="/data/Deep_Angiography/Validation_Data/test-data",
         type=str,
     )
     ap.add_argument("--out_csv", required=True, type=str)
@@ -821,7 +856,7 @@ def build_argparser():
 
     ap.add_argument(
         "--validation_csv",
-        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv",
+        default="/data/Deep_Angiography/Validation_Data/test-data/gt.csv",
         type=str,
         help="Validation CSV containing ground-truth rows. Only questions present here will be asked per SOPInstanceUID.",
     )
@@ -833,6 +868,14 @@ def build_argparser():
 
     ap.add_argument("--pooling", default="max", choices=POOL_CHOICES)
     ap.add_argument("--frame_pooling", default="", choices=("",) + POOL_CHOICES)
+    ap.add_argument("--sequence_pooling", default="", choices=("",) + POOL_CHOICES)
+
+    ap.add_argument(
+        "--sequence_repeat_factor",
+        default=16,
+        type=int,
+        help="Repeat the pooled sequence representation this many times before final sequence-level pooling.",
+    )
 
     ap.add_argument("--frame_chunk_size", default=64, type=int)
     ap.add_argument("--max_frames", default=0, type=int)

@@ -5,6 +5,7 @@ import glob
 import numpy as np
 import pandas as pd
 from statsmodels.stats.contingency_tables import mcnemar
+from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score
 
 # =========================================================
 # CONFIG
@@ -166,6 +167,31 @@ def build_control_baselines_from_reference(reference_df, random_seed=12345):
         "All_No_Model": all_no_df,
     }
     return controls
+
+
+def compute_binary_metrics(y_true, y_pred, prefix):
+    """
+    Compute TP, TN, FP, FN, precision, recall, F1.
+    This mirrors the style of calculate_score.py using labels=[0,1].
+    """
+    y_true = pd.Series(y_true).astype(int)
+    y_pred = pd.Series(y_pred).astype(int)
+
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+
+    return {
+        f"{prefix}_tp": int(tp),
+        f"{prefix}_tn": int(tn),
+        f"{prefix}_fp": int(fp),
+        f"{prefix}_fn": int(fn),
+        f"{prefix}_precision": float(precision),
+        f"{prefix}_recall": float(recall),
+        f"{prefix}_f1_score": float(f1),
+    }
 
 
 def bootstrap_accuracy_test(df_merged, n_bootstrap=2000, alpha=0.15, seed=42):
@@ -355,6 +381,20 @@ def compare_one_pair(baseline_df, baseline_name, ft_df, ft_name, alpha=0.15, n_b
             "bootstrap_ci_upper": np.nan,
             "bootstrap_significant_at_alpha": "No",
             "bootstrap_interpretation": "Bootstrap comparison could not be computed because no matched samples were available.",
+            "baseline_tp": np.nan,
+            "baseline_tn": np.nan,
+            "baseline_fp": np.nan,
+            "baseline_fn": np.nan,
+            "baseline_precision": np.nan,
+            "baseline_recall": np.nan,
+            "baseline_f1_score": np.nan,
+            "fine_tuned_tp": np.nan,
+            "fine_tuned_tn": np.nan,
+            "fine_tuned_fp": np.nan,
+            "fine_tuned_fn": np.nan,
+            "fine_tuned_precision": np.nan,
+            "fine_tuned_recall": np.nan,
+            "fine_tuned_f1_score": np.nan,
         }
 
     mcnemar_result = run_mcnemar_comparison(
@@ -371,10 +411,69 @@ def compare_one_pair(baseline_df, baseline_name, ft_df, ft_name, alpha=0.15, n_b
         seed=BOOTSTRAP_SEED
     )
 
+    baseline_metrics = compute_binary_metrics(
+        y_true=merged["y_true"],
+        y_pred=merged["baseline_pred"],
+        prefix="baseline"
+    )
+
+    fine_tuned_metrics = compute_binary_metrics(
+        y_true=merged["y_true"],
+        y_pred=merged["ft_pred"],
+        prefix="fine_tuned"
+    )
+
     out = {}
     out.update(mcnemar_result)
     out.update(bootstrap_result)
+    out.update(baseline_metrics)
+    out.update(fine_tuned_metrics)
     return out
+
+
+def add_sorting_columns(results_df):
+    """
+    Sorting priority:
+      0 -> statistically significant AND fine-tuned model is the McNemar winner
+      1 -> statistically significant but winner is not fine-tuned
+      2 -> non-significant rows
+      3 -> anything else / fallback
+
+    Then sort by:
+      - priority
+      - lower McNemar p-value
+      - larger delta accuracy (FT - baseline), descending
+    """
+    def compute_priority(row):
+        significant = str(row.get("significant_at_alpha", "")).strip().lower() == "yes"
+        winner = str(row.get("mcnemar_winner", "")).strip()
+        ft_model = str(row.get("fine_tuned_model", "")).strip()
+
+        if significant and winner == ft_model:
+            return 0
+        elif significant:
+            return 1
+        elif str(row.get("significant_at_alpha", "")).strip().lower() == "no":
+            return 2
+        else:
+            return 3
+
+    results_df["sort_priority"] = results_df.apply(compute_priority, axis=1)
+
+    # helpful boolean flag in output CSV
+    results_df["ft_model_statistically_significant_winner"] = results_df.apply(
+        lambda row: (
+            "Yes"
+            if (
+                str(row.get("significant_at_alpha", "")).strip().lower() == "yes"
+                and str(row.get("mcnemar_winner", "")).strip() == str(row.get("fine_tuned_model", "")).strip()
+            )
+            else "No"
+        ),
+        axis=1
+    )
+
+    return results_df
 
 
 # =========================================================
@@ -421,7 +520,6 @@ def main():
 
     # Compare each baseline against each fine-tuned file
     for baseline_name, baseline_source in all_baselines.items():
-        # baseline_source may be a path or an already-built dataframe
         try:
             if isinstance(baseline_source, pd.DataFrame):
                 baseline_df = baseline_source.copy()
@@ -451,6 +549,20 @@ def main():
                     "bootstrap_ci_upper": np.nan,
                     "bootstrap_significant_at_alpha": "No",
                     "bootstrap_interpretation": "Bootstrap comparison was not run because the baseline source could not be loaded.",
+                    "baseline_tp": np.nan,
+                    "baseline_tn": np.nan,
+                    "baseline_fp": np.nan,
+                    "baseline_fn": np.nan,
+                    "baseline_precision": np.nan,
+                    "baseline_recall": np.nan,
+                    "baseline_f1_score": np.nan,
+                    "fine_tuned_tp": np.nan,
+                    "fine_tuned_tn": np.nan,
+                    "fine_tuned_fp": np.nan,
+                    "fine_tuned_fn": np.nan,
+                    "fine_tuned_precision": np.nan,
+                    "fine_tuned_recall": np.nan,
+                    "fine_tuned_f1_score": np.nan,
                 })
             continue
 
@@ -478,6 +590,20 @@ def main():
                     "bootstrap_ci_upper": np.nan,
                     "bootstrap_significant_at_alpha": "No",
                     "bootstrap_interpretation": "Bootstrap comparison was not run because the fine-tuned file could not be loaded.",
+                    "baseline_tp": np.nan,
+                    "baseline_tn": np.nan,
+                    "baseline_fp": np.nan,
+                    "baseline_fn": np.nan,
+                    "baseline_precision": np.nan,
+                    "baseline_recall": np.nan,
+                    "baseline_f1_score": np.nan,
+                    "fine_tuned_tp": np.nan,
+                    "fine_tuned_tn": np.nan,
+                    "fine_tuned_fp": np.nan,
+                    "fine_tuned_fn": np.nan,
+                    "fine_tuned_precision": np.nan,
+                    "fine_tuned_recall": np.nan,
+                    "fine_tuned_f1_score": np.nan,
                 })
                 continue
 
@@ -515,21 +641,41 @@ def main():
                     "bootstrap_ci_upper": np.nan,
                     "bootstrap_significant_at_alpha": "No",
                     "bootstrap_interpretation": "Bootstrap comparison was not completed because the pairwise comparison failed.",
+                    "baseline_tp": np.nan,
+                    "baseline_tn": np.nan,
+                    "baseline_fp": np.nan,
+                    "baseline_fn": np.nan,
+                    "baseline_precision": np.nan,
+                    "baseline_recall": np.nan,
+                    "baseline_f1_score": np.nan,
+                    "fine_tuned_tp": np.nan,
+                    "fine_tuned_tn": np.nan,
+                    "fine_tuned_fp": np.nan,
+                    "fine_tuned_fn": np.nan,
+                    "fine_tuned_precision": np.nan,
+                    "fine_tuned_recall": np.nan,
+                    "fine_tuned_f1_score": np.nan,
                 })
 
     results_df = pd.DataFrame(results)
 
-    # Sort rows: significance Yes on top, No below, then by McNemar p-value
-    significance_order = {"Yes": 0, "No": 1}
-    results_df["significance_sort_key"] = results_df["significant_at_alpha"].map(significance_order).fillna(2)
+    # -----------------------------------------------------
+    # Sort rows so that FT significant wins are on top
+    # -----------------------------------------------------
+    results_df = add_sorting_columns(results_df)
 
     results_df = results_df.sort_values(
-        by=["significance_sort_key", "mcnemar_p_value"],
-        ascending=[True, True],
+        by=[
+            "sort_priority",
+            "mcnemar_p_value",
+            "delta_accuracy_ft_minus_baseline"
+        ],
+        ascending=[True, True, False],
         na_position="last"
-    ).drop(columns=["significance_sort_key"]).reset_index(drop=True)
+    ).drop(columns=["sort_priority"]).reset_index(drop=True)
 
     # Save
+    os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     results_df.to_csv(OUTPUT_CSV, index=False)
     abs_path = os.path.abspath(OUTPUT_CSV)
 
@@ -540,7 +686,7 @@ def main():
     print("=" * 80 + "\n")
 
     print("Preview of results:\n")
-    print(results_df.head(15).to_string(index=False))
+    print(results_df.head(20).to_string(index=False))
 
 
 if __name__ == "__main__":

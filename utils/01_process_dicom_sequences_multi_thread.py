@@ -322,8 +322,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Process DSA DICOM directories and extract frames + metadata (parallel)"
     )
-    parser.add_argument("--input_root", type=Path, default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM"))
-    parser.add_argument("--output_root", type=Path, default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed"))
+    parser.add_argument("--input_root", type=Path, default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM"))
+    parser.add_argument("--output_root", type=Path, default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed"))
 
     parser.add_argument(
         "--workers",

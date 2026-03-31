@@ -31,3 +31,4 @@ dist/
 /fine-tuning/output/
 /fine-tuning/statistical-test-result
 /frame-processing/model_runs/
+/bedrock-inference/logs
