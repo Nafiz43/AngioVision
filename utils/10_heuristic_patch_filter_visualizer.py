@@ -1,28 +1,18 @@
 #!/usr/bin/env python3
 """
-heuristic_patch_filter_visualizer.py
+hardcoded_patch_grid_visualizer_parallel.py
 
-Given an input image, this script:
-1. Splits it into patches
-2. Computes heuristic scores for each patch
-3. Classifies patches as informative / uninformative
-4. Draws:
-   - green filled transparent patches for informative regions
-   - red filled transparent patches for uninformative regions
-5. Saves the visualization
+Uses 5 hardcoded frame paths, processes them in parallel with ProcessPoolExecutor,
+draws heuristic informative/uninformative patch overlays, and saves the
+5 processed images side-by-side.
 
-Heuristics used:
-- variance
-- entropy
-- edge density
-- dark pixel ratio
-
-Example:
-    python3 heuristic_patch_filter_visualizer.py \
-        --input_image /path/to/frame.png \
-        --output_image /path/to/frame_patch_overlay.png \
+Run:
+    python3 hardcoded_patch_grid_visualizer_parallel.py \
+        --output_image /data/Deep_Angiography/sample_patch_grid.png \
         --patch_size 64 \
-        --informative_percent 20
+        --informative_percent 20 \
+        --target_height 512 \
+        --max_workers 5
 """
 
 from __future__ import annotations
@@ -30,14 +20,31 @@ from __future__ import annotations
 import argparse
 import math
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
 import numpy as np
+from tqdm import tqdm
+
+
+# =========================
+# HARDCODED INPUT FRAMES
+# =========================
+HARDCODED_FRAME_PATHS = [
+    "/data/Deep_Angiography/DICOM_Sequence_Processed/03_DSA 3 LD/2.16.840.1.113883.3.16.90729317817737798748724286231292096160/frames/2.16.840.1.113883.3.16.90729317817737798748724286231292096160_frame_0005.png",
+    "/data/Deep_Angiography/DICOM_Sequence_Processed/gzeAvoZBK5/2.16.840.1.113883.3.16.27887747233506821641442574601125740969/frames/2.16.840.1.113883.3.16.27887747233506821641442574601125740969_frame_0016.png",
+    "/data/Deep_Angiography/DICOM_Sequence_Processed/received/2.16.840.1.113883.3.16.206533095497994768887122049484591788029/frames/2.16.840.1.113883.3.16.206533095497994768887122049484591788029_frame_0007.png",
+    "/data/Deep_Angiography/DICOM_Sequence_Processed/14_DSA 3/2.16.840.1.113883.3.16.229884264127170088524043314078208850582/frames/2.16.840.1.113883.3.16.229884264127170088524043314078208850582_frame_0008.png",
+    "/data/Deep_Angiography/DICOM_Sequence_Processed/DICOM/2.16.840.1.113883.3.16.229149697742230994696452930366730877174/frames/2.16.840.1.113883.3.16.229149697742230994696452930366730877174_frame_0011.png",
+]
 
 
 # =========================
 # CONFIGURATION DEFAULTS
 # =========================
+DEFAULT_TARGET_HEIGHT = 512
+DEFAULT_MAX_WORKERS = 5
+
 DEFAULT_PATCH_SIZE = 64
 DEFAULT_INFORMATIVE_PERCENT = 20.0
 DEFAULT_DARK_PIXEL_THRESHOLD = 20
@@ -62,19 +69,25 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Visualize informative vs uninformative patches using heuristic scoring."
-    )
-    parser.add_argument(
-        "--input_image",
-        type=str,
-        required=True,
-        help="Path to input image"
+        description="Process 5 hardcoded frames in parallel and save them side-by-side."
     )
     parser.add_argument(
         "--output_image",
         type=str,
         required=True,
-        help="Path to save overlay image"
+        help="Path to save the final side-by-side output image"
+    )
+    parser.add_argument(
+        "--target_height",
+        type=int,
+        default=DEFAULT_TARGET_HEIGHT,
+        help=f"Resize each output image to this height before stacking (default: {DEFAULT_TARGET_HEIGHT})"
+    )
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help=f"Number of worker processes (default: {DEFAULT_MAX_WORKERS})"
     )
     parser.add_argument(
         "--patch_size",
@@ -92,43 +105,42 @@ def parse_args():
         "--dark_pixel_threshold",
         type=int,
         default=DEFAULT_DARK_PIXEL_THRESHOLD,
-        help=f"Pixel intensity threshold below which a pixel is considered dark (default: {DEFAULT_DARK_PIXEL_THRESHOLD})"
+        help=f"Dark pixel threshold (default: {DEFAULT_DARK_PIXEL_THRESHOLD})"
     )
     parser.add_argument(
         "--dark_pixel_ratio_reject",
         type=float,
         default=DEFAULT_DARK_PIXEL_RATIO_REJECT,
-        help=f"Reject a patch if dark pixel ratio >= this value (default: {DEFAULT_DARK_PIXEL_RATIO_REJECT})"
+        help=f"Reject patch if dark pixel ratio >= this value (default: {DEFAULT_DARK_PIXEL_RATIO_REJECT})"
     )
     parser.add_argument(
         "--min_variance",
         type=float,
         default=DEFAULT_MIN_VARIANCE,
-        help=f"Minimum variance for a patch to be considered non-trivial (default: {DEFAULT_MIN_VARIANCE})"
+        help=f"Minimum variance threshold (default: {DEFAULT_MIN_VARIANCE})"
     )
     parser.add_argument(
         "--min_edge_density",
         type=float,
         default=DEFAULT_MIN_EDGE_DENSITY,
-        help=f"Minimum edge density for a patch to be considered non-trivial (default: {DEFAULT_MIN_EDGE_DENSITY})"
+        help=f"Minimum edge density threshold (default: {DEFAULT_MIN_EDGE_DENSITY})"
     )
     parser.add_argument(
         "--min_entropy",
         type=float,
         default=DEFAULT_MIN_ENTROPY,
-        help=f"Minimum entropy for a patch to be considered non-trivial (default: {DEFAULT_MIN_ENTROPY})"
+        help=f"Minimum entropy threshold (default: {DEFAULT_MIN_ENTROPY})"
     )
     parser.add_argument(
         "--alpha",
         type=float,
         default=DEFAULT_ALPHA,
-        help=f"Transparency for filled patch overlays, between 0 and 1 (default: {DEFAULT_ALPHA})"
+        help=f"Overlay alpha in [0,1] (default: {DEFAULT_ALPHA})"
     )
     return parser.parse_args()
 
 
 def compute_entropy(gray_patch: np.ndarray) -> float:
-    """Compute Shannon entropy of a grayscale patch."""
     hist = cv2.calcHist([gray_patch], [0], None, [256], [0, 256]).ravel()
     hist_sum = hist.sum()
     if hist_sum == 0:
@@ -139,18 +151,15 @@ def compute_entropy(gray_patch: np.ndarray) -> float:
 
 
 def compute_edge_density(gray_patch: np.ndarray) -> float:
-    """Compute fraction of edge pixels using Canny."""
     edges = cv2.Canny(gray_patch, 50, 150)
     return float(np.count_nonzero(edges)) / float(edges.size)
 
 
 def dark_pixel_ratio(gray_patch: np.ndarray, dark_threshold: int) -> float:
-    """Fraction of pixels that are near-black."""
     return float(np.mean(gray_patch <= dark_threshold))
 
 
 def normalize_array(values: np.ndarray) -> np.ndarray:
-    """Min-max normalize array to [0, 1]."""
     if len(values) == 0:
         return values
     vmin = np.min(values)
@@ -161,7 +170,6 @@ def normalize_array(values: np.ndarray) -> np.ndarray:
 
 
 def extract_patch_features(gray_patch: np.ndarray, dark_threshold: int) -> dict:
-    """Compute heuristic features for one patch."""
     variance = float(np.var(gray_patch))
     entropy = compute_entropy(gray_patch)
     edge_density = compute_edge_density(gray_patch)
@@ -185,10 +193,6 @@ def classify_patches(
     min_edge_density: float,
     min_entropy: float,
 ) -> list[dict]:
-    """
-    Split image into patches, compute features, reject clearly uninformative ones,
-    then rank valid patches and mark top percentage as informative.
-    """
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
 
@@ -198,7 +202,6 @@ def classify_patches(
         for x in range(0, w, patch_size):
             patch = gray[y:min(y + patch_size, h), x:min(x + patch_size, w)]
 
-            # Skip incomplete border patches
             if patch.shape[0] != patch_size or patch.shape[1] != patch_size:
                 continue
 
@@ -263,31 +266,19 @@ def classify_patches(
     return patches
 
 
-def draw_patch_overlay(
-    image_bgr: np.ndarray,
-    patches: list[dict],
-    alpha: float = DEFAULT_ALPHA
-) -> np.ndarray:
-    """
-    Draw filled transparent green/red patch overlays plus borders.
-    Green = informative
-    Red   = uninformative
-    """
+def draw_patch_overlay(image_bgr: np.ndarray, patches: list[dict], alpha: float) -> np.ndarray:
     alpha = max(0.0, min(1.0, alpha))
 
     base = image_bgr.copy()
     overlay = image_bgr.copy()
 
-    # Fill full patches on overlay
     for patch in patches:
         x, y, w, h = patch["x"], patch["y"], patch["w"], patch["h"]
         color = GREEN if patch["label"] == "informative" else RED
         cv2.rectangle(overlay, (x, y), (x + w, y + h), color, -1)
 
-    # Blend so original image remains visible
     blended = cv2.addWeighted(overlay, alpha, base, 1.0 - alpha, 0)
 
-    # Draw borders on top
     for patch in patches:
         x, y, w, h = patch["x"], patch["y"], patch["w"], patch["h"]
         color = GREEN if patch["label"] == "informative" else RED
@@ -297,7 +288,6 @@ def draw_patch_overlay(
 
 
 def add_legend(image_bgr: np.ndarray) -> np.ndarray:
-    """Add legend to image."""
     out = image_bgr.copy()
     overlay = out.copy()
 
@@ -316,64 +306,110 @@ def add_legend(image_bgr: np.ndarray) -> np.ndarray:
     return out
 
 
-def main():
-    args = parse_args()
+def resize_to_target_height(image_bgr: np.ndarray, target_height: int) -> np.ndarray:
+    h, w = image_bgr.shape[:2]
+    if h == target_height:
+        return image_bgr
+    scale = target_height / float(h)
+    target_width = max(1, int(round(w * scale)))
+    return cv2.resize(image_bgr, (target_width, target_height), interpolation=cv2.INTER_AREA)
 
-    input_path = Path(args.input_image)
-    output_path = Path(args.output_image)
 
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input image not found: {input_path}")
+def process_single_frame(task: dict) -> dict:
+    frame_path = Path(task["frame_path"])
+    image_bgr = cv2.imread(str(frame_path))
 
-    image_bgr = cv2.imread(str(input_path))
     if image_bgr is None:
-        raise ValueError(f"Failed to read image: {input_path}")
+        return {
+            "success": False,
+            "frame_path": str(frame_path),
+            "index": task["index"],
+            "error": f"Failed to read image: {frame_path}",
+        }
 
     patches = classify_patches(
         image_bgr=image_bgr,
-        patch_size=args.patch_size,
-        informative_percent=args.informative_percent,
-        dark_threshold=args.dark_pixel_threshold,
-        dark_ratio_reject=args.dark_pixel_ratio_reject,
-        min_variance=args.min_variance,
-        min_edge_density=args.min_edge_density,
-        min_entropy=args.min_entropy,
+        patch_size=task["patch_size"],
+        informative_percent=task["informative_percent"],
+        dark_threshold=task["dark_pixel_threshold"],
+        dark_ratio_reject=task["dark_pixel_ratio_reject"],
+        min_variance=task["min_variance"],
+        min_edge_density=task["min_edge_density"],
+        min_entropy=task["min_entropy"],
     )
 
     overlay = draw_patch_overlay(
         image_bgr=image_bgr,
         patches=patches,
-        alpha=args.alpha,
+        alpha=task["alpha"],
     )
     overlay = add_legend(overlay)
+    overlay = resize_to_target_height(overlay, task["target_height"])
+
+    return {
+        "success": True,
+        "frame_path": str(frame_path),
+        "index": task["index"],
+        "image": overlay,
+    }
+
+
+def main():
+    args = parse_args()
+    output_path = Path(args.output_image)
+
+    # Validate hardcoded paths first
+    frame_paths = [Path(p) for p in HARDCODED_FRAME_PATHS]
+    for p in frame_paths:
+        if not p.exists():
+            raise FileNotFoundError(f"Hardcoded frame not found: {p}")
+
+    tasks = []
+    for idx, frame_path in enumerate(frame_paths):
+        tasks.append({
+            "index": idx,
+            "frame_path": str(frame_path),
+            "patch_size": args.patch_size,
+            "informative_percent": args.informative_percent,
+            "dark_pixel_threshold": args.dark_pixel_threshold,
+            "dark_pixel_ratio_reject": args.dark_pixel_ratio_reject,
+            "min_variance": args.min_variance,
+            "min_edge_density": args.min_edge_density,
+            "min_entropy": args.min_entropy,
+            "alpha": args.alpha,
+            "target_height": args.target_height,
+        })
+
+    max_workers = max(1, min(args.max_workers, len(tasks)))
+    results = [None] * len(tasks)
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_single_frame, task) for task in tasks]
+
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing frames"):
+            result = future.result()
+            if not result["success"]:
+                print(f"[WARN] {result['error']}")
+                continue
+            results[result["index"]] = result
+
+    valid_results = [r for r in results if r is not None]
+    if not valid_results:
+        raise RuntimeError("No valid images were processed successfully.")
+
+    output_images = [r["image"] for r in valid_results]
+    combined = np.hstack(output_images)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    ok = cv2.imwrite(str(output_path), overlay)
+    ok = cv2.imwrite(str(output_path), combined)
     if not ok:
         raise IOError(f"Failed to save output image to: {output_path}")
 
-    total = len(patches)
-    informative = sum(1 for p in patches if p["label"] == "informative")
-    uninformative = sum(1 for p in patches if p["label"] == "uninformative")
-
-    print(f"Input image       : {input_path}")
-    print(f"Output image      : {output_path}")
-    print(f"Patch size        : {args.patch_size}")
-    print(f"Total patches     : {total}")
-    print(f"Informative       : {informative}")
-    print(f"Uninformative     : {uninformative}")
-    print(f"Overlay alpha     : {args.alpha}")
+    print(f"\nSaved combined image to: {output_path}\n")
+    print("Used hardcoded frames:")
+    for i, r in enumerate(valid_results, start=1):
+        print(f"{i}. {r['frame_path']}")
 
 
 if __name__ == "__main__":
     main()
-
-
-python3 heuristic_patch_filter_visualizer.py \
-    --input_image /data/Deep_Angiography/DICOM_Sequence_Processed/0AVNTO~C/2.16.840.1.113883.3.16.242948424383568667903940832500591782968/frames/2.16.840.1.113883.3.16.242948424383568667903940832500591782968_frame_0001.png \
-    --output_image /data/Deep_Angiography/DICOM-metadata-stats/sample_frame_overlay.png \
-    --patch_size 64 \
-    --informative_percent 20
-
-
-# /data/Deep_Angiography/DICOM_Sequence_Processed/0AVNTO~C/2.16.840.1.113883.3.16.242948424383568667903940832500591782968/frames/2.16.840.1.113883.3.16.242948424383568667903940832500591782968_frame_0001.png
