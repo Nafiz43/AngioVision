@@ -19,7 +19,7 @@ from tqdm import tqdm
 # EASY CONFIG (EDIT HERE OR VIA ENV VARS)
 # =========================================================
 DEFAULT_BASE_DIR = Path(
-    os.getenv("SEQ_BASE_DIR", "/data/Deep_Angiography/DICOM_Sequence_Processed")
+    os.getenv("SEQ_BASE_DIR", "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed")
 )
 
 # Remove sequences with frame_count <= this

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+this metadata csv is needed for training
 consolidate_metadata.py
 
 Recursively scans:
