@@ -625,3 +625,428 @@ python3 custom_framework_validate.py \
   --frame_temporal_scale 0.25 \
   --enable_sequence_temporal \
   --sequence_temporal_scale 0.25
+
+-----------------------------------------------------------
+New Combinations to Try
+-----------------------------------------------------------
+# AngioVision Fine-Tuning Configurations
+
+All configs use the same base paths. Each writes to its own isolated `--out_dir` and `--output_dir` to prevent checkpoint collisions.
+
+---
+
+## Baseline (Original Runs)
+
+### Baseline 1 — Original Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 16 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25
+```
+
+### Baseline 2 — Augmented Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25
+```
+
+---
+
+## Config A — Unfreeze Text Encoder
+
+**Hypothesis:** Frozen BioBERT creates a fixed target the vision branch must chase. Light fine-tuning of the text encoder (low LR 2e-5) improves CLIP-style alignment for specialized radiology report language.
+
+**Key changes vs baseline:** `--freeze_text` removed; `--text_lr 2e-5`; `--vision_backbone_lr` lowered to 5e-6 for stability.
+
+### Config A1 — Original Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 16 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25 \
+  --text_lr 2e-5 \
+  --vision_backbone_lr 5e-6 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configA \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configA
+```
+
+### Config A2 — Augmented Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25 \
+  --text_lr 2e-5 \
+  --vision_backbone_lr 5e-6 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configA_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configA_aug
+```
+
+---
+
+## Config B — Mean Pooling + More ViT Blocks
+
+**Hypothesis:** `logsumexp` over-represents bright contrast frames (artifacts). Mean pooling better captures temporal dynamics of contrast wash-in/wash-out. More trainable ViT blocks (6 vs 3) gives the model capacity to adapt mid-level features.
+
+**Key changes vs baseline:** `--pooling mean`; `--vit_trainable_blocks 6`; `--vision_backbone_lr 3e-6` (lower to compensate for more trainable params).
+
+### Config B1 — Original Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 16 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 6 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25 \
+  --vision_backbone_lr 3e-6 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configB \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configB
+```
+
+### Config B2 — Augmented Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 6 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25 \
+  --vision_backbone_lr 3e-6 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configB_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configB_aug
+```
+
+---
+
+## Config C — Stronger Temporal Signal
+
+**Hypothesis:** Frame order *is* the diagnostic signal in angiography (contrast arrival timing). Scale 0.25 is a gentle nudge; pushing to 0.75 makes positional encoding a meaningful component of the CLS embedding. Paired with mean pooling to avoid logsumexp swamping the temporal signal.
+
+**Key changes vs baseline:** `--frame_temporal_scale 0.75`; `--sequence_temporal_scale 0.5`; `--pooling mean`.
+
+### Config C1 — Original Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 16 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configC \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configC
+```
+
+### Config C2 — Augmented Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configC_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configC_aug
+```
+
+---
+
+## Config D — Asymmetric Pooling
+
+**Hypothesis:** Frame-level and sequence-level pooling serve different purposes. Frames within a sequence have temporal structure (→ `mean`), but across sequences within a study there is typically one diagnostically dominant view (→ `max`). Strong sequence-level PE conflicts with max pooling, so sequence scale is kept low at 0.1.
+
+**Key changes vs baseline:** `--frame_pooling mean`; `--sequence_pooling max`; `--frame_temporal_scale 0.5`; `--sequence_temporal_scale 0.1`; `--vit_trainable_blocks 4`.
+
+### Config D1 — Original Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 16 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --frame_pooling mean \
+  --sequence_pooling max \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 4 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.5 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.1 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configD \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configD
+```
+
+### Config D2 — Augmented Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --frame_pooling mean \
+  --sequence_pooling max \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 4 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.5 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.1 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configD_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configD_aug
+```
+
+---
+
+## Config E — Larger Embed Dim
+
+**Hypothesis:** `embed_dim=256` is small for CLIP-style alignment with variable-length medical sequences. Doubling to 512 gives the projection heads more capacity. Slightly higher weight decay (0.05) regularizes the larger head. Lower head LR (5e-5) stabilizes the larger projection layers.
+
+**Key changes vs baseline:** `--embed_dim 512`; `--weight_decay 0.05`; `--head_lr 5e-5`.
+
+### Config E1 — Original Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --epochs 16 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25 \
+  --embed_dim 512 \
+  --weight_decay 0.05 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 5e-5 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configE \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configE
+```
+
+### Config E2 — Augmented Data
+
+```bash
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.25 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.25 \
+  --embed_dim 512 \
+  --weight_decay 0.05 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 5e-5 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configE_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configE_aug
+```
+
+---
+
+## Quick Reference Summary
+
+| Config | Key Change | Pooling | ViT Blocks | Freeze Text | Embed Dim | Priority |
+|--------|-----------|---------|------------|-------------|-----------|----------|
+| Baseline | — | logsumexp | 3 | Yes | 256 | — |
+| A | Unfreeze text encoder | logsumexp | 3 | **No** | 256 | ⭐⭐⭐⭐⭐ |
+| B | Mean pooling + more blocks | **mean** | **6** | Yes | 256 | ⭐⭐⭐ |
+| C | Stronger temporal (0.75/0.5) | **mean** | 3 | Yes | 256 | ⭐⭐⭐⭐ |
+| D | Asymmetric pooling (mean/max) | **mean/max** | **4** | Yes | 256 | ⭐⭐⭐⭐ |
+| E | Larger embed dim (512) | logsumexp | 3 | Yes | **512** | ⭐⭐ |
+
+> **Note:** Each config uses `--epochs 17` and `--base_frames_dir .../DICOM_Sequence_Processed_Augmented` for the augmented (`_aug`) variant to ensure unique run directory names and avoid checkpoint-skip collisions.
+
