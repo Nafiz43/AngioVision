@@ -45,3 +45,11 @@ QA_QUESTIONS = [
     "Is the gastroduadenal artery patent in this angiogram? Please state yes or no.",
     "Is the dorsal pancreatic artery opacified in this angiogram? Please state yes or no."
 ]
+
+// temporal aspects
+// ablation study
+// comprehensive result siummaru including SOTA
+// coupling of questions and how it impacts performance
+// Radiology AI?, Conference?
+// Publishing on theory; generate generalied hypothesis, applicable to both Angiography.
+

@@ -3,57 +3,6 @@
 custom_framework_validate.py
 
 Run CLIP-style binary QA on validation sequence directories using one or more trained checkpoints.
-
-DATA LAYOUT (your validation set):
-  DATA_DIR/
-    <sequence_dir_1>/
-      frames/              # images
-      metadata.csv         # key-value CSV: columns [Information, Value]
-      mosaic.png           # optional
-    <sequence_dir_2>/
-      ...
-
-metadata.csv format (IMPORTANT):
-  Information,Value
-  SOPInstanceUID,1.2.276...
-  AccessionNumber,202510081160
-  ...
-
-OUTPUT:
-- --out_csv: final/best prediction CSV
-- --error_csv (optional): final/best error CSV
-
-Binary QA method:
-- For each question, we build YES/NO hypothesis texts
-- Compare cosine similarity between image embedding and text embeddings
-- Choose YES if sim_yes > sim_no else NO
-
-NEW:
-- --checkpoint can be either:
-    1) a single checkpoint file (.pt), or
-    2) a run directory containing epoch checkpoints
-- If a directory is given:
-    * evaluate all epoch_*.pt checkpoints
-    * if none exist, evaluate last.pt if available
-- For each checkpoint:
-    * validation is run
-    * calculate_score.py is run as a subprocess
-    * stdout/stderr is parsed to extract TP/TN/FP/FN/Accuracy/F1
-- The checkpoint with the best accuracy is reported
-- The best checkpoint's prediction CSV is copied to --out_csv
-- The best checkpoint's error CSV is copied to --error_csv if requested
-
-EFFICIENCY UPDATE:
-- Only asks questions for sequences whose SOPInstanceUID appears in --validation_csv
-- Only asks the specific questions listed for that SOPInstanceUID in the validation CSV
-- Sequences not present in validation CSV are skipped
-
-SEQUENCE REPEAT UPDATE:
-- During validation, each sequence representation can be repeated N times
-  before final pooling/projection using --sequence_repeat_factor.
-- This is intended to better mimic study-level training setups where a study
-  may contain multiple sequences.
-- IMPORTANT: repeating the SAME sequence does not add new information.
 """
 
 from __future__ import annotations
@@ -77,9 +26,6 @@ from tqdm import tqdm
 
 from transformers import ViTModel, BertModel, BertTokenizer
 
-# -----------------------------
-# HF image processor compatibility
-# -----------------------------
 try:
     from transformers import ViTImageProcessor as _ViTProcessor
 except Exception:
@@ -99,9 +45,6 @@ if str(PROJECT_ROOT) not in sys.path:
 POOL_CHOICES = ("max", "mean", "logsumexp")
 
 
-# -----------------------------
-# Utilities
-# -----------------------------
 def _run_subprocess_capture(cmd: List[str]) -> subprocess.CompletedProcess:
     print("\n[INFO] Running subprocess:")
     print("       " + " ".join(cmd))
@@ -113,83 +56,60 @@ def _run_subprocess_capture(cmd: List[str]) -> subprocess.CompletedProcess:
     return cp
 
 
+def _parse_int_metric(text: str, key: str) -> Optional[int]:
+    m = re.search(rf"\b{re.escape(key)}\b\s*[:=]\s*([0-9]+)", text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _parse_float_metric(text: str, key: str) -> Optional[float]:
+    m = re.search(rf"\b{re.escape(key)}\b\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%?", text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        val = float(m.group(1))
+        if "%" in m.group(0) or val > 1.0:
+            val = val / 100.0
+        return val
+    except Exception:
+        return None
+
+
 def parse_score_output(text: str) -> Dict[str, Optional[float]]:
-    """
-    Tries to parse TP, TN, FP, FN, Accuracy, and F1-score
-    from calculate_score.py stdout/stderr.
+    prefixes = ["ORIGINAL", "FLIPPED", "ALL_YES", "ALL_NO", "RANDOM"]
+    fields = ["TP", "TN", "FP", "FN", "ACCURACY", "PRECISION", "RECALL", "F1"]
 
-    Returns:
-        {
-            "tp": int or None,
-            "tn": int or None,
-            "fp": int or None,
-            "fn": int or None,
-            "accuracy": float in [0,1] or None,
-            "f1": float in [0,1] or None,
-        }
-    """
-    out = {
-        "tp": None,
-        "tn": None,
-        "fp": None,
-        "fn": None,
-        "accuracy": None,
-        "f1": None,
-    }
-
-    text_lower = text.lower()
-
-    def _parse_int(patterns: List[str]) -> Optional[int]:
-        for pat in patterns:
-            m = re.search(pat, text_lower, flags=re.IGNORECASE)
-            if m:
-                try:
-                    return int(m.group(1))
-                except Exception:
-                    pass
-        return None
-
-    def _parse_float_metric(patterns: List[str]) -> Optional[float]:
-        for pat in patterns:
-            m = re.search(pat, text_lower, flags=re.IGNORECASE)
-            if m:
-                try:
-                    val = float(m.group(1))
-                    if "%" in m.group(0) or val > 1.0:
-                        val = val / 100.0
-                    return val
-                except Exception:
-                    pass
-        return None
-
-    out["tp"] = _parse_int([
-        r"\btp\b\s*[:=]\s*([0-9]+)",
-        r"true\s*positives?\s*[:=]\s*([0-9]+)",
-    ])
-    out["tn"] = _parse_int([
-        r"\btn\b\s*[:=]\s*([0-9]+)",
-        r"true\s*negatives?\s*[:=]\s*([0-9]+)",
-    ])
-    out["fp"] = _parse_int([
-        r"\bfp\b\s*[:=]\s*([0-9]+)",
-        r"false\s*positives?\s*[:=]\s*([0-9]+)",
-    ])
-    out["fn"] = _parse_int([
-        r"\bfn\b\s*[:=]\s*([0-9]+)",
-        r"false\s*negatives?\s*[:=]\s*([0-9]+)",
-    ])
-
-    out["accuracy"] = _parse_float_metric([
-        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
-        r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)",
-    ])
-
-    out["f1"] = _parse_float_metric([
-        r"f1(?:-score|\s*score)?\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
-        r"f1(?:-score|\s*score)?\s*[:=]\s*([0-9]*\.?[0-9]+)",
-    ])
-
+    out = {}
+    for prefix in prefixes:
+        for field in fields:
+            key = f"{prefix}_{field}"
+            if field in {"TP", "TN", "FP", "FN"}:
+                out[key] = _parse_int_metric(text, key)
+            else:
+                out[key] = _parse_float_metric(text, key)
     return out
+
+
+def format_pair(x: Optional[float], y: Optional[float], decimals: int = 6) -> str:
+    def _one(v):
+        if v is None:
+            return "N/A"
+        if isinstance(v, int):
+            return str(v)
+        return f"{v:.{decimals}f}"
+    return f"{_one(x)}/{_one(y)}"
+
+
+def format_single(x: Optional[float], decimals: int = 6) -> str:
+    if x is None:
+        return "N/A"
+    if isinstance(x, int):
+        return str(x)
+    return f"{x:.{decimals}f}"
 
 
 def get_vit_processor(vit_name: str):
@@ -238,12 +158,6 @@ def normalize_question(q: Any) -> str:
 
 
 def load_validation_question_lookup(validation_csv: str) -> Dict[str, List[str]]:
-    """
-    Build lookup:
-      SOPInstanceUID -> list of questions present in GT
-
-    Only those questions will be asked for each sequence.
-    """
     path = Path(validation_csv)
     if not path.exists():
         raise SystemExit(f"[ERROR] Validation CSV does not exist: {path}")
@@ -282,15 +196,6 @@ def load_validation_question_lookup(validation_csv: str) -> Dict[str, List[str]]
 
 
 def read_metadata_key_value_csv(seq_dir: Path) -> Tuple[Optional[str], Optional[str], str]:
-    """
-    Reads seq_dir/metadata.csv where format is:
-      Information,Value
-      SOPInstanceUID,....
-      AccessionNumber,....
-
-    Returns: (AccessionNumber, SOPInstanceUID, status)
-      status = "ok" if successful else reason
-    """
     meta_path = seq_dir / "metadata.csv"
     if not meta_path.exists():
         return None, None, "missing_metadata_csv"
@@ -374,13 +279,6 @@ def checkpoint_sort_key(p: Path):
 
 
 def discover_checkpoints(checkpoint_arg: str) -> List[Path]:
-    """
-    If checkpoint_arg is:
-      - a file: return [file]
-      - a directory:
-          * return sorted epoch_*.pt if any
-          * else return [last.pt] if available
-    """
     p = Path(checkpoint_arg)
 
     if p.is_file():
@@ -410,21 +308,7 @@ def checkpoint_label(ckpt_path: Path) -> str:
     return ckpt_path.stem
 
 
-# -----------------------------
-# Model (must match your training architecture)
-# -----------------------------
 class PooledCLIP(nn.Module):
-    """
-    Inference version matching training:
-    ViT + projection, BERT + projection, CLIP-style embedding space.
-
-    Updated validation path:
-    - pool frames within a sequence
-    - optionally repeat the sequence representation N times
-    - pool across the repeated pseudo-sequences
-    - project + normalize
-    """
-
     def __init__(self, vit_name: str, bert_name: str, embed_dim: int, frame_pooling: str, sequence_pooling: str):
         super().__init__()
         if frame_pooling not in POOL_CHOICES:
@@ -467,13 +351,8 @@ class PooledCLIP(nn.Module):
         return F.normalize(self.text_proj(cls), dim=-1)
 
     def _pool_tensor(self, x: torch.Tensor, mode: str) -> torch.Tensor:
-        """
-        x: [N, D]
-        returns: [D]
-        """
         if x.ndim != 2:
             raise ValueError(f"_pool_tensor expected 2D tensor [N, D], got shape {tuple(x.shape)}")
-
         if x.size(0) == 0:
             raise ValueError("Cannot pool an empty tensor.")
 
@@ -496,14 +375,6 @@ class PooledCLIP(nn.Module):
         max_frames: Optional[int],
         sequence_repeat_factor: int,
     ) -> Tuple[Optional[torch.Tensor], str]:
-        """
-        Steps:
-          1) Read frames
-          2) Pool frame CLS features into a single sequence feature
-          3) Repeat that sequence feature `sequence_repeat_factor` times
-          4) Pool across repeated pseudo-sequences
-          5) Project and normalize
-        """
         frame_paths = uniform_subsample(frame_paths, max_frames)
         if not frame_paths:
             return None, "no_frames"
@@ -525,7 +396,7 @@ class PooledCLIP(nn.Module):
             pixel_values = inputs["pixel_values"].to(device)
 
             out = self.vit(pixel_values=pixel_values)
-            feats = out.last_hidden_state[:, 0, :]  # [chunk, vit_hidden]
+            feats = out.last_hidden_state[:, 0, :]
             collected_frame_feats.append(feats)
 
             del inputs, pixel_values, out, imgs
@@ -533,13 +404,13 @@ class PooledCLIP(nn.Module):
         if not collected_frame_feats:
             return None, "no_readable_frames"
 
-        all_frame_feats = torch.cat(collected_frame_feats, dim=0)  # [num_frames, vit_hidden]
-        sequence_feat = self._pool_tensor(all_frame_feats, self.frame_pooling)  # [vit_hidden]
+        all_frame_feats = torch.cat(collected_frame_feats, dim=0)
+        sequence_feat = self._pool_tensor(all_frame_feats, self.frame_pooling)
 
         repeat_n = max(1, int(sequence_repeat_factor))
-        repeated_sequences = sequence_feat.unsqueeze(0).repeat(repeat_n, 1)  # [repeat_n, vit_hidden]
+        repeated_sequences = sequence_feat.unsqueeze(0).repeat(repeat_n, 1)
 
-        study_like_feat = self._pool_tensor(repeated_sequences, self.sequence_pooling)  # [vit_hidden]
+        study_like_feat = self._pool_tensor(repeated_sequences, self.sequence_pooling)
 
         emb = F.normalize(self.vision_proj(study_like_feat.unsqueeze(0)), dim=-1)
         return emb, "ok"
@@ -566,10 +437,6 @@ def run_single_checkpoint(
     args,
     validation_lookup: Dict[str, List[str]],
 ) -> Dict[str, Any]:
-    """
-    Runs prediction generation + calculate_score.py for one checkpoint.
-    Returns dict with paths and parsed metrics.
-    """
     model.eval()
     load_checkpoint(model, ckpt_path, device=device)
 
@@ -688,6 +555,8 @@ def run_single_checkpoint(
         args.calculate_score_script,
         "--pred_path",
         str(temp_out_csv),
+        "--random_seed",
+        str(args.random_seed),
     ]
     cp = _run_subprocess_capture(score_cmd)
 
@@ -699,31 +568,63 @@ def run_single_checkpoint(
 
     metrics = parse_score_output(combined_output)
 
-    if metrics["accuracy"] is None:
-        print(f"[WARN] Could not parse accuracy from calculate_score.py output for {ckpt_path.name}")
-    if metrics["f1"] is None:
-        print(f"[WARN] Could not parse F1-score from calculate_score.py output for {ckpt_path.name}")
-
     print("\n[CHECKPOINT METRICS]")
     print(f"  Checkpoint: {ckpt_path.name}")
-    print(f"  TP: {metrics['tp'] if metrics['tp'] is not None else 'N/A'}")
-    print(f"  TN: {metrics['tn'] if metrics['tn'] is not None else 'N/A'}")
-    print(f"  FP: {metrics['fp'] if metrics['fp'] is not None else 'N/A'}")
-    print(f"  FN: {metrics['fn'] if metrics['fn'] is not None else 'N/A'}")
-    print(f"  Accuracy: {metrics['accuracy']:.6f}" if metrics["accuracy"] is not None else "  Accuracy: N/A")
-    print(f"  F1-score: {metrics['f1']:.6f}" if metrics["f1"] is not None else "  F1-score: N/A")
+    print(f"  TP (orig/flip): {format_pair(metrics.get('ORIGINAL_TP'), metrics.get('FLIPPED_TP'), decimals=0)}")
+    print(f"  TN (orig/flip): {format_pair(metrics.get('ORIGINAL_TN'), metrics.get('FLIPPED_TN'), decimals=0)}")
+    print(f"  FP (orig/flip): {format_pair(metrics.get('ORIGINAL_FP'), metrics.get('FLIPPED_FP'), decimals=0)}")
+    print(f"  FN (orig/flip): {format_pair(metrics.get('ORIGINAL_FN'), metrics.get('FLIPPED_FN'), decimals=0)}")
+    print(f"  Accuracy (orig/flip): {format_pair(metrics.get('ORIGINAL_ACCURACY'), metrics.get('FLIPPED_ACCURACY'))}")
+    print(f"  F1-score (orig/flip): {format_pair(metrics.get('ORIGINAL_F1'), metrics.get('FLIPPED_F1'))}")
+    print(f"  ALL_YES Accuracy/F1: {format_single(metrics.get('ALL_YES_ACCURACY'))} / {format_single(metrics.get('ALL_YES_F1'))}")
+    print(f"  ALL_NO  Accuracy/F1: {format_single(metrics.get('ALL_NO_ACCURACY'))} / {format_single(metrics.get('ALL_NO_F1'))}")
+    print(f"  RANDOM  Accuracy/F1: {format_single(metrics.get('RANDOM_ACCURACY'))} / {format_single(metrics.get('RANDOM_F1'))}")
 
     return {
         "checkpoint": ckpt_path,
         "label": label,
         "pred_csv": temp_out_csv,
         "error_csv": temp_err_csv,
-        "accuracy": metrics["accuracy"],
-        "f1": metrics["f1"],
-        "tp": metrics["tp"],
-        "tn": metrics["tn"],
-        "fp": metrics["fp"],
-        "fn": metrics["fn"],
+        "ORIGINAL_TP": metrics.get("ORIGINAL_TP"),
+        "ORIGINAL_TN": metrics.get("ORIGINAL_TN"),
+        "ORIGINAL_FP": metrics.get("ORIGINAL_FP"),
+        "ORIGINAL_FN": metrics.get("ORIGINAL_FN"),
+        "ORIGINAL_ACCURACY": metrics.get("ORIGINAL_ACCURACY"),
+        "ORIGINAL_PRECISION": metrics.get("ORIGINAL_PRECISION"),
+        "ORIGINAL_RECALL": metrics.get("ORIGINAL_RECALL"),
+        "ORIGINAL_F1": metrics.get("ORIGINAL_F1"),
+        "FLIPPED_TP": metrics.get("FLIPPED_TP"),
+        "FLIPPED_TN": metrics.get("FLIPPED_TN"),
+        "FLIPPED_FP": metrics.get("FLIPPED_FP"),
+        "FLIPPED_FN": metrics.get("FLIPPED_FN"),
+        "FLIPPED_ACCURACY": metrics.get("FLIPPED_ACCURACY"),
+        "FLIPPED_PRECISION": metrics.get("FLIPPED_PRECISION"),
+        "FLIPPED_RECALL": metrics.get("FLIPPED_RECALL"),
+        "FLIPPED_F1": metrics.get("FLIPPED_F1"),
+        "ALL_YES_TP": metrics.get("ALL_YES_TP"),
+        "ALL_YES_TN": metrics.get("ALL_YES_TN"),
+        "ALL_YES_FP": metrics.get("ALL_YES_FP"),
+        "ALL_YES_FN": metrics.get("ALL_YES_FN"),
+        "ALL_YES_ACCURACY": metrics.get("ALL_YES_ACCURACY"),
+        "ALL_YES_PRECISION": metrics.get("ALL_YES_PRECISION"),
+        "ALL_YES_RECALL": metrics.get("ALL_YES_RECALL"),
+        "ALL_YES_F1": metrics.get("ALL_YES_F1"),
+        "ALL_NO_TP": metrics.get("ALL_NO_TP"),
+        "ALL_NO_TN": metrics.get("ALL_NO_TN"),
+        "ALL_NO_FP": metrics.get("ALL_NO_FP"),
+        "ALL_NO_FN": metrics.get("ALL_NO_FN"),
+        "ALL_NO_ACCURACY": metrics.get("ALL_NO_ACCURACY"),
+        "ALL_NO_PRECISION": metrics.get("ALL_NO_PRECISION"),
+        "ALL_NO_RECALL": metrics.get("ALL_NO_RECALL"),
+        "ALL_NO_F1": metrics.get("ALL_NO_F1"),
+        "RANDOM_TP": metrics.get("RANDOM_TP"),
+        "RANDOM_TN": metrics.get("RANDOM_TN"),
+        "RANDOM_FP": metrics.get("RANDOM_FP"),
+        "RANDOM_FN": metrics.get("RANDOM_FN"),
+        "RANDOM_ACCURACY": metrics.get("RANDOM_ACCURACY"),
+        "RANDOM_PRECISION": metrics.get("RANDOM_PRECISION"),
+        "RANDOM_RECALL": metrics.get("RANDOM_RECALL"),
+        "RANDOM_F1": metrics.get("RANDOM_F1"),
         "n_total": n_total,
         "n_ok": n_ok,
     }
@@ -774,12 +675,12 @@ def run(args):
     if not results:
         raise SystemExit("[ERROR] No checkpoints were evaluated.")
 
-    valid_results = [r for r in results if r["accuracy"] is not None]
+    valid_results = [r for r in results if r["ORIGINAL_ACCURACY"] is not None]
     if valid_results:
-        best = max(valid_results, key=lambda x: x["accuracy"])
+        best = max(valid_results, key=lambda x: x["ORIGINAL_ACCURACY"])
     else:
         best = results[-1]
-        print("[WARN] No accuracy could be parsed from any calculate_score.py output.")
+        print("[WARN] No ORIGINAL accuracy could be parsed from any calculate_score.py output.")
         print("[WARN] Falling back to the last evaluated checkpoint as best.")
 
     final_out_csv = Path(args.out_csv)
@@ -791,47 +692,77 @@ def run(args):
         final_error_csv.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(best["error_csv"], final_error_csv)
 
-    print("\n" + "#" * 160)
+    print("\n" + "#" * 220)
     print("[FINAL CHECKPOINT COMPARISON]")
-    print("#" * 160)
+    print("#" * 220)
     print(
         f"{'Checkpoint':<20} "
-        f"{'TP':>8} "
-        f"{'TN':>8} "
-        f"{'FP':>8} "
-        f"{'FN':>8} "
-        f"{'Accuracy':>12} "
-        f"{'F1':>12} "
+        f"{'TP(O/F)':>14} "
+        f"{'TN(O/F)':>14} "
+        f"{'FP(O/F)':>14} "
+        f"{'FN(O/F)':>14} "
+        f"{'Accuracy(O/F)':>20} "
+        f"{'F1(O/F)':>20} "
         f"{'Pred CSV':<40}"
     )
 
     for r in results:
-        tp_str = "N/A" if r.get("tp") is None else str(r["tp"])
-        tn_str = "N/A" if r.get("tn") is None else str(r["tn"])
-        fp_str = "N/A" if r.get("fp") is None else str(r["fp"])
-        fn_str = "N/A" if r.get("fn") is None else str(r["fn"])
-        acc_str = "N/A" if r.get("accuracy") is None else f"{r['accuracy']:.6f}"
-        f1_str = "N/A" if r.get("f1") is None else f"{r['f1']:.6f}"
-
         print(
             f"{r['checkpoint'].name:<20} "
-            f"{tp_str:>8} "
-            f"{tn_str:>8} "
-            f"{fp_str:>8} "
-            f"{fn_str:>8} "
-            f"{acc_str:>12} "
-            f"{f1_str:>12} "
+            f"{format_pair(r.get('ORIGINAL_TP'), r.get('FLIPPED_TP'), decimals=0):>14} "
+            f"{format_pair(r.get('ORIGINAL_TN'), r.get('FLIPPED_TN'), decimals=0):>14} "
+            f"{format_pair(r.get('ORIGINAL_FP'), r.get('FLIPPED_FP'), decimals=0):>14} "
+            f"{format_pair(r.get('ORIGINAL_FN'), r.get('FLIPPED_FN'), decimals=0):>14} "
+            f"{format_pair(r.get('ORIGINAL_ACCURACY'), r.get('FLIPPED_ACCURACY')):>20} "
+            f"{format_pair(r.get('ORIGINAL_F1'), r.get('FLIPPED_F1')):>20} "
             f"{r['pred_csv'].name:<40}"
+        )
+
+    if results:
+        baseline_source = results[0]
+
+        print(
+            f"{'ALL_YES':<20} "
+            f"{format_single(baseline_source.get('ALL_YES_TP'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_YES_TN'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_YES_FP'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_YES_FN'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_YES_ACCURACY')):>20} "
+            f"{format_single(baseline_source.get('ALL_YES_F1')):>20} "
+            f"{'-':<40}"
+        )
+
+        print(
+            f"{'ALL_NO':<20} "
+            f"{format_single(baseline_source.get('ALL_NO_TP'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_NO_TN'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_NO_FP'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_NO_FN'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('ALL_NO_ACCURACY')):>20} "
+            f"{format_single(baseline_source.get('ALL_NO_F1')):>20} "
+            f"{'-':<40}"
+        )
+
+        print(
+            f"{'RANDOM':<20} "
+            f"{format_single(baseline_source.get('RANDOM_TP'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('RANDOM_TN'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('RANDOM_FP'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('RANDOM_FN'), decimals=0):>14} "
+            f"{format_single(baseline_source.get('RANDOM_ACCURACY')):>20} "
+            f"{format_single(baseline_source.get('RANDOM_F1')):>20} "
+            f"{'-':<40}"
         )
 
     print("\n[BEST CHECKPOINT]")
     print(f"  Checkpoint: {best['checkpoint']}")
-    print(f"  TP: {best['tp'] if best.get('tp') is not None else 'N/A'}")
-    print(f"  TN: {best['tn'] if best.get('tn') is not None else 'N/A'}")
-    print(f"  FP: {best['fp'] if best.get('fp') is not None else 'N/A'}")
-    print(f"  FN: {best['fn'] if best.get('fn') is not None else 'N/A'}")
-    print(f"  Best accuracy: {best['accuracy']:.6f}" if best.get("accuracy") is not None else "  Best accuracy: N/A")
-    print(f"  Best F1-score: {best['f1']:.6f}" if best.get("f1") is not None else "  Best F1-score: N/A")
+    print(f"  TP (orig/flip): {format_pair(best.get('ORIGINAL_TP'), best.get('FLIPPED_TP'), decimals=0)}")
+    print(f"  TN (orig/flip): {format_pair(best.get('ORIGINAL_TN'), best.get('FLIPPED_TN'), decimals=0)}")
+    print(f"  FP (orig/flip): {format_pair(best.get('ORIGINAL_FP'), best.get('FLIPPED_FP'), decimals=0)}")
+    print(f"  FN (orig/flip): {format_pair(best.get('ORIGINAL_FN'), best.get('FLIPPED_FN'), decimals=0)}")
+    print(f"  Accuracy (orig/flip): {format_pair(best.get('ORIGINAL_ACCURACY'), best.get('FLIPPED_ACCURACY'))}")
+    print(f"  F1-score (orig/flip): {format_pair(best.get('ORIGINAL_F1'), best.get('FLIPPED_F1'))}")
+    print(f"  Best checkpoint selected by ORIGINAL accuracy only.")
     print(f"  Best prediction CSV copied to: {final_out_csv}")
     if args.error_csv and best["error_csv"] is not None:
         print(f"  Best error CSV copied to: {args.error_csv}")
@@ -885,6 +816,13 @@ def build_argparser():
         default="calculate_score.py",
         type=str,
         help="Path to calculate_score.py script to run after validation.",
+    )
+
+    ap.add_argument(
+        "--random_seed",
+        default=42,
+        type=int,
+        help="Random seed used for the RANDOM baseline in calculate_score.py.",
     )
 
     return ap

@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 """
 custom_framework_train.py
 
@@ -16,6 +16,11 @@ Small temporal workaround added:
 
 This is NOT a full temporal model (e.g., Transformer/LSTM over frames), but it gives
 the model access to "frame 1 comes before frame 2" information during training.
+
+UPDATED FIX:
+- Post-training validation no longer forces only last.pt
+- It now passes the full run directory to the validation script
+- This allows validation to evaluate all epoch_*.pt checkpoints and choose the best one
 """
 
 from __future__ import annotations
@@ -684,9 +689,17 @@ def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Pat
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ckpt_path = run_dir / "last.pt"
-    if not ckpt_path.exists():
-        raise SystemExit(f"[ERROR] Checkpoint not found: {ckpt_path}")
+    # IMPORTANT FIX:
+    # Pass the whole run directory to validation instead of forcing last.pt.
+    # This lets the validation script discover epoch_*.pt files, compare them,
+    # and promote the best checkpoint automatically.
+    if not run_dir.exists() or not run_dir.is_dir():
+        raise SystemExit(f"[ERROR] Run directory does not exist: {run_dir}")
+
+    epoch_ckpts = sorted(run_dir.glob("epoch_*.pt"))
+    last_ckpt = run_dir / "last.pt"
+    if not epoch_ckpts and not last_ckpt.exists():
+        raise SystemExit(f"[ERROR] No checkpoints found in run directory: {run_dir}")
 
     if not loss_csv.exists():
         raise SystemExit(f"[ERROR] Loss CSV not found: {loss_csv}")
@@ -702,7 +715,7 @@ def run_post_training_pipeline(args, run_name: str, run_dir: Path, loss_csv: Pat
         sys.executable,
         args.validate_script,
         "--checkpoint",
-        str(ckpt_path),
+        str(run_dir),   # <-- FIXED: pass directory, not last.pt
         "--data_dir",
         str(val_data_dir),
         "--out_csv",
@@ -1163,7 +1176,7 @@ def build_argparser():
     ap.add_argument(
         "--val_data_dir",
         type=str,
-        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed_Augmented",
+        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed",
         help="Validation data_dir passed to custom_framework_validate.py",
     )
 
@@ -1198,7 +1211,7 @@ def build_argparser():
     ap.add_argument("--vit_image_size", type=int, default=None, help="Force processor resize (e.g., 224) to control memory.")
     ap.add_argument("--empty_cache_each_step", action="store_true", help="Call torch.cuda.empty_cache() each step (helps fragmentation).")
 
-    ap.add_argument("--validate_script", type=str, default="custom_framework_validate.py")
+    ap.add_argument("--validate_script", type=str, default="custom_framework_validate_temporal.py")
     ap.add_argument("--calculate_score_script", type=str, default="calculate_score.py")
     ap.add_argument("--plot_loss_script", type=str, default="plot_loss.py")
 
