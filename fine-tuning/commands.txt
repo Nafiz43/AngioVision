@@ -608,7 +608,7 @@ python3 custom_framework_validate.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
-  --epochs 17 \
+  --epochs 16 \
   --num_workers 32 \
   --max_sequences_per_study 16 \
   --max_frames_per_sequence 32 \
@@ -626,6 +626,7 @@ python3 custom_framework_validate.py \
   --enable_sequence_temporal \
   --sequence_temporal_scale 0.25
 
+<<<<<<< HEAD
 -----------------------------------------------------------
 New Combinations to Try
 -----------------------------------------------------------
@@ -772,7 +773,7 @@ python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
   --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --epochs 16 \
+  --epochs 21 \
   --num_workers 32 \
   --max_sequences_per_study 16 \
   --max_frames_per_sequence 32 \
@@ -1050,3 +1051,59 @@ python3 custom_framework_train_temporal.py \
 
 > **Note:** Each config uses `--epochs 17` and `--base_frames_dir .../DICOM_Sequence_Processed_Augmented` for the augmented (`_aug`) variant to ensure unique run directory names and avoid checkpoint-skip collisions.
 
+=======
+
+  python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/10_4_16_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_50_4_8_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32  --pooling logsumexp
+
+-------TEST-------------
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/10_16_16_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_10_16_16_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
+
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/11_16_4_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_11_16_4_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
+
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/15_4_4_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_15_4_4_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
+
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/17_4_16_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_17_4_16_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
+
+python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/21_32_1_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_21_32_1_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32   --pooling logsumexp
+
+  python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/50_4_16_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_50_4_16_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32  --pooling logsumexp
+
+
+  python3 custom_framework_validate.py \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/50_4_8_32/\
+      --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_50_4_8_32.csv \
+        --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
+         --device cuda   --frame_chunk_size 32  --pooling logsumexp
+>>>>>>> d42bbbb (report augmentor added)

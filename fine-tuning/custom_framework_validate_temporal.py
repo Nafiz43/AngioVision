@@ -1,6 +1,3 @@
-from pathlib import Path
-
-code = r'''#!/usr/bin/env python3
 """
 custom_framework_validate_temporal.py
 
@@ -872,7 +869,7 @@ def build_argparser():
 
     ap.add_argument(
         "--validation_csv",
-        default="/data/Deep_Angiography/Validation_Data/test-data/gt.csv",
+        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv",
         type=str,
         help="Validation CSV containing ground-truth rows. Only questions present here will be asked per SOPInstanceUID.",
     )
@@ -938,8 +935,4 @@ def build_argparser():
 if __name__ == "__main__":
     args = build_argparser().parse_args()
     run(args)
-'''
 
-path = Path('/mnt/data/custom_framework_validate_temporal.py')
-path.write_text(code)
-print(path)
