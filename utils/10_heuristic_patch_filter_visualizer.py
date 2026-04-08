@@ -53,7 +53,7 @@ HARDCODED_FRAME_PATHS = [
     "/data/Deep_Angiography/DICOM_Sequence_Processed/1QKmyc87mw/2.16.840.1.113883.3.16.122439881467805637368480778603593518413/frames/2.16.840.1.113883.3.16.122439881467805637368480778603593518413_frame_0016.png",
 ]
 
-PATCH_SIZES      = [8, 16, 32, 64, 128]
+PATCH_SIZES      = [8, 16, 32, 64, 128, 256]
 THRESHOLD_VALUES = list(range(0, 101, 5))   # 0,5,10,...,100  (21 values)
 OUTPUT_BASE_DIR  = Path("/data/Deep_Angiography/DICOM-metadata-stats/patch-sweeps")
 
