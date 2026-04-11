@@ -51,8 +51,10 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from tqdm import tqdm
 
-BASE_DIR = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
-OUT_CSV = Path("/data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv")
+
+# BASE_DIR = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
+BASE_DIR = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed")
+OUT_CSV = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/consolidated_metadata_ALL_Sequences.csv")
 TARGET_NAME = "metadata.csv"
 
 STUDY_KEY = "StudyInstanceUID"
