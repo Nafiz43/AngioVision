@@ -626,7 +626,6 @@ python3 custom_framework_validate.py \
   --enable_sequence_temporal \
   --sequence_temporal_scale 0.25
 
-<<<<<<< HEAD
 -----------------------------------------------------------
 New Combinations to Try
 -----------------------------------------------------------
@@ -1051,7 +1050,6 @@ python3 custom_framework_train_temporal.py \
 
 > **Note:** Each config uses `--epochs 17` and `--base_frames_dir .../DICOM_Sequence_Processed_Augmented` for the augmented (`_aug`) variant to ensure unique run directory names and avoid checkpoint-skip collisions.
 
-=======
 
   python3 custom_framework_validate.py \
   --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/10_4_16_32/\
@@ -1106,4 +1104,3 @@ python3 custom_framework_validate.py \
       --out_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions_epoch_50_4_8_32.csv \
         --error_csv /data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_errors.csv  \
          --device cuda   --frame_chunk_size 32  --pooling logsumexp
->>>>>>> d42bbbb (report augmentor added)
