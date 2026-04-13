@@ -914,9 +914,9 @@ python3 custom_framework_train_temporal.py \
 ```bash
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --epochs 16 \
+  --epochs 100 \
   --num_workers 32 \
   --max_sequences_per_study 16 \
   --max_frames_per_sequence 32 \
@@ -984,9 +984,9 @@ python3 custom_framework_train_temporal.py \
 ```bash
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --epochs 16 \
+  --epochs 116 \
   --num_workers 32 \
   --max_sequences_per_study 16 \
   --max_frames_per_sequence 32 \
@@ -1010,6 +1010,8 @@ python3 custom_framework_train_temporal.py \
   --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configE \
   --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configE
 ```
+
+
 
 ### Config E2 — Augmented Data
 
@@ -1135,3 +1137,184 @@ python3 custom_framework_validate.py \
          --device cuda   --frame_chunk_size 32  --pooling logsumexp
 
 >>>>>>> d42bbbb (report augmentor added)
+
+
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configC_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configC_aug
+
+
+
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --bert_name emilyalsentzer/Bio_ClinicalBERT \
+  --epochs 17 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configC_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configC_aug
+
+
+
+python3 custom_framework_validate_temporal.py \
+  --checkpoint_root /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints \
+  --vit_name google/vit-base-patch16-224-in21k \
+  --bert_name dmis-lab/biobert-base-cased-v1.1 \
+  --embed_dim 256 \
+  --pooling mean \
+  --frame_chunk_size 32 \
+  --max_frames 0 \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+
+
+  
+-----------new variants-----------
+
+python3 custom_framework_train_temporal.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
+  --epochs 59 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --vit_image_size 224 \
+  --freeze_text \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/configX_aug \
+  --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/configX_aug
+
+-----------------------------------------------------------------
+python3 custom_framework_train_with_generation.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 21 \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --freeze_text \
+  --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --text_lr 5e-5 \
+  --enable_generation \
+  --decoder_model_name gpt2 \
+  --decoder_lr 5e-5 \
+  --gen_head_lr 1e-4 \
+  --generation_max_length 256 \
+  --clip_loss_weight 1.0 \
+  --gen_loss_weight 1.0 \
+  --holdout_meta_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/consolidated_metadata_ALL_Sequences.csv \
+  --holdout_base_frames_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed \
+  --report_generation_output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/report_generation \
+  --holdout_generation_batch_size 1 \
+  --holdout_generation_max_new_tokens 1024
+
+
+
+
+  python3 custom_framework_train_with_generation.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 7 \
+  --batch_size 4 \
+  --grad_accum 4 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling mean \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --freeze_text \
+  --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --text_lr 5e-5 \
+  --enable_generation \
+  --decoder_model_name microsoft/biogpt \
+  --decoder_lr 5e-5 \
+  --gen_head_lr 1e-4 \
+  --generation_max_length 256 \
+  --clip_loss_weight 1.0 \
+  --gen_loss_weight 1.0 \
+  --run_holdout_generation_each_epoch \
+  --holdout_meta_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/consolidated_metadata_ALL_Sequences.csv \
+  --holdout_base_frames_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed \
+  --report_generation_output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/report_generation \
+  --holdout_generation_batch_size 1 \
+  --holdout_generation_max_new_tokens 1024

@@ -1,33 +1,12 @@
-"""
-custom_framework_validate_temporal.py
-
-Run CLIP-style binary QA on validation sequence directories using one or more trained checkpoints.
-
-Updated to match the temporal-aware training code:
-- Uses AutoModel / AutoTokenizer so it matches BioBERT or any overridden text encoder
-- Adds the same sinusoidal temporal encoding logic used during training
-- Supports frame-level temporal encoding and optional sequence-level temporal encoding
-- Keeps checkpoint directory evaluation and best-checkpoint selection behavior
-
-Validation flow:
-1) Read validation sequences
-2) Build frame embeddings with ViT
-3) Add temporal positional encoding if enabled
-4) Pool frames into a sequence feature
-5) Optionally add sequence-order encoding if enabled
-6) Project image/text into shared CLIP-style embedding space
-7) Compare YES/NO hypothesis similarities
-"""
-
 from __future__ import annotations
 
 import argparse
 import csv
 import math
 import re
-import shutil
 import subprocess
 import sys
+import importlib.util
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -54,13 +33,38 @@ except Exception:
     _ViTFeatureExtractor = None
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 POOL_CHOICES = ("max", "mean", "logsumexp")
 TEMPORAL_MODE_CHOICES = ("none", "sinusoidal")
+
+
+# -----------------------------
+# Settings loader
+# -----------------------------
+def load_paths_from_settings(settings_py: str) -> Tuple[str, str]:
+    settings_path = Path(settings_py)
+
+    if not settings_path.exists():
+        raise SystemExit(f"[ERROR] settings.py does not exist: {settings_path}")
+
+    spec = importlib.util.spec_from_file_location("angio_settings", settings_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"[ERROR] Could not load settings module from: {settings_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "VALIDATION_CSV"):
+        raise SystemExit(f"[ERROR] VALIDATION_CSV not found in settings.py: {settings_path}")
+    if not hasattr(module, "DATA_DIR"):
+        raise SystemExit(f"[ERROR] DATA_DIR not found in settings.py: {settings_path}")
+
+    validation_csv = str(module.VALIDATION_CSV)
+    data_dir = str(module.DATA_DIR)
+
+    print(f"[INFO] Loaded VALIDATION_CSV from settings.py: {validation_csv}")
+    print(f"[INFO] Loaded DATA_DIR from settings.py: {data_dir}")
+
+    return validation_csv, data_dir
 
 
 # -----------------------------
@@ -84,6 +88,8 @@ def parse_score_output(text: str) -> Dict[str, Optional[float]]:
         "fp": None,
         "fn": None,
         "accuracy": None,
+        "precision": None,
+        "recall": None,
         "f1": None,
     }
 
@@ -132,6 +138,16 @@ def parse_score_output(text: str) -> Dict[str, Optional[float]]:
     out["accuracy"] = _parse_float_metric([
         r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
         r"accuracy(?:\s+score)?\s*[:=]\s*([0-9]*\.?[0-9]+)",
+    ])
+
+    out["precision"] = _parse_float_metric([
+        r"precision\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
+        r"precision\s*[:=]\s*([0-9]*\.?[0-9]+)",
+    ])
+
+    out["recall"] = _parse_float_metric([
+        r"recall\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%",
+        r"recall\s*[:=]\s*([0-9]*\.?[0-9]+)",
     ])
 
     out["f1"] = _parse_float_metric([
@@ -185,6 +201,23 @@ def normalize_question(q: Any) -> str:
     q = normalize_str(q)
     q = re.sub(r"\s+", " ", q).strip()
     return q
+
+
+def sanitize_for_filename(s: str) -> str:
+    s = s.replace("\\", "/")
+    s = re.sub(r"[^\w.\-]+", "__", s)
+    s = re.sub(r"__+", "__", s).strip("_")
+    return s or "unnamed"
+
+
+def parse_epoch_label(checkpoint_name: str) -> str:
+    stem = Path(checkpoint_name).stem
+    m = re.fullmatch(r"epoch_(\d+)", stem)
+    if m:
+        return m.group(1)
+    if stem == "last":
+        return "last"
+    return stem
 
 
 def load_validation_question_lookup(validation_csv: str) -> Dict[str, List[str]]:
@@ -298,44 +331,60 @@ def make_yes_no_hypotheses(question: str) -> Tuple[str, str]:
     return (f"Yes. {question}", f"No. {question}")
 
 
-def checkpoint_sort_key(p: Path):
-    name = p.stem
-    m = re.match(r"epoch_(\d+)$", name)
+def checkpoint_sort_key_name(name: str):
+    stem = Path(name).stem
+    m = re.fullmatch(r"epoch_(\d+)", stem)
     if m:
         return (0, int(m.group(1)))
-    if name == "last":
+    if stem == "last":
         return (1, float("inf"))
-    return (2, name)
+    return (2, stem)
 
 
-def discover_checkpoints(checkpoint_arg: str) -> List[Path]:
-    p = Path(checkpoint_arg)
+def discover_experiments_and_checkpoints(checkpoint_root: str) -> List[Dict[str, Any]]:
+    root = Path(checkpoint_root)
 
-    if p.is_file():
-        return [p]
+    if not root.exists():
+        raise SystemExit(f"[ERROR] Checkpoint path does not exist: {root}")
 
-    if not p.exists():
-        raise SystemExit(f"[ERROR] Checkpoint path does not exist: {p}")
+    if root.is_file():
+        exp_name = str(root.parent.name)
+        return [{
+            "experiment_name": exp_name,
+            "experiment_dir": root.parent,
+            "checkpoints": [root],
+        }]
 
-    if not p.is_dir():
-        raise SystemExit(f"[ERROR] Checkpoint path is neither file nor directory: {p}")
+    if not root.is_dir():
+        raise SystemExit(f"[ERROR] Checkpoint path is neither file nor directory: {root}")
 
-    epoch_ckpts = sorted(
-        [x for x in p.iterdir() if x.is_file() and re.fullmatch(r"epoch_\d+\.pt", x.name)],
-        key=checkpoint_sort_key,
-    )
-    if epoch_ckpts:
-        return epoch_ckpts
+    pt_files = sorted(root.rglob("*.pt"))
+    if not pt_files:
+        raise SystemExit(f"[ERROR] No .pt files found under: {root}")
 
-    last_ckpt = p / "last.pt"
-    if last_ckpt.exists() and last_ckpt.is_file():
-        return [last_ckpt]
+    grouped: Dict[str, List[Path]] = {}
+    for pt in pt_files:
+        try:
+            rel_parent = pt.parent.relative_to(root)
+            exp_name = rel_parent.as_posix()
+        except Exception:
+            exp_name = pt.parent.name
 
-    raise SystemExit(f"[ERROR] No checkpoint files found in directory: {p}")
+        if exp_name == ".":
+            exp_name = pt.parent.name
 
+        grouped.setdefault(exp_name, []).append(pt)
 
-def checkpoint_label(ckpt_path: Path) -> str:
-    return ckpt_path.stem
+    experiments: List[Dict[str, Any]] = []
+    for exp_name, ckpts in sorted(grouped.items(), key=lambda kv: kv[0]):
+        ckpts_sorted = sorted(ckpts, key=lambda p: checkpoint_sort_key_name(p.name))
+        experiments.append({
+            "experiment_name": exp_name,
+            "experiment_dir": ckpts_sorted[0].parent,
+            "checkpoints": ckpts_sorted,
+        })
+
+    return experiments
 
 
 def build_sinusoidal_position_encoding(
@@ -367,7 +416,7 @@ def build_sinusoidal_position_encoding(
 
 
 # -----------------------------
-# Model (must match training architecture)
+# Model
 # -----------------------------
 class PooledCLIP(nn.Module):
     def __init__(
@@ -434,7 +483,6 @@ class PooledCLIP(nn.Module):
     def _pool_tensor(self, x: torch.Tensor, mode: str) -> torch.Tensor:
         if x.ndim != 2:
             raise ValueError(f"_pool_tensor expected 2D tensor [N, D], got shape {tuple(x.shape)}")
-
         if x.size(0) == 0:
             raise ValueError("Cannot pool an empty tensor.")
 
@@ -457,6 +505,7 @@ class PooledCLIP(nn.Module):
             return x
         if scale == 0.0:
             return x
+
         pe = build_sinusoidal_position_encoding(
             positions=positions,
             dim=x.size(-1),
@@ -475,16 +524,6 @@ class PooledCLIP(nn.Module):
         max_frames: Optional[int],
         vit_image_size: Optional[int],
     ) -> Tuple[Optional[torch.Tensor], str]:
-        """
-        Matches training-side temporal logic:
-        - uniform subsample while preserving order
-        - encode frame CLS features
-        - add frame positional encoding if enabled
-        - pool across frames
-        - optional sequence-level temporal encoding (for validation single sequence,
-          this is only meaningful if enabled; it remains consistent structurally)
-        - project + normalize
-        """
         frame_paths = uniform_subsample(frame_paths, max_frames)
         if not frame_paths:
             return None, "no_frames"
@@ -570,9 +609,12 @@ def run_single_checkpoint(
     tokenizer,
     processor,
     ckpt_path: Path,
+    experiment_name: str,
     device: torch.device,
     args,
     validation_lookup: Dict[str, List[str]],
+    temp_pred_dir: Path,
+    temp_err_dir: Path,
 ) -> Dict[str, Any]:
     model.eval()
     load_checkpoint(model, ckpt_path, device=device)
@@ -581,24 +623,19 @@ def run_single_checkpoint(
     if not data_dir.exists():
         raise SystemExit(f"[ERROR] Validation data dir does not exist: {data_dir}")
 
-    final_out_csv = Path(args.out_csv)
-    final_out_csv.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_name = ckpt_path.name
+    epoch_label = parse_epoch_label(checkpoint_name)
 
-    error_csv_requested = bool(args.error_csv)
-    final_error_csv = Path(args.error_csv) if error_csv_requested else None
-    if final_error_csv is not None:
-        final_error_csv.parent.mkdir(parents=True, exist_ok=True)
+    exp_safe = sanitize_for_filename(experiment_name)
+    ckpt_safe = sanitize_for_filename(ckpt_path.stem)
 
-    label = checkpoint_label(ckpt_path)
-
-    temp_out_csv = final_out_csv.parent / f"{final_out_csv.stem}__{label}{final_out_csv.suffix or '.csv'}"
-    temp_err_csv = None
-    if final_error_csv is not None:
-        temp_err_csv = final_error_csv.parent / f"{final_error_csv.stem}__{label}{final_error_csv.suffix or '.csv'}"
+    temp_out_csv = temp_pred_dir / f"{exp_safe}__{ckpt_safe}__predictions.csv"
+    temp_err_csv = temp_err_dir / f"{exp_safe}__{ckpt_safe}__errors.csv"
 
     error_rows = []
     n_total = 0
     n_ok = 0
+    total_predictions_written = 0
     skip_counts: Dict[str, int] = {}
 
     max_frames = args.max_frames if args.max_frames and args.max_frames > 0 else None
@@ -608,7 +645,7 @@ def run_single_checkpoint(
         writer.writerow(["AccessionNumber", "SOPInstanceUID", "Question", "Answer"])
 
         seq_dirs = sorted([p for p in data_dir.iterdir() if p.is_dir()])
-        for seq_dir in tqdm(seq_dirs, desc=f"Sequences [{label}]", dynamic_ncols=True):
+        for seq_dir in tqdm(seq_dirs, desc=f"{experiment_name} | {checkpoint_name}", dynamic_ncols=True):
             n_total += 1
 
             acc, sop, meta_status = read_metadata_key_value_csv(seq_dir)
@@ -664,29 +701,14 @@ def run_single_checkpoint(
                 sims = (img_emb @ txt_emb.t()).squeeze(0)
                 pred = "YES" if sims[0].item() > sims[1].item() else "NO"
                 writer.writerow([acc, sop, q, pred])
+                total_predictions_written += 1
 
             n_ok += 1
 
     print(f"[INFO] Wrote predictions to: {temp_out_csv}")
 
-    print("\n[SUMMARY]")
-    print(f"  Checkpoint:              {ckpt_path.name}")
-    print(f"  Total sequence dirs:     {n_total}")
-    print(f"  Successfully predicted:  {n_ok}")
-    print(f"  Frame temporal mode:     {args.temporal_mode}")
-    print(f"  Frame temporal enabled:  {not args.disable_frame_temporal}")
-    print(f"  Sequence temporal:       {args.enable_sequence_temporal}")
-    print(f"  Frame temporal scale:    {args.frame_temporal_scale}")
-    print(f"  Sequence temporal scale: {args.sequence_temporal_scale}")
-    print(f"  Sequence pooling:        {args.sequence_pooling if args.sequence_pooling else args.pooling}")
-    if skip_counts:
-        print("  Skipped counts:")
-        for k, v in sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0])):
-            print(f"    {k}: {v}")
-
-    if temp_err_csv is not None:
-        pd.DataFrame(error_rows, columns=["seq_dir", "status", "details"]).to_csv(temp_err_csv, index=False)
-        print(f"[INFO] Wrote error log to: {temp_err_csv}")
+    pd.DataFrame(error_rows, columns=["seq_dir", "status", "details"]).to_csv(temp_err_csv, index=False)
+    print(f"[INFO] Wrote error log to: {temp_err_csv}")
 
     if not temp_out_csv.exists():
         raise SystemExit(f"[ERROR] Prediction CSV not found, cannot run calculate_score.py: {temp_out_csv}")
@@ -707,44 +729,169 @@ def run_single_checkpoint(
 
     metrics = parse_score_output(combined_output)
 
-    if metrics["accuracy"] is None:
-        print(f"[WARN] Could not parse accuracy from calculate_score.py output for {ckpt_path.name}")
-    if metrics["f1"] is None:
-        print(f"[WARN] Could not parse F1-score from calculate_score.py output for {ckpt_path.name}")
-
     print("\n[CHECKPOINT METRICS]")
-    print(f"  Checkpoint: {ckpt_path.name}")
+    print(f"  Experiment: {experiment_name}")
+    print(f"  Checkpoint: {checkpoint_name}")
+    print(f"  Epoch: {epoch_label}")
     print(f"  TP: {metrics['tp'] if metrics['tp'] is not None else 'N/A'}")
     print(f"  TN: {metrics['tn'] if metrics['tn'] is not None else 'N/A'}")
     print(f"  FP: {metrics['fp'] if metrics['fp'] is not None else 'N/A'}")
     print(f"  FN: {metrics['fn'] if metrics['fn'] is not None else 'N/A'}")
     print(f"  Accuracy: {metrics['accuracy']:.6f}" if metrics["accuracy"] is not None else "  Accuracy: N/A")
+    print(f"  Precision: {metrics['precision']:.6f}" if metrics["precision"] is not None else "  Precision: N/A")
+    print(f"  Recall: {metrics['recall']:.6f}" if metrics["recall"] is not None else "  Recall: N/A")
     print(f"  F1-score: {metrics['f1']:.6f}" if metrics["f1"] is not None else "  F1-score: N/A")
 
     return {
-        "checkpoint": ckpt_path,
-        "label": label,
-        "pred_csv": temp_out_csv,
-        "error_csv": temp_err_csv,
-        "accuracy": metrics["accuracy"],
-        "f1": metrics["f1"],
+        "experiment_name": experiment_name,
+        "checkpoint_name": checkpoint_name,
+        "epoch": epoch_label,
+        "checkpoint_path": str(ckpt_path),
+        "prediction_csv": str(temp_out_csv),
+        "error_csv": str(temp_err_csv),
         "tp": metrics["tp"],
         "tn": metrics["tn"],
         "fp": metrics["fp"],
         "fn": metrics["fn"],
-        "n_total": n_total,
-        "n_ok": n_ok,
+        "accuracy": metrics["accuracy"],
+        "precision": metrics["precision"],
+        "recall": metrics["recall"],
+        "f1": metrics["f1"],
+        "n_total_sequence_dirs": n_total,
+        "n_successful_sequences": n_ok,
+        "n_predictions_written": total_predictions_written,
+        "skip_summary": "; ".join(f"{k}={v}" for k, v in sorted(skip_counts.items())),
+        "frame_temporal_mode": args.temporal_mode,
+        "frame_temporal_enabled": not args.disable_frame_temporal,
+        "sequence_temporal_enabled": args.enable_sequence_temporal,
+        "frame_temporal_scale": args.frame_temporal_scale,
+        "sequence_temporal_scale": args.sequence_temporal_scale,
+        "frame_pooling": args.frame_pooling if args.frame_pooling else args.pooling,
+        "sequence_pooling": args.sequence_pooling if args.sequence_pooling else args.pooling,
     }
 
 
+def build_leaderboards(
+    results: List[Dict[str, Any]],
+    leaderboard_dir: Path,
+) -> Tuple[Path, Path]:
+    leaderboard_dir.mkdir(parents=True, exist_ok=True)
+
+    all_csv = leaderboard_dir / "experiments_all.csv"
+    sorted_csv = leaderboard_dir / "experiments_sorted.csv"
+
+    df = pd.DataFrame(results)
+
+    desired_cols = [
+        "experiment_name",
+        "checkpoint_name",
+        "epoch",
+        "checkpoint_path",
+        "tp",
+        "tn",
+        "fp",
+        "fn",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "n_total_sequence_dirs",
+        "n_successful_sequences",
+        "n_predictions_written",
+        "prediction_csv",
+        "error_csv",
+        "frame_temporal_mode",
+        "frame_temporal_enabled",
+        "sequence_temporal_enabled",
+        "frame_temporal_scale",
+        "sequence_temporal_scale",
+        "frame_pooling",
+        "sequence_pooling",
+        "skip_summary",
+    ]
+
+    existing_cols = [c for c in desired_cols if c in df.columns]
+    df = df[existing_cols]
+
+    df.to_csv(all_csv, index=False)
+
+    sort_df = df.copy()
+    if "f1" in sort_df.columns:
+        sort_df = sort_df.sort_values(by=["f1"], ascending=[False], na_position="last")
+
+    sort_df.to_csv(sorted_csv, index=False)
+
+    return all_csv, sorted_csv
+
+
+def print_final_leaderboard(results: List[Dict[str, Any]]):
+    print("\n" + "#" * 180)
+    print("[FINAL EXPERIMENT LEADERBOARD]")
+    print("#" * 180)
+
+    header = (
+        f"{'Experiment':<45} "
+        f"{'Checkpoint':<15} "
+        f"{'Epoch':<8} "
+        f"{'TP':>8} "
+        f"{'TN':>8} "
+        f"{'FP':>8} "
+        f"{'FN':>8} "
+        f"{'Accuracy':>12} "
+        f"{'Precision':>12} "
+        f"{'Recall':>12} "
+        f"{'F1':>12}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    def sort_key(r: Dict[str, Any]):
+        f1 = r.get("f1")
+        return -(f1 if f1 is not None else -1e18)
+
+    for r in sorted(results, key=sort_key):
+        tp_str = "N/A" if r.get("tp") is None else str(r["tp"])
+        tn_str = "N/A" if r.get("tn") is None else str(r["tn"])
+        fp_str = "N/A" if r.get("fp") is None else str(r["fp"])
+        fn_str = "N/A" if r.get("fn") is None else str(r["fn"])
+        acc_str = "N/A" if r.get("accuracy") is None else f"{r['accuracy']:.6f}"
+        prec_str = "N/A" if r.get("precision") is None else f"{r['precision']:.6f}"
+        rec_str = "N/A" if r.get("recall") is None else f"{r['recall']:.6f}"
+        f1_str = "N/A" if r.get("f1") is None else f"{r['f1']:.6f}"
+
+        print(
+            f"{r['experiment_name'][:45]:<45} "
+            f"{r['checkpoint_name'][:15]:<15} "
+            f"{str(r['epoch'])[:8]:<8} "
+            f"{tp_str:>8} "
+            f"{tn_str:>8} "
+            f"{fp_str:>8} "
+            f"{fn_str:>8} "
+            f"{acc_str:>12} "
+            f"{prec_str:>12} "
+            f"{rec_str:>12} "
+            f"{f1_str:>12}"
+        )
+
+
 def run(args):
+    settings_validation_csv, settings_data_dir = load_paths_from_settings(args.settings_py)
+
+    if not args.validation_csv:
+        args.validation_csv = settings_validation_csv
+    if not args.data_dir:
+        args.data_dir = settings_data_dir
+
+    print(f"[INFO] Final validation_csv: {args.validation_csv}")
+    print(f"[INFO] Final data_dir: {args.data_dir}")
+
     device = torch.device("cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu")
     print(f"[INFO] device = {device}")
 
-    checkpoints = discover_checkpoints(args.checkpoint)
-    print(f"[INFO] Found {len(checkpoints)} checkpoint(s) to evaluate:")
-    for ck in checkpoints:
-        print(f"  - {ck}")
+    experiments = discover_experiments_and_checkpoints(args.checkpoint_root)
+    print(f"[INFO] Found {len(experiments)} experiment(s) under: {args.checkpoint_root}")
+    for exp in experiments:
+        print(f"  - {exp['experiment_name']} ({len(exp['checkpoints'])} checkpoints)")
 
     processor = get_vit_processor(args.vit_name)
     tokenizer = AutoTokenizer.from_pretrained(args.bert_name)
@@ -768,110 +915,106 @@ def run(args):
     ).to(device)
     model.eval()
 
+    leaderboard_dir = Path(args.leaderboard_dir)
+    leaderboard_dir.mkdir(parents=True, exist_ok=True)
+
+    temp_pred_dir = leaderboard_dir / "tmp_predictions"
+    temp_err_dir = leaderboard_dir / "tmp_errors"
+    temp_pred_dir.mkdir(parents=True, exist_ok=True)
+    temp_err_dir.mkdir(parents=True, exist_ok=True)
+
     results: List[Dict[str, Any]] = []
-    for ckpt_path in checkpoints:
-        print("\n" + "=" * 100)
-        print(f"[INFO] Evaluating checkpoint: {ckpt_path}")
-        print("=" * 100)
-        result = run_single_checkpoint(
-            model=model,
-            tokenizer=tokenizer,
-            processor=processor,
-            ckpt_path=ckpt_path,
-            device=device,
-            args=args,
-            validation_lookup=validation_lookup,
-        )
-        results.append(result)
+
+    for exp in experiments:
+        experiment_name = exp["experiment_name"]
+        checkpoints = exp["checkpoints"]
+
+        print("\n" + "=" * 120)
+        print(f"[INFO] Experiment: {experiment_name}")
+        print(f"[INFO] Number of checkpoints: {len(checkpoints)}")
+        print("=" * 120)
+
+        for ckpt_path in checkpoints:
+            result = run_single_checkpoint(
+                model=model,
+                tokenizer=tokenizer,
+                processor=processor,
+                ckpt_path=ckpt_path,
+                experiment_name=experiment_name,
+                device=device,
+                args=args,
+                validation_lookup=validation_lookup,
+                temp_pred_dir=temp_pred_dir,
+                temp_err_dir=temp_err_dir,
+            )
+            results.append(result)
 
     if not results:
         raise SystemExit("[ERROR] No checkpoints were evaluated.")
 
-    valid_results = [r for r in results if r["accuracy"] is not None]
+    all_csv, sorted_csv = build_leaderboards(results, leaderboard_dir)
+
+    print_final_leaderboard(results)
+
+    print("\n[LEADERBOARD FILES WRITTEN]")
+    print(f"  experiments_all.csv    : {all_csv}")
+    print(f"  experiments_sorted.csv : {sorted_csv}")
+
+    valid_results = [r for r in results if r.get("accuracy") is not None]
     if valid_results:
         best = max(valid_results, key=lambda x: x["accuracy"])
+        print("\n[BEST CHECKPOINT OVERALL]")
+        print(f"  Experiment : {best['experiment_name']}")
+        print(f"  Checkpoint : {best['checkpoint_name']}")
+        print(f"  Epoch      : {best['epoch']}")
+        print(f"  Accuracy   : {best['accuracy']:.6f}")
+        print(f"  Precision  : {best['precision']:.6f}" if best.get("precision") is not None else "  Precision  : N/A")
+        print(f"  Recall     : {best['recall']:.6f}" if best.get("recall") is not None else "  Recall     : N/A")
+        print(f"  F1-score   : {best['f1']:.6f}" if best.get("f1") is not None else "  F1-score   : N/A")
+        print(f"  Pred CSV   : {best['prediction_csv']}")
+        print(f"  Error CSV  : {best['error_csv']}")
     else:
-        best = results[-1]
-        print("[WARN] No accuracy could be parsed from any calculate_score.py output.")
-        print("[WARN] Falling back to the last evaluated checkpoint as best.")
-
-    final_out_csv = Path(args.out_csv)
-    final_out_csv.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(best["pred_csv"], final_out_csv)
-
-    if args.error_csv and best["error_csv"] is not None and Path(best["error_csv"]).exists():
-        final_error_csv = Path(args.error_csv)
-        final_error_csv.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(best["error_csv"], final_error_csv)
-
-    print("\n" + "#" * 160)
-    print("[FINAL CHECKPOINT COMPARISON]")
-    print("#" * 160)
-    print(
-        f"{'Checkpoint':<20} "
-        f"{'TP':>8} "
-        f"{'TN':>8} "
-        f"{'FP':>8} "
-        f"{'FN':>8} "
-        f"{'Accuracy':>12} "
-        f"{'F1':>12} "
-        f"{'Pred CSV':<40}"
-    )
-
-    for r in results:
-        tp_str = "N/A" if r.get("tp") is None else str(r["tp"])
-        tn_str = "N/A" if r.get("tn") is None else str(r["tn"])
-        fp_str = "N/A" if r.get("fp") is None else str(r["fp"])
-        fn_str = "N/A" if r.get("fn") is None else str(r["fn"])
-        acc_str = "N/A" if r.get("accuracy") is None else f"{r['accuracy']:.6f}"
-        f1_str = "N/A" if r.get("f1") is None else f"{r['f1']:.6f}"
-
-        print(
-            f"{r['checkpoint'].name:<20} "
-            f"{tp_str:>8} "
-            f"{tn_str:>8} "
-            f"{fp_str:>8} "
-            f"{fn_str:>8} "
-            f"{acc_str:>12} "
-            f"{f1_str:>12} "
-            f"{r['pred_csv'].name:<40}"
-        )
-
-    print("\n[BEST CHECKPOINT]")
-    print(f"  Checkpoint: {best['checkpoint']}")
-    print(f"  TP: {best['tp'] if best.get('tp') is not None else 'N/A'}")
-    print(f"  TN: {best['tn'] if best.get('tn') is not None else 'N/A'}")
-    print(f"  FP: {best['fp'] if best.get('fp') is not None else 'N/A'}")
-    print(f"  FN: {best['fn'] if best.get('fn') is not None else 'N/A'}")
-    print(f"  Best accuracy: {best['accuracy']:.6f}" if best.get("accuracy") is not None else "  Best accuracy: N/A")
-    print(f"  Best F1-score: {best['f1']:.6f}" if best.get("f1") is not None else "  Best F1-score: N/A")
-    print(f"  Best prediction CSV copied to: {final_out_csv}")
-    if args.error_csv and best["error_csv"] is not None:
-        print(f"  Best error CSV copied to: {args.error_csv}")
+        print("\n[WARN] No valid accuracy values were parsed from calculate_score.py output.")
 
 
 def build_argparser():
-    ap = argparse.ArgumentParser(description="Run CLIP-style binary QA on sequence-level validation data.")
+    ap = argparse.ArgumentParser(
+        description="Run temporal CLIP-style validation for every experiment and every checkpoint under an outer checkpoint directory."
+    )
 
     ap.add_argument(
-        "--checkpoint",
+        "--checkpoint_root",
         required=True,
         type=str,
-        help="Checkpoint .pt file OR directory containing epoch checkpoints.",
+        help="Outer checkpoint directory. Everything between this directory and a .pt file is treated as experiment name.",
     )
+
+    ap.add_argument(
+        "--settings_py",
+        default="/data/Deep_Angiography/AngioVision/configs/settings.py",
+        type=str,
+        help="Path to settings.py containing VALIDATION_CSV and DATA_DIR.",
+    )
+
     ap.add_argument(
         "--data_dir",
-        default="/data/Deep_Angiography/Validation_Data/test-data",
+        default="",
         type=str,
+        help="Optional override for validation sequence directory. If empty, reads DATA_DIR from settings.py.",
     )
-    ap.add_argument("--out_csv", required=True, type=str)
-    ap.add_argument("--error_csv", default="", type=str, help="Optional CSV logging skip/errors per sequence dir.")
 
     ap.add_argument(
         "--validation_csv",
-        default="/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv",
+        default="",
         type=str,
-        help="Validation CSV containing ground-truth rows. Only questions present here will be asked per SOPInstanceUID.",
+        help="Optional override for validation CSV. If empty, reads VALIDATION_CSV from settings.py.",
+    )
+
+    ap.add_argument(
+        "--leaderboard_dir",
+        default="/data/Deep_Angiography/AngioVision/fine-tuning/statistical-test-result",
+        type=str,
+        help="Directory where experiments_all.csv and experiments_sorted.csv will be written.",
     )
 
     ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
@@ -935,4 +1078,3 @@ def build_argparser():
 if __name__ == "__main__":
     args = build_argparser().parse_args()
     run(args)
-

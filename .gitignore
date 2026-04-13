@@ -35,3 +35,4 @@ dist/
 slr/articles
 slr/articles-processed
 slr/results
+fine-tuning/d_checkpoints
