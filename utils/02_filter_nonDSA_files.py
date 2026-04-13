@@ -19,7 +19,10 @@ from tqdm import tqdm
 # EASY CONFIG (EDIT HERE OR VIA ENV VARS)
 # =========================================================
 DEFAULT_BASE_DIR = Path(
-    os.getenv("SEQ_BASE_DIR", "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed")
+    os.getenv(
+        "SEQ_BASE_DIR",
+        "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed",
+    )
 )
 
 # Remove sequences with frame_count <= this
@@ -83,48 +86,60 @@ def count_valid_frames(frames_dir: Path) -> int:
     )
 
 
-def is_eligible(sequence_dir: Path, min_frames: int) -> Tuple[bool, str]:
+def is_eligible(sequence_dir: Path, min_frames: int) -> Tuple[bool, str, Dict[str, str]]:
     metadata_csv = sequence_dir / METADATA_FILENAME
     frames_dir = sequence_dir / FRAMES_DIRNAME
 
+    details: Dict[str, str] = {
+        "RadiationSetting": "",
+        "SeriesDescription": "",
+        "PositionerMotion": "",
+        "FrameCount": "",
+    }
+
     if not metadata_csv.exists():
-        return False, "no_metadata"
+        return False, "no_metadata", details
 
     if not frames_dir.exists():
-        return False, "no_frames_dir"
+        return False, "no_frames_dir", details
 
     try:
         metadata = load_metadata_kv(metadata_csv)
     except Exception:
-        return False, "metadata_error"
+        return False, "metadata_error", details
 
     rs = normalize_value(metadata.get("RadiationSetting")).upper()
     sd = normalize_value(metadata.get("SeriesDescription")).upper()
     pm = normalize_value(metadata.get("PositionerMotion")).upper()
 
+    details["RadiationSetting"] = rs
+    details["SeriesDescription"] = sd
+    details["PositionerMotion"] = pm
+
     if rs != REQUIRED_RADIATION_SETTING:
-        return False, "bad_radiation"
+        return False, "bad_radiation", details
 
     if not any(k in sd for k in SERIES_DESCRIPTION_KEYWORDS):
-        return False, "bad_series"
+        return False, "bad_series", details
 
     if pm != REQUIRED_POSITIONER_MOTION:
-        return False, "bad_motion"
+        return False, "bad_motion", details
 
     try:
         n_frames = count_valid_frames(frames_dir)
+        details["FrameCount"] = str(n_frames)
     except Exception:
-        return False, "frame_count_error"
+        return False, "frame_count_error", details
 
     if n_frames <= min_frames:
-        return False, "too_few_frames"
+        return False, "too_few_frames", details
 
-    return True, "ok"
+    return True, "ok", details
 
 
 def gather_sequence_dirs(base_dir: Path) -> Tuple[List[Path], int]:
     accession_dirs = [p for p in base_dir.iterdir() if p.is_dir()]
-    sequence_dirs = []
+    sequence_dirs: List[Path] = []
 
     for acc in accession_dirs:
         for seq in acc.iterdir():
@@ -132,6 +147,79 @@ def gather_sequence_dirs(base_dir: Path) -> Tuple[List[Path], int]:
                 sequence_dirs.append(seq)
 
     return sequence_dirs, len(accession_dirs)
+
+
+def write_cleaning_summary_md(
+    summary_path: Path,
+    base_dir: Path,
+    args,
+    total_accessions: int,
+    total_sequences: int,
+    kept: int,
+    removed: int,
+    stats: Dict[str, int],
+) -> None:
+    metadata_total = (
+        stats["no_metadata"]
+        + stats["metadata_error"]
+        + stats["bad_radiation"]
+        + stats["bad_series"]
+        + stats["bad_motion"]
+    )
+
+    with summary_path.open("w", encoding="utf-8") as f:
+        f.write("# Cleaning Summary\n\n")
+
+        f.write("## Configuration\n")
+        f.write(f"- Base dir: `{base_dir}`\n")
+        f.write(f"- Apply deletion: `{args.apply}`\n")
+        f.write(f"- Min frames threshold: `{args.min_frames}`\n")
+        f.write(f"- Required RadiationSetting: `{REQUIRED_RADIATION_SETTING}`\n")
+        f.write(f"- Required PositionerMotion: `{REQUIRED_POSITIONER_MOTION}`\n")
+        f.write(
+            f"- Required SeriesDescription keywords: `{', '.join(SERIES_DESCRIPTION_KEYWORDS)}`\n\n"
+        )
+
+        f.write("## Interpretation of removal reasons\n")
+        f.write(
+            "- The script checks conditions in order: `RadiationSetting` → "
+            "`SeriesDescription` → `PositionerMotion` → `FrameCount`.\n"
+        )
+        f.write(
+            "- Each removed sequence is counted using the **first failing condition only**.\n"
+        )
+        f.write(
+            "- Therefore, a sequence counted under `bad_radiation` may also have failed later checks, "
+            "but those later checks are not evaluated once the first failure is found.\n\n"
+        )
+
+        f.write("## Dataset Stats\n")
+        f.write(f"- Accessions: **{total_accessions}**\n")
+        f.write(f"- Sequences: **{total_sequences}**\n")
+        f.write(f"- Kept: **{kept}**\n")
+        f.write(f"- Removed: **{removed}**\n\n")
+
+        f.write("## Removal Breakdown\n")
+        f.write(f"- Metadata total: **{metadata_total}**\n")
+        f.write(f"  - no metadata: **{stats['no_metadata']}**\n")
+        f.write(f"  - metadata error: **{stats['metadata_error']}**\n")
+        f.write(f"  - bad radiation: **{stats['bad_radiation']}**\n")
+        f.write(f"  - bad series: **{stats['bad_series']}**\n")
+        f.write(f"  - bad motion: **{stats['bad_motion']}**\n")
+        f.write(f"- Frames missing: **{stats['no_frames_dir']}**\n")
+        f.write(f"- Frame count error: **{stats['frame_count_error']}**\n")
+        f.write(f"- Too few frames (<= {args.min_frames}): **{stats['too_few_frames']}**\n")
+        f.write(f"- Other: **{stats['other']}**\n\n")
+
+        f.write("## Notes\n")
+        if not args.apply:
+            f.write("- Dry run only. No directories were deleted.\n")
+        else:
+            f.write("- Deletion was applied.\n")
+
+        f.write(
+            "- Use `--verbose` to print one line per removed sequence including the reason and the metadata values.\n"
+        )
 
 
 def main():
@@ -147,55 +235,97 @@ def main():
     removed = 0
 
     stats = {
-        "metadata": 0,
-        "frames_dir": 0,
-        "frame_count": 0,
-        "other": 0
+        "no_metadata": 0,
+        "metadata_error": 0,
+        "bad_radiation": 0,
+        "bad_series": 0,
+        "bad_motion": 0,
+        "no_frames_dir": 0,
+        "frame_count_error": 0,
+        "too_few_frames": 0,
+        "other": 0,
     }
 
     for seq_dir in tqdm(sequence_dirs, desc="Filtering", unit="seq"):
-        ok, reason = is_eligible(seq_dir, args.min_frames)
+        ok, reason, details = is_eligible(seq_dir, args.min_frames)
 
         if ok:
             kept += 1
         else:
             removed += 1
 
-            if reason == "too_few_frames":
-                stats["frame_count"] += 1
-            elif reason == "no_frames_dir":
-                stats["frames_dir"] += 1
-            elif reason.startswith("bad") or reason == "no_metadata":
-                stats["metadata"] += 1
+            if reason in stats:
+                stats[reason] += 1
             else:
                 stats["other"] += 1
 
             if args.verbose:
-                tqdm.write(f"[REMOVE] {seq_dir} -> {reason}")
+                tqdm.write(
+                    "[REMOVE] "
+                    f"{seq_dir} -> {reason} | "
+                    f"RadiationSetting={details.get('RadiationSetting', '')!r}, "
+                    f"SeriesDescription={details.get('SeriesDescription', '')!r}, "
+                    f"PositionerMotion={details.get('PositionerMotion', '')!r}, "
+                    f"FrameCount={details.get('FrameCount', '')!r}"
+                )
 
             if args.apply:
                 try:
                     shutil.rmtree(seq_dir)
-                except Exception:
+                except Exception as e:
                     stats["other"] += 1
+                    if args.verbose:
+                        tqdm.write(f"[DELETE-ERROR] {seq_dir} -> {e}")
+
+    metadata_total = (
+        stats["no_metadata"]
+        + stats["metadata_error"]
+        + stats["bad_radiation"]
+        + stats["bad_series"]
+        + stats["bad_motion"]
+    )
 
     print("\n===== SUMMARY =====")
-    print(f"Base dir            : {base_dir}")
-    print(f"Apply deletion      : {args.apply}")
-    print(f"Min frames          : {args.min_frames}")
-    print(f"Accessions          : {total_accessions}")
-    print(f"Sequences           : {len(sequence_dirs)}")
-    print(f"Kept                : {kept}")
-    print(f"Removed             : {removed}")
-    print(f"  - metadata        : {stats['metadata']}")
-    print(f"  - frames missing  : {stats['frames_dir']}")
-    print(f"  - <= frames       : {stats['frame_count']}")
-    print(f"  - other           : {stats['other']}")
+    print(f"Base dir                : {base_dir}")
+    print(f"Apply deletion          : {args.apply}")
+    print(f"Min frames              : {args.min_frames}")
+    print(f"Required Radiation      : {REQUIRED_RADIATION_SETTING}")
+    print(f"Required Motion         : {REQUIRED_POSITIONER_MOTION}")
+    print(f"Required Series contains: {SERIES_DESCRIPTION_KEYWORDS}")
+    print(f"Accessions              : {total_accessions}")
+    print(f"Sequences               : {len(sequence_dirs)}")
+    print(f"Kept                    : {kept}")
+    print(f"Removed                 : {removed}")
+
+    print("\nRemoval breakdown:")
+    print(f"  - metadata total      : {metadata_total}")
+    print(f"      - no metadata     : {stats['no_metadata']}")
+    print(f"      - metadata error  : {stats['metadata_error']}")
+    print(f"      - bad radiation   : {stats['bad_radiation']}")
+    print(f"      - bad series      : {stats['bad_series']}")
+    print(f"      - bad motion      : {stats['bad_motion']}")
+    print(f"  - frames missing      : {stats['no_frames_dir']}")
+    print(f"  - frame count error   : {stats['frame_count_error']}")
+    print(f"  - <= frames           : {stats['too_few_frames']}")
+    print(f"  - other               : {stats['other']}")
 
     if not args.apply:
         print("\n(DRY RUN — nothing deleted)")
     else:
         print("\nDeletion applied.")
+
+    summary_path = base_dir / "cleaning_summary.md"
+    write_cleaning_summary_md(
+        summary_path=summary_path,
+        base_dir=base_dir,
+        args=args,
+        total_accessions=total_accessions,
+        total_sequences=len(sequence_dirs),
+        kept=kept,
+        removed=removed,
+        stats=stats,
+    )
+    print(f"Summary written to      : {summary_path}")
 
 
 if __name__ == "__main__":

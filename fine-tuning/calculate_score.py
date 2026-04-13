@@ -37,7 +37,7 @@ def parse_args():
         "--gt_path",
         type=str,
         default=DEFAULT_GT_PATH,
-        help=f"Path to ground truth CSV (default: {DEFAULT_GT_PATH})",
+        help=f"Path to ground truth CSV (default: {DEFAULT_GT_PATH}). In the validation pipeline, this should be the same resolved path as validation_csv.",
     )
 
     parser.add_argument(

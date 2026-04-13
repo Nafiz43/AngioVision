@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import math
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import torch
@@ -24,7 +25,7 @@ import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
 
-from transformers import ViTModel, BertModel, BertTokenizer
+from transformers import BertModel, BertTokenizer, ViTModel
 
 try:
     from transformers import ViTImageProcessor as _ViTProcessor
@@ -43,6 +44,40 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 POOL_CHOICES = ("max", "mean", "logsumexp")
+
+
+# ------------------------------------------------------------------
+# Load settings from central settings.py
+# ------------------------------------------------------------------
+SETTINGS_PATH = Path("/data/Deep_Angiography/AngioVision/configs/settings.py")
+VALIDATION_CSV_FROM_SETTINGS = None
+DATA_DIR_FROM_SETTINGS = None
+
+try:
+    if SETTINGS_PATH.exists():
+        spec = importlib.util.spec_from_file_location("angio_settings", SETTINGS_PATH)
+        if spec is None or spec.loader is None:
+            print(f"[WARN] Could not build import spec for settings.py: {SETTINGS_PATH}")
+        else:
+            angio_settings = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(angio_settings)
+
+            VALIDATION_CSV_FROM_SETTINGS = getattr(angio_settings, "VALIDATION_CSV", None)
+            DATA_DIR_FROM_SETTINGS = getattr(angio_settings, "DATA_DIR", None)
+
+            if VALIDATION_CSV_FROM_SETTINGS:
+                print(f"[INFO] Loaded VALIDATION_CSV from settings.py: {VALIDATION_CSV_FROM_SETTINGS}")
+            else:
+                print(f"[WARN] VALIDATION_CSV not found in settings.py: {SETTINGS_PATH}")
+
+            if DATA_DIR_FROM_SETTINGS:
+                print(f"[INFO] Loaded DATA_DIR from settings.py: {DATA_DIR_FROM_SETTINGS}")
+            else:
+                print(f"[WARN] DATA_DIR not found in settings.py: {SETTINGS_PATH}")
+    else:
+        print(f"[WARN] settings.py not found at: {SETTINGS_PATH}")
+except Exception as e:
+    print(f"[WARN] Failed to load settings.py ({type(e).__name__}: {e})")
 
 
 def _run_subprocess_capture(cmd: List[str]) -> subprocess.CompletedProcess:
@@ -436,11 +471,13 @@ def run_single_checkpoint(
     device: torch.device,
     args,
     validation_lookup: Dict[str, List[str]],
+    validation_csv_path: str,
+    data_dir_path: str,
 ) -> Dict[str, Any]:
     model.eval()
     load_checkpoint(model, ckpt_path, device=device)
 
-    data_dir = Path(args.data_dir)
+    data_dir = Path(data_dir_path)
     if not data_dir.exists():
         raise SystemExit(f"[ERROR] Validation data dir does not exist: {data_dir}")
 
@@ -534,6 +571,8 @@ def run_single_checkpoint(
 
     print("\n[SUMMARY]")
     print(f"  Checkpoint:              {ckpt_path.name}")
+    print(f"  Data dir:                {data_dir}")
+    print(f"  Validation CSV:          {validation_csv_path}")
     print(f"  Total sequence dirs:     {n_total}")
     print(f"  Successfully predicted:  {n_ok}")
     print(f"  Sequence repeat factor:  {args.sequence_repeat_factor}")
@@ -555,6 +594,8 @@ def run_single_checkpoint(
         args.calculate_score_script,
         "--pred_path",
         str(temp_out_csv),
+        "--gt_path",
+        str(validation_csv_path),
         "--random_seed",
         str(args.random_seed),
     ]
@@ -645,7 +686,13 @@ def run(args):
     frame_pooling = args.frame_pooling if args.frame_pooling else args.pooling
     sequence_pooling = args.sequence_pooling if args.sequence_pooling else args.pooling
 
-    validation_lookup = load_validation_question_lookup(args.validation_csv)
+    validation_csv_path = VALIDATION_CSV_FROM_SETTINGS or args.validation_csv
+    data_dir_path = DATA_DIR_FROM_SETTINGS or args.data_dir
+
+    print(f"[INFO] Using validation CSV: {validation_csv_path}")
+    print(f"[INFO] Using data directory: {data_dir_path}")
+
+    validation_lookup = load_validation_question_lookup(validation_csv_path)
 
     model = PooledCLIP(
         vit_name=args.vit_name,
@@ -669,6 +716,8 @@ def run(args):
             device=device,
             args=args,
             validation_lookup=validation_lookup,
+            validation_csv_path=validation_csv_path,
+            data_dir_path=data_dir_path,
         )
         results.append(result)
 
@@ -781,6 +830,7 @@ def build_argparser():
         "--data_dir",
         default="/data/Deep_Angiography/Validation_Data/test-data",
         type=str,
+        help="Fallback data dir. Overridden if settings.py provides DATA_DIR.",
     )
     ap.add_argument("--out_csv", required=True, type=str)
     ap.add_argument("--error_csv", default="", type=str, help="Optional CSV logging skip/errors per sequence dir.")
@@ -789,7 +839,7 @@ def build_argparser():
         "--validation_csv",
         default="/data/Deep_Angiography/Validation_Data/test-data/gt.csv",
         type=str,
-        help="Validation CSV containing ground-truth rows. Only questions present here will be asked per SOPInstanceUID.",
+        help="Fallback validation CSV. Overridden if settings.py provides VALIDATION_CSV. The same resolved path is also passed to calculate_score.py as --gt_path.",
     )
 
     ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"])

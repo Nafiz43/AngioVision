@@ -46,6 +46,21 @@ QA_QUESTIONS = [
     "Is the dorsal pancreatic artery opacified in this angiogram? Please state yes or no."
 ]
 
+Simple_QA= [
+    "Is the perfused organ the liver?", 
+    "Is the perfused organ the kidney?",
+    "Is the catheter tip in the celiac artery or one of it's branches?",
+    "Is the catheter tip in the renal artery or one of it's branches?"
+]
+
+
+
+# Hierarchical Questions
+
+
+
+
+
 // temporal aspects
 // ablation study
 // comprehensive result siummaru including SOTA
