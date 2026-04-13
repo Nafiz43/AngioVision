@@ -852,6 +852,9 @@ class PooledCLIP(nn.Module):
         if not self.enable_generation or self.report_decoder is None:
             raise RuntimeError("Generation head is not enabled in this checkpoint/model.")
 
+        if num_beams != 1:
+            print("[WARN] Manual decoder path currently supports greedy/sampling decode only. Overriding num_beams to 1.")
+
         study_visuals, visual_tokens, visual_attention_mask = self.encode_visual_batch(
             batch_sequences=batch_sequences,
             processor=processor,
@@ -873,20 +876,70 @@ class PooledCLIP(nn.Module):
 
         prompt_enc = generation_tokenizer(prompt_texts, padding=True, return_tensors="pt").to(device)
 
-        generated = self.report_decoder.generate(
-            input_ids=prompt_enc["input_ids"],
-            attention_mask=prompt_enc["attention_mask"],
-            encoder_hidden_states=projected_visual_tokens,
-            encoder_attention_mask=visual_attention_mask,
-            max_new_tokens=max_new_tokens,
-            num_beams=num_beams,
-            do_sample=do_sample,
-            top_p=top_p,
-            temperature=temperature,
-            pad_token_id=generation_tokenizer.pad_token_id,
-            eos_token_id=generation_tokenizer.eos_token_id,
-        )
-        return generation_tokenizer.batch_decode(generated, skip_special_tokens=True)
+        input_ids = prompt_enc["input_ids"]
+        attention_mask = prompt_enc["attention_mask"]
+
+        eos_token_id = generation_tokenizer.eos_token_id
+        finished = torch.zeros(input_ids.size(0), dtype=torch.bool, device=device)
+
+        for _step in range(max_new_tokens):
+            out = self.report_decoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                encoder_hidden_states=projected_visual_tokens,
+                encoder_attention_mask=visual_attention_mask,
+                return_dict=True,
+            )
+
+            next_token_logits = out.logits[:, -1, :]
+
+            if temperature is not None and temperature > 0 and temperature != 1.0:
+                next_token_logits = next_token_logits / temperature
+
+            if do_sample:
+                probs = torch.softmax(next_token_logits, dim=-1)
+
+                if top_p is not None and top_p < 1.0:
+                    sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+                    sorted_mask = cumulative_probs > top_p
+                    sorted_mask[:, 1:] = sorted_mask[:, :-1].clone()
+                    sorted_mask[:, 0] = False
+
+                    sorted_probs = sorted_probs.masked_fill(sorted_mask, 0.0)
+                    denom = sorted_probs.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+                    sorted_probs = sorted_probs / denom
+
+                    sampled = torch.multinomial(sorted_probs, num_samples=1)
+                    next_token = sorted_indices.gather(-1, sampled)
+                else:
+                    next_token = torch.multinomial(probs, num_samples=1)
+            else:
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+            if eos_token_id is not None:
+                next_token = torch.where(
+                    finished.unsqueeze(-1),
+                    torch.full_like(next_token, eos_token_id),
+                    next_token,
+                )
+
+            input_ids = torch.cat([input_ids, next_token], dim=-1)
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.ones((attention_mask.size(0), 1), device=device, dtype=attention_mask.dtype),
+                ],
+                dim=-1,
+            )
+
+            if eos_token_id is not None:
+                finished = finished | (next_token.squeeze(-1) == eos_token_id)
+                if torch.all(finished):
+                    break
+
+        return generation_tokenizer.batch_decode(input_ids, skip_special_tokens=True)
 
 
 def clip_loss_chunked(
@@ -1137,8 +1190,8 @@ def run_holdout_report_generation(
     holdout_dataset = HoldoutStudyDataset(
         meta_csv=holdout_meta_csv,
         base_frames_dir=holdout_base_frames_dir,
-        anon_col=args.anon_col,
-        sop_col=args.sop_col,
+        anon_col=args.holdout_anon_col,
+        sop_col=args.holdout_sop_col,
         min_frames_per_sequence=args.min_frames_per_sequence,
         max_sequences_per_study=args.max_sequences_per_study,
         max_frames_per_sequence=args.max_frames_per_sequence,
@@ -1382,8 +1435,8 @@ def train(args):
         reports_csv=Path(args.reports_csv),
         base_frames_dir=Path(args.base_frames_dir),
         report_text_col=args.report_text_col,
-        anon_col=args.anon_col,
-        sop_col=args.sop_col,
+        anon_col=args.holdout_anon_col,
+        sop_col=args.holdout_sop_col,
         report_type_col=args.report_type_col,
         min_frames_per_sequence=args.min_frames_per_sequence,
         max_sequences_per_study=args.max_sequences_per_study,
@@ -1730,6 +1783,9 @@ def build_argparser():
     ap.add_argument("--holdout_generation_do_sample", action="store_true")
     ap.add_argument("--holdout_generation_top_p", type=float, default=1.0)
     ap.add_argument("--holdout_generation_temperature", type=float, default=1.0)
+
+    ap.add_argument("--holdout_anon_col", type=str, default="Anon Acc #")
+    ap.add_argument("--holdout_sop_col", type=str, default="SOPInstanceUIDs")
 
     return ap
 
