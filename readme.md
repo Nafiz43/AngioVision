@@ -1,149 +1,215 @@
-# AngioVision Qwen2.5-VL Inference Toolkit
+# AngioVision
 
-AngioVision provides a lightweight Python toolkit for running the
-[`Qwen/Qwen2.5-VL-7B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct)
-vision-language model on coronary angiography frames. It packages a
-re-usable inference client, a command line interface, and example scripts for
-posing questions such as *"What arteries are being catheterized in this image?"*
-while providing one or more angiography frames.
+AngioVision is a research codebase for **end-to-end angiography understanding** across three connected tracks:
 
-## Project layout
+1. **Vision track**: process DICOM studies into sequence-level frames/mosaics and run VLM-based question answering.
+2. **Text track**: extract sequence-specific findings from consolidated radiology reports and convert them into structured labels.
+3. **Alignment track**: train and validate multimodal models that align sequence visuals with report text and evaluate binary clinical QA.
 
-```
-.
-├── readme.md                # Project overview and usage instructions
-├── requirements.txt         # Python dependencies
-├── qwen_inference.py        # Minimal script-based entry point
-├── videollama_inference.py  # Bridge script for external Video-LLaMA repo
-└── src
-    └── angiovision
-        ├── __init__.py
-        ├── cli.py           # CLI for asking questions from the terminal
-        ├── inference.py     # Core Qwen2.5-VL client implementation
-        └── qwen_vl_utils.py # Lightweight helper mirroring Qwen reference code
-```
+> ⚠️ This repository is currently organized as research pipelines and utilities, not as a packaged Python library. Most scripts are executed directly with `python <script>.py ...` and assume local dataset paths.
 
-## Installation
+---
 
-1. **Create a virtual environment (recommended):**
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows use `.venv\\Scripts\\activate`
-   ```
+## Deep-dive overview
 
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Why this repo exists
 
-   > ⚠️ The Qwen2.5-VL model is large (~14 GB in bf16). Ensure you have a
-   > compatible GPU (or sufficient CPU RAM) and the correct version of PyTorch
-   > installed for your hardware.
+The core challenge in this project is a **many-to-one supervision mismatch**:
 
-## Obtaining angiography frames
+- A single study can contain **multiple DICOM sequences/runs**.
+- The corresponding radiology report is often **one consolidated narrative** for the entire study.
+- Reliable clinical QA needs **sequence-level attribution** so that a model’s answer can be traced back to specific imaging evidence.
 
-Place your DICOM-derived angiography frames or PNG/JPG exports in an accessible
-folder. Update the example paths in `qwen_inference.py` or pass them directly to
-the CLI when running the tool.
+The repository tackles this with a staged workflow: preprocess DICOMs → build sequence-level visual artifacts → extract/normalize text supervision → run inference/fine-tuning → score/evaluate.
 
-## Usage
+### Data assumptions encoded in the code
 
-### Python API
+Across scripts, the expected data shape is broadly:
 
-```python
-from angiovision import GenerationConfig, ask_qwen_about_images
+- Root with per-study/per-sequence folders that eventually include:
+  - `frames/` (PNG frame exports)
+  - `metadata.csv` (DICOM metadata key/value pairs)
+  - optionally `mosaic.png` (sampled tiled sequence summary image)
+- CSV files for:
+  - report text (`radrpt`, accession IDs)
+  - validation QA labels (`SOPInstanceUID`, `Question`, `Answer`)
 
-answer = ask_qwen_about_images(
-    question="What arteries are being catheterized in this image?",
-    image_inputs=["/path/to/angiogram_frame.png"],
-    generation_config=GenerationConfig(max_new_tokens=256, temperature=0.0),
-)
+Defaults in several scripts point to local paths under `/data/Deep_Angiography/...`; these should be overridden by CLI args for portability.
 
-print(answer)
-```
+---
 
-For more control over caching and device placement, instantiate the
-`QwenVisualLanguageClient` directly and reuse it across multiple questions.
+## Repository map (what each area does)
 
-### Command line interface
+### `utils/`
+General preprocessing and dataset utilities:
 
-The CLI is powered by `src/angiovision/cli.py`. Run it after installation with:
+- DICOM to frame + metadata extraction (`01_process_dicom_sequences_multi_thread.py`)
+- metadata consolidation and sanity checks
+- augmentation and reporting helpers
+- evaluation/statistics helpers (distribution checks, McNemar test, comparisons)
+
+### `frame-processing/`
+Sequence-level visual preparation and VLM inference:
+
+- frame cleanup (`00_trim_black_borders_from_frames.py`)
+- mosaic creation (`00_mosaic_creation.py`)
+- QA extraction from frames or mosaics using multiple backends:
+  - Ollama-hosted VLMs
+  - CLIP / BiomedCLIP / MedCLIP variants
+- report generation prototypes from mosaics (RadFM, Med-Flamingo, Ollama models)
+
+### `text-report-processing/`
+Report decomposition + sequence QA supervision extraction:
+
+- split consolidated reports into inferred sequence chunks (`00_extract_sequences_from_reports.py`)
+- extract labels from sequence chunks (`01_extract_labels_from_sequences.py`)
+- GT-aware sequence extraction/QA pipelines (`02_extract_sequences_and_sequence_QA_using_GT*.py`)
+
+### `fine-tuning/`
+Training/validation experiments for multimodal alignment:
+
+- prototype educational pipeline (`pipeline.py`)
+- larger custom training pipelines (`custom_framework_train_*.py`)
+- validation/inference scripts and scoring (`custom_framework_validate*.py`, `calculate_score.py`, `plot_loss.py`)
+
+### `batch-processing/`
+Bulk processing/evaluation scripts for validation sets and large CSV runs.
+
+### `bedrock-inference/`
+Inference path targeting AWS Bedrock-hosted models.
+
+### `slr/`
+Systematic literature review helpers (PDF preprocessing + staged screening/extraction).
+
+### `md-files/`
+Project notes, diagrams, roadmap artifacts, and weekly updates.
+
+### `z-deprecated-scripts/`
+Legacy scripts retained for reference. Prefer active folders above for new work.
+
+---
+
+## End-to-end workflow (recommended)
+
+Below is a practical run order for a fresh experiment.
+
+### 1) Build sequence-level image artifacts from DICOM
+
+- Use `utils/01_process_dicom_sequences_multi_thread.py` to recursively find DICOMs, extract frame PNGs, and emit per-sequence `metadata.csv`.
+- Optional: trim black borders in frames.
+
+Example:
 
 ```bash
-python -m angiovision.cli \
-  /path/to/frame1.png /path/to/frame2.png \
-  --question "What arteries are being catheterized in this image?" \
-  --output-json outputs/answer.json
+python utils/01_process_dicom_sequences_multi_thread.py \
+  --input_dir /path/to/raw_dicom_root \
+  --output_dir /path/to/DICOM_Sequence_Processed \
+  --workers 16
 ```
 
-You can customise decoding behaviour using flags such as `--max-new-tokens`,
-`--temperature`, `--top-p`, and `--top-k`. Setting `--temperature 0` will switch
-inference to greedy decoding, yielding deterministic answers.
+### 2) Create mosaics per sequence
 
-### Example script
+- Run `frame-processing/00_mosaic_creation.py` to sample frames and tile them into `mosaic.png` per sequence directory.
 
-The top-level [`qwen_inference.py`](./qwen_inference.py) script offers a minimal
-Python entry point that can be adapted for quick experiments. Update the example
-image paths in the script and run:
+Example:
 
 ```bash
-python qwen_inference.py
+python frame-processing/00_mosaic_creation.py \
+  --base_path /path/to/DICOM_Sequence_Processed \
+  --max_frames 16 \
+  --workers 8
 ```
 
-## Video-LLaMA video question answering (separate repo)
+### 3) Generate vision-side QA predictions
 
-Some angiography studies are captured as videos rather than still frames. The
-[`videollama_inference.py`](./videollama_inference.py) helper lets you route such
-clips through the official [Video-LLaMA](https://github.com/DAMO-NLP-SG/Video-LLaMA)
-repository while keeping their implementation isolated from this project.
+- For local Ollama VLMs, use `frame-processing/02_extract_labels_from_mosaics.py`.
+- Alternate model backends exist in sibling scripts (`*_clip.py`, `*_biomedclip.py`, `*_medclip.py`, Bedrock variant).
 
-1. **Clone Video-LLaMA somewhere outside this repo.** For example:
-   ```bash
-   git clone https://github.com/DAMO-NLP-SG/Video-LLaMA.git ../Video-LLaMA
-   ```
+Example:
 
-2. **Install its dependencies and download checkpoints** as described in the
-   Video-LLaMA README (this typically requires CUDA, `decord`, and the released
-   video-language weights).
+```bash
+python frame-processing/02_extract_labels_from_mosaics.py \
+  --base_path /path/to/DICOM_Sequence_Processed \
+  --validation_csv /path/to/gt.csv \
+  --model llama3.2-vision:11b \
+  --skip_existing
+```
 
-3. **Run the bridge script**, pointing it at your clone and angiography video:
-   ```bash
-   python videollama_inference.py \
-     /path/to/angiography_clip.mp4 \
-     "What arteries are being catheterized in this study?" \
-     --videollama-repo ../Video-LLaMA \
-     --system-prompt "You are a concise interventional cardiology assistant." \
-     --output outputs/videollama_answer.json
-   ```
+### 4) Generate text-side sequence supervision from reports
 
-   If you prefer, set the `VIDEO_LLAMA_HOME` environment variable to avoid
-   passing `--videollama-repo` on every call.
+- Run `text-report-processing/00_extract_sequences_from_reports.py` to partition consolidated reports into sequence-level JSON outputs.
+- Then run `01_extract_labels_from_sequences.py` (or GT-aware v2 scripts) to map sequence text to structured question/answer labels.
 
-The script forwards configuration options to the upstream YAML files (via
-`--cfg-path` and repeatable `--cfg-option KEY=VALUE` overrides) and surfaces
-common decoding controls such as `--max-new-tokens`, `--temperature`, and
-`--num-beams`. Output is printed to stdout and can optionally be saved as a JSON
-record via `--output`.
+### 5) Train/validate multimodal models
 
-## Development notes
+- Start with `fine-tuning/pipeline.py` for a minimal reproducible conceptual run.
+- Move to `custom_framework_train_2.py` + `custom_framework_validate.py` for full experiments.
+- Score outputs with `fine-tuning/calculate_score.py` and visualize loss via `plot_loss.py`.
 
-- All package code lives under `src/angiovision`. Adjust `PYTHONPATH` or install
-  the package in editable mode (`pip install -e .`) if you plan to extend it.
-- The helper `process_vision_info` mirrors the official Qwen utility to avoid
-  pulling in extra dependencies from external repositories.
-- When running on GPU, the client defaults to `bfloat16` for improved
-  performance. On CPU or MPS devices the dtype automatically downgrades to
-  `float32`/`float16` as appropriate.
+---
 
-## Troubleshooting
+## Configuration and question sets
 
-- **CUDA out of memory:** Reduce `--max-new-tokens`, close other GPU processes,
-  or offload the model to CPU by setting the `CUDA_VISIBLE_DEVICES` environment
-  variable to an empty string.
-- **Slow responses on CPU:** Qwen2.5-VL is optimised for GPU inference. Consider
-  using a smaller checkpoint or trimming the input resolution of your images.
+- `configs/questions.py` contains domain QA prompts used across multiple scripts.
+- `configs/settings.py` centralizes default validation/data paths used by some validation tooling.
 
-## License
+If you are running outside the original `/data/Deep_Angiography/...` environment, update paths via CLI flags (preferred) or local config edits.
 
-This repository ships example glue code only. Refer to the [Qwen model card](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct)
-for license details covering the base model weights.
+---
+
+## Environment setup
+
+### 1) Python dependencies
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 2) Model/runtime dependencies
+
+Depending on which scripts you run, you may also need:
+
+- local Ollama server and pulled vision models (`http://localhost:11434` defaults used in several scripts)
+- PyTorch with CUDA for fine-tuning/inference-heavy workloads
+- optional AWS credentials/region configuration for Bedrock scripts
+
+---
+
+## Practical notes before you run experiments
+
+- **Path sensitivity:** many scripts embed absolute defaults tied to a specific filesystem layout.
+- **Scale:** image extraction, mosaic creation, and VLM calls are expensive; use `--limit`/sampling options first.
+- **Output hygiene:** most scripts write CSV/JSON incrementally; keep outputs in dedicated run folders.
+- **Research state:** there are duplicate and “copy” scripts; treat filenames with `d_` or `copy` as experimental variants unless reviewed.
+
+---
+
+## Quick-start command shortlist
+
+```bash
+# DICOM -> frames + metadata
+python utils/01_process_dicom_sequences_multi_thread.py --help
+
+# frames -> sequence mosaics
+python frame-processing/00_mosaic_creation.py --help
+
+# mosaic -> VLM binary QA predictions
+python frame-processing/02_extract_labels_from_mosaics.py --help
+
+# report -> sequence chunks
+python text-report-processing/00_extract_sequences_from_reports.py --help
+
+# sequence chunks -> labels
+python text-report-processing/01_extract_labels_from_sequences.py --help
+
+# toy multimodal fine-tuning demo
+python fine-tuning/pipeline.py --help
+```
+
+---
+
+## Status
+
+This README reflects the current repository structure and active script families as of April 2026. As this is an actively evolving research workspace, prefer checking each script’s `--help` output and header comments before launching long runs.
