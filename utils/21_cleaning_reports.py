@@ -39,8 +39,10 @@ Author: built for Nafiz (UC Davis DECAL Lab)
 from __future__ import annotations
 
 import csv
+import os
 import re
 import unicodedata
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Iterable
 from tqdm import tqdm
@@ -54,6 +56,12 @@ NUM_REPORTS_IN_DOCX  = 20     # number of reports to show in side-by-side DOCX
 REPORT_COLUMN  = "radrpt"     # column name holding report text; None = auto-detect
 OUTPUT_DOCX    = "/data/Deep_Angiography/Reports/report_comparison.docx"
 OUTPUT_CSV     = "/data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv"
+
+# Parallelism: None = use os.cpu_count(); otherwise set an integer.
+# Presidio + spaCy are CPU-bound and release the GIL poorly, so processes win over threads.
+NUM_WORKERS    = None
+# Chunk size for ProcessPoolExecutor.map — larger = less IPC overhead, smaller = smoother progress bar.
+CHUNK_SIZE     = 16
 
 # ---------- Presidio ----------
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
@@ -595,6 +603,31 @@ def clean_report(text: str,
 
 
 # =============================================================================
+# 7b. PARALLEL WORKER SETUP
+# =============================================================================
+# Presidio's AnalyzerEngine and AnonymizerEngine are heavy to construct (they
+# load spaCy models) and not trivially picklable. We build them ONCE per worker
+# process in an initializer and reuse them for every task that worker handles.
+_WORKER_ANALYZER: AnalyzerEngine | None = None
+_WORKER_ANONYMIZER: AnonymizerEngine | None = None
+
+
+def _worker_init() -> None:
+    """Initializer run once per worker process — builds Presidio engines."""
+    global _WORKER_ANALYZER, _WORKER_ANONYMIZER
+    _WORKER_ANALYZER = build_analyzer()
+    _WORKER_ANONYMIZER = AnonymizerEngine()
+
+
+def _clean_one(text: str) -> str:
+    """Top-level (picklable) function that cleans a single report in a worker."""
+    if not text:
+        return ""
+    # These are guaranteed non-None because _worker_init runs before any task.
+    return clean_report(text, _WORKER_ANALYZER, _WORKER_ANONYMIZER)
+
+
+# =============================================================================
 # 8. DOCX SIDE-BY-SIDE OUTPUT
 # =============================================================================
 def _set_cell_shading(cell, fill_hex: str) -> None:
@@ -835,11 +868,9 @@ def write_cleaned_csv(rows: list[dict],
 # 11. ENTRYPOINT
 # =============================================================================
 def main() -> None:
-    print(f"[1/5] Loading Presidio engines (this can take 10–30s the first time)…")
-    analyzer = build_analyzer()
-    anonymizer = AnonymizerEngine()
+    num_workers = NUM_WORKERS or os.cpu_count() or 1
 
-    print(f"[2/5] Reading reports from: {CSV_PATH}")
+    print(f"[1/5] Reading reports from: {CSV_PATH}")
     rows, headers, report_col = read_reports_from_csv(
         CSV_PATH, column=REPORT_COLUMN, n=NUM_REPORTS_TO_CLEAN
     )
@@ -849,12 +880,27 @@ def main() -> None:
         print("ERROR: No reports found. Check CSV_PATH and REPORT_COLUMN.")
         return
 
-    print(f"[3/5] Cleaning {len(rows)} report(s)…")
-    cleaned_reports = []
-    for row in tqdm(rows, desc="Cleaning reports", unit="report"):
-        original = (row.get(report_col) or "").strip()
-        cleaned = clean_report(original, analyzer, anonymizer) if original else ""
-        cleaned_reports.append(cleaned)
+    # Extract raw texts up front so we preserve order and don't ship whole
+    # dict rows through IPC (much smaller pickled payload).
+    originals = [(row.get(report_col) or "").strip() for row in rows]
+
+    print(f"[2/5] Spinning up {num_workers} worker process(es) "
+          f"(each loads Presidio once — 10–30s)…")
+    print(f"[3/5] Cleaning {len(originals)} report(s) in parallel…")
+
+    cleaned_reports: list[str] = [""] * len(originals)
+    with ProcessPoolExecutor(
+        max_workers=num_workers,
+        initializer=_worker_init,
+    ) as executor:
+        # executor.map preserves input order, which is critical for zipping
+        # cleaned_reports back to rows when writing the CSV.
+        results_iter = executor.map(_clean_one, originals, chunksize=CHUNK_SIZE)
+        for i, cleaned in enumerate(
+            tqdm(results_iter, total=len(originals),
+                 desc="Cleaning reports", unit="report")
+        ):
+            cleaned_reports[i] = cleaned
 
     # --- Save full cleaned CSV (all reports) ---
     print(f"[4/5] Writing cleaned CSV → {OUTPUT_CSV}")
@@ -864,10 +910,7 @@ def main() -> None:
     # --- Save DOCX comparison (first NUM_REPORTS_IN_DOCX only) ---
     n_docx = min(NUM_REPORTS_IN_DOCX, len(rows))
     print(f"[5/5] Writing side-by-side DOCX (first {n_docx} reports)…")
-    pairs = []
-    for i in range(n_docx):
-        original = (rows[i].get(report_col) or "").strip()
-        pairs.append((original, cleaned_reports[i]))
+    pairs = [(originals[i], cleaned_reports[i]) for i in range(n_docx)]
     out = write_comparison_docx(pairs, OUTPUT_DOCX)
 
     print(f"\nDone.")

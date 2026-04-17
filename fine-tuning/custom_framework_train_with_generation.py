@@ -6,12 +6,28 @@ AngioVision fine-tuning: (Study) frames -> ViT -> temporal-aware pooling -> visu
 Primary training path remains CLIP-style contrastive alignment between visual embeddings
 and report text embeddings.
 
-NEW IN THIS VERSION:
+OPTIONAL GENERATION HEAD:
 - Optional generative report head on top of the visual encoder.
 - When --enable_generation is used, the model is trained on (visual data -> report text)
   using a decoder LM with cross-attention over visual sequence tokens.
-- The original CLIP path is preserved and still trains exactly as before unless disabled
-  or re-weighted.
+
+PERFORMANCE OPTIMIZATIONS IN THIS VERSION:
+1) Image decoding + ViT preprocessing (PIL.open, convert, resize, normalize) now happens
+   inside the DataLoader workers via __getitem__. Previously num_workers were essentially
+   idle - they only shuffled path strings - and all decode/normalize work serialized on
+   the GPU thread.
+2) The visual forward path now batches frames across the entire mini-batch into a single
+   set of ViT calls (chunked by --frame_chunk_size for memory). Previously the ViT was
+   called once per (study, sequence, frame_chunk), producing many tiny GPU launches.
+
+Functionality is preserved end-to-end:
+- Identical CLIP contrastive loss and identical generation loss.
+- Identical temporal encoding semantics (per-frame sinusoidal positions inside each
+  sequence; per-sequence sinusoidal positions across each study).
+- Identical pooling semantics (frame-level then sequence-level).
+- Identical cross-attention memory construction for the report decoder, including the
+  optional pooled study token.
+- Identical CLI surface (no flags removed; defaults unchanged).
 
 Training modes:
 1) CLIP only (default, backward compatible)
@@ -139,6 +155,63 @@ def find_frame_files_for_sop(base_frames_dir: Path, acc: str, sop_uid: str) -> L
 
 
 # ------------------------------------------------------------
+# Image processor utility (moved up so datasets can use it)
+# ------------------------------------------------------------
+def get_vit_processor(vit_name: str):
+    if _ViTProcessor is not None:
+        return _ViTProcessor.from_pretrained(vit_name)
+    if _ViTFeatureExtractor is not None:
+        return _ViTFeatureExtractor.from_pretrained(vit_name)
+    raise ImportError("Neither ViTImageProcessor nor ViTFeatureExtractor is available in transformers.")
+
+
+def _preprocess_frames_to_pixel_values(
+    frame_files: List[Path],
+    processor,
+    vit_image_size: Optional[int],
+) -> Tuple[Optional[torch.Tensor], List[int]]:
+    """
+    Open + convert + run image processor on a list of frame files.
+    Silently skips frames that fail to open (mirrors original behavior).
+    Returns (pixel_values_tensor_or_None, list_of_valid_local_positions).
+    """
+    imgs: List[Image.Image] = []
+    valid_positions: List[int] = []
+
+    for local_idx, p in enumerate(frame_files):
+        try:
+            img = Image.open(p).convert("RGB")
+            imgs.append(img)
+            valid_positions.append(local_idx)
+        except Exception:
+            continue
+
+    if not imgs:
+        return None, []
+
+    if vit_image_size is not None:
+        inputs = processor(
+            images=imgs,
+            return_tensors="pt",
+            size={"height": vit_image_size, "width": vit_image_size},
+        )
+    else:
+        inputs = processor(images=imgs, return_tensors="pt")
+
+    pixel_values = inputs["pixel_values"]  # (T, 3, H, W) float32
+
+    # Drop PIL handles eagerly to keep worker memory in check.
+    for img in imgs:
+        try:
+            img.close()
+        except Exception:
+            pass
+    del imgs, inputs
+
+    return pixel_values, valid_positions
+
+
+# ------------------------------------------------------------
 # Dataset
 # ------------------------------------------------------------
 class StudyDataset(Dataset):
@@ -147,6 +220,8 @@ class StudyDataset(Dataset):
         meta_csv: Path,
         reports_csv: Path,
         base_frames_dir: Path,
+        processor,
+        vit_image_size: Optional[int] = None,
         report_text_col: str = "radrpt",
         anon_col: str = "Anon Acc #",
         sop_col: str = "SOPInstanceUIDs",
@@ -162,6 +237,8 @@ class StudyDataset(Dataset):
         self.reports = pd.read_csv(reports_csv)
 
         self.base_frames_dir = base_frames_dir
+        self.processor = processor
+        self.vit_image_size = vit_image_size
         self.report_text_col = report_text_col
         self.anon_col = anon_col
         self.sop_col = sop_col
@@ -247,7 +324,10 @@ class StudyDataset(Dataset):
         if self.max_sequences_per_study is not None:
             sop_uids = sop_uids[: self.max_sequences_per_study]
 
-        sequences: List[List[Path]] = []
+        # Worker-side preprocessing: load + resize + normalize per sequence.
+        sequences_pv: List[torch.Tensor] = []
+        sequences_positions: List[torch.Tensor] = []
+
         for sop in sop_uids:
             frame_files = find_frame_files_for_sop(self.base_frames_dir, acc, sop)
 
@@ -255,8 +335,21 @@ class StudyDataset(Dataset):
                 idxs = torch.linspace(0, len(frame_files) - 1, steps=self.max_frames_per_sequence).long().tolist()
                 frame_files = [frame_files[i] for i in idxs]
 
-            if len(frame_files) >= self.min_frames_per_sequence:
-                sequences.append(frame_files)
+            if len(frame_files) < self.min_frames_per_sequence:
+                continue
+
+            pixel_values, valid_positions = _preprocess_frames_to_pixel_values(
+                frame_files=frame_files,
+                processor=self.processor,
+                vit_image_size=self.vit_image_size,
+            )
+            if pixel_values is None or pixel_values.size(0) == 0:
+                # All frames in this sequence failed to open; skip the sequence rather
+                # than carry a degenerate "all -1e9" embedding into the pool.
+                continue
+
+            sequences_pv.append(pixel_values)
+            sequences_positions.append(torch.tensor(valid_positions, dtype=torch.long))
 
         reports_for_acc = self.report_map.get(acc, [])
         chosen_report = self._sample_report_uniformly(reports_for_acc, idx)
@@ -267,7 +360,8 @@ class StudyDataset(Dataset):
 
         return {
             "acc": acc,
-            "sequences": sequences,
+            "pixel_values": sequences_pv,         # List[Tensor(T_i, 3, H, W)]
+            "positions": sequences_positions,     # List[Tensor(T_i,)]
             "text": text,
             "report_type": report_type,
             "num_reports_for_acc": num_reports_for_acc,
@@ -277,11 +371,14 @@ class StudyDataset(Dataset):
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     kept = [
         b for b in batch
-        if b["text"] and isinstance(b["sequences"], list) and len(b["sequences"]) > 0
+        if b["text"]
+        and isinstance(b["pixel_values"], list)
+        and len(b["pixel_values"]) > 0
     ]
     return {
         "acc": [b["acc"] for b in kept],
-        "sequences": [b["sequences"] for b in kept],
+        "pixel_values": [b["pixel_values"] for b in kept],
+        "positions": [b["positions"] for b in kept],
         "text": [b["text"] for b in kept],
         "report_type": [b["report_type"] for b in kept],
         "num_reports_for_acc": [b["num_reports_for_acc"] for b in kept],
@@ -293,6 +390,8 @@ class HoldoutStudyDataset(Dataset):
         self,
         meta_csv: Path,
         base_frames_dir: Path,
+        processor,
+        vit_image_size: Optional[int] = None,
         anon_col: str = "Anon Acc #",
         sop_col: str = "SOPInstanceUIDs",
         min_frames_per_sequence: int = 1,
@@ -301,6 +400,8 @@ class HoldoutStudyDataset(Dataset):
     ):
         self.meta = pd.read_csv(meta_csv)
         self.base_frames_dir = base_frames_dir
+        self.processor = processor
+        self.vit_image_size = vit_image_size
         self.anon_col = anon_col
         self.sop_col = sop_col
         self.min_frames_per_sequence = min_frames_per_sequence
@@ -325,7 +426,8 @@ class HoldoutStudyDataset(Dataset):
         if self.max_sequences_per_study is not None:
             sop_uids = sop_uids[: self.max_sequences_per_study]
 
-        sequences: List[List[Path]] = []
+        sequences_pv: List[torch.Tensor] = []
+        sequences_positions: List[torch.Tensor] = []
         kept_sops: List[str] = []
         total_frames = 0
 
@@ -336,16 +438,28 @@ class HoldoutStudyDataset(Dataset):
                 idxs = torch.linspace(0, len(frame_files) - 1, steps=self.max_frames_per_sequence).long().tolist()
                 frame_files = [frame_files[i] for i in idxs]
 
-            if len(frame_files) >= self.min_frames_per_sequence:
-                sequences.append(frame_files)
-                kept_sops.append(str(sop).strip())
-                total_frames += len(frame_files)
+            if len(frame_files) < self.min_frames_per_sequence:
+                continue
+
+            pixel_values, valid_positions = _preprocess_frames_to_pixel_values(
+                frame_files=frame_files,
+                processor=self.processor,
+                vit_image_size=self.vit_image_size,
+            )
+            if pixel_values is None or pixel_values.size(0) == 0:
+                continue
+
+            sequences_pv.append(pixel_values)
+            sequences_positions.append(torch.tensor(valid_positions, dtype=torch.long))
+            kept_sops.append(str(sop).strip())
+            total_frames += int(pixel_values.size(0))
 
         return {
             "acc": acc,
-            "sequences": sequences,
+            "pixel_values": sequences_pv,
+            "positions": sequences_positions,
             "sop_uids": kept_sops,
-            "num_sequences": len(sequences),
+            "num_sequences": len(sequences_pv),
             "num_frames": total_frames,
         }
 
@@ -353,11 +467,12 @@ class HoldoutStudyDataset(Dataset):
 def holdout_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     kept = [
         b for b in batch
-        if isinstance(b["sequences"], list) and len(b["sequences"]) > 0
+        if isinstance(b["pixel_values"], list) and len(b["pixel_values"]) > 0
     ]
     return {
         "acc": [b["acc"] for b in kept],
-        "sequences": [b["sequences"] for b in kept],
+        "pixel_values": [b["pixel_values"] for b in kept],
+        "positions": [b["positions"] for b in kept],
         "sop_uids": [b["sop_uids"] for b in kept],
         "num_sequences": [b["num_sequences"] for b in kept],
         "num_frames": [b["num_frames"] for b in kept],
@@ -384,14 +499,6 @@ def pool_stack(x: torch.Tensor, mode: str) -> torch.Tensor:
         return torch.logsumexp(x, dim=0)
 
     raise ValueError(f"Unknown pooling mode: {mode}. Choose from {POOL_CHOICES}.")
-
-
-def get_vit_processor(vit_name: str):
-    if _ViTProcessor is not None:
-        return _ViTProcessor.from_pretrained(vit_name)
-    if _ViTFeatureExtractor is not None:
-        return _ViTFeatureExtractor.from_pretrained(vit_name)
-    raise ImportError("Neither ViTImageProcessor nor ViTFeatureExtractor is available in transformers.")
 
 
 # ------------------------------------------------------------
@@ -573,39 +680,6 @@ class PooledCLIP(nn.Module):
                 for p in self.vit.embeddings.parameters():
                     p.requires_grad = True
 
-    @torch.no_grad()
-    def _init_running(self, device, d: int, mode: str):
-        if mode == "max":
-            return torch.full((d,), -1e9, device=device), None
-        if mode == "mean":
-            return torch.zeros((d,), device=device), torch.tensor(0, device=device)
-        if mode == "logsumexp":
-            return torch.full((d,), -float("inf"), device=device), None
-        raise ValueError(f"Unknown pooling mode: {mode}")
-
-    def _update_running(self, running, aux, chunk_feats: torch.Tensor, mode: str):
-        if mode == "max":
-            running = torch.maximum(running, chunk_feats.max(dim=0).values)
-            return running, aux
-        if mode == "mean":
-            running = running + chunk_feats.sum(dim=0)
-            aux = aux + chunk_feats.size(0)
-            return running, aux
-        if mode == "logsumexp":
-            running = torch.logaddexp(running, torch.logsumexp(chunk_feats, dim=0))
-            return running, aux
-        raise ValueError(f"Unknown pooling mode: {mode}")
-
-    def _finalize_running(self, running, aux, mode: str) -> torch.Tensor:
-        if mode == "max":
-            return running
-        if mode == "mean":
-            count = aux.item() if hasattr(aux, "item") else int(aux)
-            return running / float(count) if count > 0 else running
-        if mode == "logsumexp":
-            return running
-        raise ValueError(f"Unknown pooling mode: {mode}")
-
     def _vit_is_frozen(self) -> bool:
         return all(not p.requires_grad for p in self.vit.parameters())
 
@@ -633,150 +707,198 @@ class PooledCLIP(nn.Module):
         )
         return x + (scale * pe)
 
-    def encode_framepaths_pooled(
+    def _vit_forward_chunked(
         self,
-        frame_paths: List[Path],
-        processor,
-        device: torch.device,
-        chunk_size: int = 16,
-        pooling: str = "max",
-        vit_image_size: Optional[int] = None,
+        big_pixel_values: torch.Tensor,
+        frame_chunk_size: int,
     ) -> torch.Tensor:
-        running, aux = self._init_running(device, self.vit_hidden, pooling)
+        """
+        Run the ViT over a stack of (N_total, 3, H, W) frames in chunks of
+        frame_chunk_size. Returns CLS features as (N_total, vit_hidden).
+
+        This is the core of optimization (2): instead of one ViT call per
+        (study, sequence, chunk), we make one ViT call per chunk across the
+        ENTIRE mini-batch of frames.
+        """
+        if big_pixel_values.size(0) == 0:
+            return torch.zeros(
+                (0, self.vit_hidden),
+                device=big_pixel_values.device,
+                dtype=big_pixel_values.dtype,
+            )
+
         vit_ctx = torch.no_grad() if self._vit_is_frozen() else torch.enable_grad()
+        chunk = max(1, int(frame_chunk_size))
+        out_chunks: List[torch.Tensor] = []
 
-        for i in range(0, len(frame_paths), chunk_size):
-            chunk_paths = frame_paths[i: i + chunk_size]
-            chunk_imgs: List[Image.Image] = []
-            valid_positions: List[int] = []
+        with vit_ctx:
+            for i in range(0, big_pixel_values.size(0), chunk):
+                pv = big_pixel_values[i: i + chunk]
+                out = self.vit(pixel_values=pv)
+                cls = out.last_hidden_state[:, 0, :]
+                out_chunks.append(cls)
+                del pv, out, cls
 
-            for local_idx, p in enumerate(chunk_paths):
-                try:
-                    chunk_imgs.append(Image.open(p).convert("RGB"))
-                    valid_positions.append(i + local_idx)
-                except Exception:
-                    continue
-
-            if not chunk_imgs:
-                continue
-
-            if vit_image_size is not None:
-                inputs = processor(
-                    images=chunk_imgs,
-                    return_tensors="pt",
-                    size={"height": vit_image_size, "width": vit_image_size},
-                )
-            else:
-                inputs = processor(images=chunk_imgs, return_tensors="pt")
-
-            pixel_values = inputs["pixel_values"].to(device, non_blocking=True)
-
-            with vit_ctx:
-                out = self.vit(pixel_values=pixel_values)
-                frame_emb = out.last_hidden_state[:, 0, :]
-
-                if self.temporal_on_frames and self.temporal_mode != "none":
-                    pos_tensor = torch.tensor(valid_positions, device=device, dtype=torch.long)
-                    frame_emb = self._add_temporal_encoding(
-                        frame_emb,
-                        positions=pos_tensor,
-                        scale=self.frame_temporal_scale,
-                    )
-
-                running, aux = self._update_running(running, aux, frame_emb, pooling)
-
-            del pixel_values, out, frame_emb, inputs, chunk_imgs
-
-        return self._finalize_running(running, aux, pooling)
+        return torch.cat(out_chunks, dim=0)
 
     def encode_visual_batch(
         self,
-        batch_sequences: List[List[List[Path]]],
-        processor,
+        batch_pixel_values: List[List[torch.Tensor]],
+        batch_positions: List[List[torch.Tensor]],
         device: torch.device,
         frame_chunk_size: int = 16,
-        vit_image_size: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        study_visuals: List[torch.Tensor] = []
-        per_study_seq_feats: List[torch.Tensor] = []
+        """
+        New batched visual forward.
 
-        for sequences in batch_sequences:
-            seq_feats: List[torch.Tensor] = []
-            for frame_paths in sequences:
-                if not frame_paths:
+        Inputs:
+          batch_pixel_values[study_idx][seq_idx] = Tensor(T_i, 3, H, W) on CPU
+          batch_positions[study_idx][seq_idx]    = Tensor(T_i,) long, original frame positions
+
+        Returns:
+          study_visuals_tensor: (B, vit_hidden) pooled study embeddings
+          seq_tokens          : (B, S_max[+1], vit_hidden) cross-attention memory
+          seq_mask            : (B, S_max[+1]) attention mask for cross-attn memory
+
+        Functionally identical to the previous per-sequence loop, but performs all
+        ViT work in a single set of chunked calls across the whole mini-batch.
+        """
+        B = len(batch_pixel_values)
+
+        # Defensive empty-batch handling. Collate already filters empty studies, so
+        # this branch should not normally trigger.
+        if B == 0:
+            empty_study = torch.zeros((0, self.vit_hidden), device=device)
+            empty_tokens = torch.zeros((0, 1, self.vit_hidden), device=device)
+            empty_mask = torch.zeros((0, 1), device=device, dtype=torch.long)
+            return empty_study, empty_tokens, empty_mask
+
+        # ---- Step 1: Flatten frames across the entire mini-batch ----
+        per_seq_lengths: List[List[int]] = [[] for _ in range(B)]
+        flat_pv_chunks: List[torch.Tensor] = []
+        flat_positions: List[torch.Tensor] = []
+
+        for s_idx, study_seqs in enumerate(batch_pixel_values):
+            for q_idx, seq_pv in enumerate(study_seqs):
+                T = int(seq_pv.size(0))
+                per_seq_lengths[s_idx].append(T)
+                if T == 0:
                     continue
-                seq_feat = self.encode_framepaths_pooled(
-                    frame_paths=frame_paths,
-                    processor=processor,
-                    device=device,
-                    chunk_size=frame_chunk_size,
-                    pooling=self.frame_pooling,
-                    vit_image_size=vit_image_size,
-                )
+                flat_pv_chunks.append(seq_pv)
+                flat_positions.append(batch_positions[s_idx][q_idx])
+
+        if flat_pv_chunks:
+            big_pixel_values = torch.cat(flat_pv_chunks, dim=0).to(device, non_blocking=True)
+        else:
+            big_pixel_values = torch.zeros((0, 3, 1, 1), device=device)
+
+        # ---- Step 2: One chunked ViT pass over all frames ----
+        all_frame_embeds = self._vit_forward_chunked(
+            big_pixel_values=big_pixel_values,
+            frame_chunk_size=frame_chunk_size,
+        )  # (N_total, vit_hidden)
+
+        # ---- Step 3: Scatter back per (study, seq), apply per-frame temporal
+        #              encoding, and pool frames -> per-sequence embedding. ----
+        per_study_seq_feats: List[torch.Tensor] = []
+        cursor = 0
+        flat_seq_idx = 0
+
+        for s_idx in range(B):
+            seq_feats: List[torch.Tensor] = []
+
+            for q_idx, T in enumerate(per_seq_lengths[s_idx]):
+                if T == 0:
+                    continue
+
+                seq_embeds = all_frame_embeds[cursor: cursor + T]
+                cursor += T
+
+                if self.temporal_on_frames and self.temporal_mode != "none":
+                    positions = flat_positions[flat_seq_idx].to(device=device, dtype=torch.long)
+                    seq_embeds = self._add_temporal_encoding(
+                        seq_embeds,
+                        positions=positions,
+                        scale=self.frame_temporal_scale,
+                    )
+
+                seq_feat = pool_stack(seq_embeds, self.frame_pooling)
                 seq_feats.append(seq_feat)
+                flat_seq_idx += 1
 
             if not seq_feats:
+                # No sequences for this study survived. Use a zero placeholder so the
+                # rest of the model stays well-defined.
                 zero_feat = torch.zeros(self.vit_hidden, device=device)
                 seq_stack = zero_feat.unsqueeze(0)
-                study_feat = zero_feat
             else:
                 seq_stack = torch.stack(seq_feats, dim=0)
-                if self.temporal_on_sequences and self.temporal_mode != "none":
-                    seq_positions = torch.arange(seq_stack.size(0), device=device, dtype=torch.long)
-                    seq_stack = self._add_temporal_encoding(
-                        seq_stack,
-                        positions=seq_positions,
-                        scale=self.sequence_temporal_scale,
-                    )
-                study_feat = pool_stack(seq_stack, self.sequence_pooling)
 
-            study_visuals.append(study_feat)
             per_study_seq_feats.append(seq_stack)
+
+        # ---- Step 4: Per-study sequence-level temporal encoding + pooling ----
+        study_visuals: List[torch.Tensor] = []
+        for s_idx in range(B):
+            seq_stack = per_study_seq_feats[s_idx]
+            if self.temporal_on_sequences and self.temporal_mode != "none":
+                seq_positions = torch.arange(seq_stack.size(0), device=device, dtype=torch.long)
+                seq_stack = self._add_temporal_encoding(
+                    seq_stack,
+                    positions=seq_positions,
+                    scale=self.sequence_temporal_scale,
+                )
+                per_study_seq_feats[s_idx] = seq_stack
+
+            study_feat = pool_stack(seq_stack, self.sequence_pooling)
+            study_visuals.append(study_feat)
 
         study_visuals_tensor = torch.stack(study_visuals, dim=0)
 
+        # ---- Step 5: Build cross-attention memory (with optional study token) ----
         max_seq = max(x.size(0) for x in per_study_seq_feats)
+        token_dim = self.vit_hidden
+        prepend = 1 if self.generation_use_study_token else 0
+
         seq_tokens = torch.zeros(
-            (len(per_study_seq_feats), max_seq + (1 if self.generation_use_study_token else 0), self.vit_hidden),
+            (B, max_seq + prepend, token_dim),
             device=device,
             dtype=study_visuals_tensor.dtype,
         )
         seq_mask = torch.zeros(
-            (len(per_study_seq_feats), max_seq + (1 if self.generation_use_study_token else 0)),
+            (B, max_seq + prepend),
             device=device,
             dtype=torch.long,
         )
 
-        for i, seq_stack in enumerate(per_study_seq_feats):
+        for i in range(B):
             offset = 0
             if self.generation_use_study_token:
                 seq_tokens[i, 0] = study_visuals_tensor[i]
                 seq_mask[i, 0] = 1
                 offset = 1
-            seq_tokens[i, offset:offset + seq_stack.size(0)] = seq_stack
-            seq_mask[i, offset:offset + seq_stack.size(0)] = 1
+            seq_stack = per_study_seq_feats[i]
+            seq_tokens[i, offset: offset + seq_stack.size(0)] = seq_stack
+            seq_mask[i, offset: offset + seq_stack.size(0)] = 1
 
         return study_visuals_tensor, seq_tokens, seq_mask
 
     def forward(
         self,
-        batch_sequences: List[List[List[Path]]],
+        batch_pixel_values: List[List[torch.Tensor]],
+        batch_positions: List[List[torch.Tensor]],
         texts: Optional[List[str]],
-        processor,
         tokenizer,
         device: torch.device,
         frame_chunk_size: int = 16,
-        vit_image_size: Optional[int] = None,
         generation_tokenizer=None,
         generation_texts: Optional[List[str]] = None,
         generation_max_length: int = 256,
     ) -> Dict[str, Optional[torch.Tensor]]:
         study_visuals, visual_tokens, visual_attention_mask = self.encode_visual_batch(
-            batch_sequences=batch_sequences,
-            processor=processor,
+            batch_pixel_values=batch_pixel_values,
+            batch_positions=batch_positions,
             device=device,
             frame_chunk_size=frame_chunk_size,
-            vit_image_size=vit_image_size,
         )
 
         image_embeds = F.normalize(self.vision_proj(study_visuals), dim=-1)
@@ -836,12 +958,11 @@ class PooledCLIP(nn.Module):
     @torch.no_grad()
     def generate_reports(
         self,
-        batch_sequences: List[List[List[Path]]],
-        processor,
+        batch_pixel_values: List[List[torch.Tensor]],
+        batch_positions: List[List[torch.Tensor]],
         generation_tokenizer,
         device: torch.device,
         frame_chunk_size: int = 16,
-        vit_image_size: Optional[int] = None,
         max_new_tokens: int = 128,
         num_beams: int = 1,
         do_sample: bool = False,
@@ -856,11 +977,10 @@ class PooledCLIP(nn.Module):
             print("[WARN] Manual decoder path currently supports greedy/sampling decode only. Overriding num_beams to 1.")
 
         study_visuals, visual_tokens, visual_attention_mask = self.encode_visual_batch(
-            batch_sequences=batch_sequences,
-            processor=processor,
+            batch_pixel_values=batch_pixel_values,
+            batch_positions=batch_positions,
             device=device,
             frame_chunk_size=frame_chunk_size,
-            vit_image_size=vit_image_size,
         )
         _ = study_visuals  # kept for symmetry/debugging
         projected_visual_tokens = self.generation_visual_proj(visual_tokens)
@@ -1190,6 +1310,8 @@ def run_holdout_report_generation(
     holdout_dataset = HoldoutStudyDataset(
         meta_csv=holdout_meta_csv,
         base_frames_dir=holdout_base_frames_dir,
+        processor=processor,
+        vit_image_size=args.vit_image_size,
         anon_col=args.holdout_anon_col,
         sop_col=args.holdout_sop_col,
         min_frames_per_sequence=args.min_frames_per_sequence,
@@ -1223,12 +1345,11 @@ def run_holdout_report_generation(
                 continue
 
             generated_reports = model.generate_reports(
-                batch_sequences=batch["sequences"],
-                processor=processor,
+                batch_pixel_values=batch["pixel_values"],
+                batch_positions=batch["positions"],
                 generation_tokenizer=generation_tokenizer,
                 device=device,
                 frame_chunk_size=args.frame_chunk_size,
-                vit_image_size=args.vit_image_size,
                 max_new_tokens=args.holdout_generation_max_new_tokens,
                 num_beams=args.holdout_generation_num_beams,
                 do_sample=args.holdout_generation_do_sample,
@@ -1430,10 +1551,26 @@ def train(args):
         run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_log_path)
         return
 
+    # Build the image processor up front so it can be passed into the dataset for
+    # worker-side preprocessing (optimization 1).
+    processor = get_vit_processor(args.vit_name)
+    tokenizer = AutoTokenizer.from_pretrained(args.bert_name)
+
+    generation_tokenizer = None
+    if args.enable_generation:
+        generation_tokenizer = AutoTokenizer.from_pretrained(args.decoder_model_name)
+        if generation_tokenizer.pad_token is None:
+            if generation_tokenizer.eos_token is not None:
+                generation_tokenizer.pad_token = generation_tokenizer.eos_token
+            else:
+                generation_tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
+
     dataset = StudyDataset(
         meta_csv=Path(args.meta_csv),
         reports_csv=Path(args.reports_csv),
         base_frames_dir=Path(args.base_frames_dir),
+        processor=processor,
+        vit_image_size=args.vit_image_size,
         report_text_col=args.report_text_col,
         anon_col=args.holdout_anon_col,
         sop_col=args.holdout_sop_col,
@@ -1456,18 +1593,6 @@ def train(args):
         persistent_workers=(args.num_workers > 0),
         prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
     )
-
-    processor = get_vit_processor(args.vit_name)
-    tokenizer = AutoTokenizer.from_pretrained(args.bert_name)
-
-    generation_tokenizer = None
-    if args.enable_generation:
-        generation_tokenizer = AutoTokenizer.from_pretrained(args.decoder_model_name)
-        if generation_tokenizer.pad_token is None:
-            if generation_tokenizer.eos_token is not None:
-                generation_tokenizer.pad_token = generation_tokenizer.eos_token
-            else:
-                generation_tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
     model = PooledCLIP(
         vit_name=args.vit_name,
@@ -1540,13 +1665,12 @@ def train(args):
 
             with torch.cuda.amp.autocast(enabled=use_amp):
                 outputs = model(
-                    batch_sequences=batch["sequences"],
+                    batch_pixel_values=batch["pixel_values"],
+                    batch_positions=batch["positions"],
                     texts=batch["text"] if args.clip_loss_weight > 0 else None,
-                    processor=processor,
                     tokenizer=tokenizer,
                     device=device,
                     frame_chunk_size=args.frame_chunk_size,
-                    vit_image_size=args.vit_image_size,
                     generation_tokenizer=generation_tokenizer,
                     generation_texts=batch["text"] if args.enable_generation and args.gen_loss_weight > 0 else None,
                     generation_max_length=args.generation_max_length,
@@ -1635,12 +1759,11 @@ def train(args):
             if preview_batch and len(preview_batch["text"]) > 0:
                 preview_n = min(args.preview_generations, len(preview_batch["text"]))
                 generated_reports = model.generate_reports(
-                    batch_sequences=preview_batch["sequences"][:preview_n],
-                    processor=processor,
+                    batch_pixel_values=preview_batch["pixel_values"][:preview_n],
+                    batch_positions=preview_batch["positions"][:preview_n],
                     generation_tokenizer=generation_tokenizer,
                     device=device,
                     frame_chunk_size=args.frame_chunk_size,
-                    vit_image_size=args.vit_image_size,
                     max_new_tokens=args.generation_preview_max_new_tokens,
                     num_beams=args.generation_preview_num_beams,
                     do_sample=args.generation_preview_do_sample,

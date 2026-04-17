@@ -914,7 +914,7 @@ python3 custom_framework_train_temporal.py \
 ```bash
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
   --epochs 100 \
   --num_workers 32 \
@@ -945,15 +945,15 @@ python3 custom_framework_train_temporal.py \
 ```bash
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
-  --epochs 17 \
+  --epochs 23 \
   --num_workers 32 \
   --max_sequences_per_study 16 \
   --max_frames_per_sequence 32 \
   --frame_pooling mean \
   --sequence_pooling max \
-  --batch_size 4 \
+  --batch_size 8 \
   --grad_accum 4 \
   --frame_chunk_size 32 \
   --amp \
@@ -984,14 +984,14 @@ python3 custom_framework_train_temporal.py \
 ```bash
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
-  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
-  --epochs 116 \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 120 \
   --num_workers 32 \
   --max_sequences_per_study 16 \
   --max_frames_per_sequence 32 \
   --pooling logsumexp \
-  --batch_size 4 \
+  --batch_size 8 \ 
   --grad_accum 4 \
   --frame_chunk_size 32 \
   --amp \
@@ -1141,7 +1141,7 @@ python3 custom_framework_validate.py \
 
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
   --epochs 17 \
   --num_workers 32 \
@@ -1169,7 +1169,7 @@ python3 custom_framework_train_temporal.py \
 
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
   --bert_name emilyalsentzer/Bio_ClinicalBERT \
   --epochs 17 \
@@ -1215,7 +1215,7 @@ python3 custom_framework_validate_temporal.py \
 
 python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
   --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
   --epochs 59 \
@@ -1243,7 +1243,7 @@ python3 custom_framework_train_temporal.py \
 -----------------------------------------------------------------
 python3 custom_framework_train_with_generation.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
   --epochs 60 \
   --batch_size 4 \
@@ -1279,54 +1279,13 @@ python3 custom_framework_train_with_generation.py \
   --holdout_generation_max_new_tokens 1024
 
 
-
-
-  python3 custom_framework_train_with_generation.py \
-  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
-  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
-  --epochs 7 \
-  --batch_size 4 \
-  --grad_accum 4 \
-  --num_workers 32 \
-  --max_sequences_per_study 16 \
-  --max_frames_per_sequence 32 \
-  --pooling mean \
-  --frame_chunk_size 32 \
-  --amp \
-  --vit_grad_ckpt \
-  --vit_trainable_blocks 3 \
-  --freeze_text \
-  --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
-  --temporal_mode sinusoidal \
-  --frame_temporal_scale 0.75 \
-  --enable_sequence_temporal \
-  --sequence_temporal_scale 0.5 \
-  --vision_backbone_lr 1e-5 \
-  --head_lr 1e-4 \
-  --text_lr 5e-5 \
-  --enable_generation \
-  --decoder_model_name microsoft/biogpt \
-  --decoder_lr 5e-5 \
-  --gen_head_lr 1e-4 \
-  --generation_max_length 256 \
-  --clip_loss_weight 1.0 \
-  --gen_loss_weight 1.0 \
-  --run_holdout_generation_each_epoch \
-  --holdout_meta_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/consolidated_metadata_ALL_Sequences.csv \
-  --holdout_base_frames_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed \
-  --report_generation_output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/report_generation \
-  --holdout_generation_batch_size 1 \
-  --holdout_generation_max_new_tokens 1024
-
-
 python3 custom_framework_train_with_generation.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
-  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
   --epochs 1 \
-  --batch_size 4 \
-  --grad_accum 1 \
+  --batch_size 16 \
+  --grad_accum 4 \
   --num_workers 32 \
   --max_sequences_per_study 1\
   --max_frames_per_sequence 1 \
@@ -1358,3 +1317,43 @@ python3 custom_framework_train_with_generation.py \
   --holdout_generation_batch_size 1 \
   --holdout_generation_max_new_tokens 1024 \
   --holdout_generation_num_beams 1
+
+
+
+  python3 custom_framework_train_with_generation.py \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
+  --epochs 500 \
+  --batch_size 16 \
+  --grad_accum 4 \
+  --num_workers 32 \
+  --max_sequences_per_study 16 \
+  --max_frames_per_sequence 32 \
+  --pooling logsumexp \
+  --frame_chunk_size 32 \
+  --amp \
+  --vit_grad_ckpt \
+  --vit_trainable_blocks 3 \
+  --freeze_text \
+  --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \
+  --vision_backbone_lr 1e-5 \
+  --head_lr 1e-4 \
+  --text_lr 5e-5 \
+  --enable_generation \
+  --decoder_model_name gpt2 \
+  --decoder_lr 5e-5 \
+  --gen_head_lr 1e-4 \
+  --generation_max_length 256 \
+  --clip_loss_weight 1.0 \
+  --gen_loss_weight 1.0 \
+  --run_holdout_generation_each_epoch \
+  --holdout_meta_csv /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/consolidated_metadata_ALL_Sequences.csv \
+  --holdout_base_frames_dir /data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed \
+  --report_generation_output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/report_generation \
+  --holdout_generation_batch_size 1 \
+  --holdout_generation_max_new_tokens 1024
