@@ -64,7 +64,7 @@ from tqdm import tqdm
 # ----------------------------
 # Defaults
 # ----------------------------
-DEFAULT_BASE_PATH = "/home/nikhan/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed"
+DEFAULT_BASE_PATH = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed"
 DEFAULT_VALIDATION_CSV = "/home/nikhan/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
 
 

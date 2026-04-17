@@ -13,9 +13,9 @@ SEQ_ROOT = BASE_DIR / "DICOM_Sequence_Processed"
 
 STUDY_CSV = BASE_DIR / "consolidated_metadata_ALL_Sequences.csv"
 RADRPT_CSV = BASE_DIR / "Validation_Studies_2026_03_23.csv"
-MODEL_CSV = Path("/data/Deep_Angiography/AngioVision/fine-tuning/output/report_generation/30_4_16_32/epoch_30_generated_reports.csv")
+MODEL_CSV = Path("/data/Deep_Angiography/AngioVision/fine-tuning/output/report_generation/500_16_16_32/epoch_105_generated_reports.csv")
 
-OUTPUT_DIR = Path("/data/Deep_Angiography/AngioVision/fine-tuning/output")
+OUTPUT_DIR = Path("/data/Deep_Angiography/AngioVision/fine-tuning/output/holdout")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # -----------------------------
