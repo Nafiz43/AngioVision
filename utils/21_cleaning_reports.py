@@ -49,7 +49,7 @@ from tqdm import tqdm
 # CONFIGURATION — edit these variables
 # =============================================================================
 CSV_PATH       = "/data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv"
-NUM_REPORTS_TO_CLEAN = 20    # number of reports to clean (None = all)
+NUM_REPORTS_TO_CLEAN = None    # number of reports to clean (None = all)
 NUM_REPORTS_IN_DOCX  = 20     # number of reports to show in side-by-side DOCX
 REPORT_COLUMN  = "radrpt"     # column name holding report text; None = auto-detect
 OUTPUT_DOCX    = "/data/Deep_Angiography/Reports/report_comparison.docx"
@@ -242,6 +242,8 @@ _ATTESTATION_HEADS = [
     r"^\s*SIGN-?OFF\b",
     r"^\s*SIGNATURE\b",
     r"\bPreliminary\s+Report\s+Electronically\s+Signed\b",
+    r"\bFinal\s+Report\s+Electronically\s+Signed\b",
+    r"\bReport\s+Electronically\s+Signed\b",
     r"\bElectronically\s+signed\s+by\b",
     r"\bE-?signed\s+by\b",
     r"\bDigitally\s+signed\s+by\b",
