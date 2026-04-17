@@ -1097,9 +1097,9 @@ def build_argparser():
     )
     ap.add_argument("--embed_dim", default=256, type=int)
 
-    ap.add_argument("--pooling", default="max", choices=POOL_CHOICES)
-    ap.add_argument("--frame_pooling", default="", choices=("",) + POOL_CHOICES)
-    ap.add_argument("--sequence_pooling", default="", choices=("",) + POOL_CHOICES)
+    ap.add_argument("--pooling", default="logsumexp", choices=POOL_CHOICES)
+    ap.add_argument("--frame_pooling", default="logsumexp", choices=("",) + POOL_CHOICES)
+    ap.add_argument("--sequence_pooling", default="logsumexp", choices=("",) + POOL_CHOICES)
 
     ap.add_argument(
         "--temporal_mode",

@@ -47,7 +47,7 @@ from tqdm import tqdm
 # =========================================================
 # EASY-TO-CHANGE DEFAULTS
 # =========================================================
-DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed_Augmented")
+DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed")
 DEFAULT_OUTPUT_CSV = Path("mosaic_sizes.csv")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}

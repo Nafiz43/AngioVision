@@ -16,7 +16,40 @@ from sklearn.metrics import (
 
 # ---- Default paths ----
 DEFAULT_PRED_PATH = "/data/Deep_Angiography/AngioVision/fine-tuning/output/clip_binary_qa_predictions.csv"
-DEFAULT_GT_PATH = "/data/Deep_Angiography/Validation_Data/test-data/gt.csv"
+# DEFAULT_GT_PATH = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/VLM_Test_Data_2026_03_04_v01.csv"
+
+from pathlib import Path
+import importlib.util
+
+def load_validation_csv(settings_py: str) -> str:
+    settings_path = Path(settings_py)
+
+    if not settings_path.exists():
+        raise SystemExit(f"[ERROR] settings.py does not exist: {settings_path}")
+
+    spec = importlib.util.spec_from_file_location("angio_settings", settings_path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"[ERROR] Could not load settings module from: {settings_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "VALIDATION_CSV"):
+        raise SystemExit(f"[ERROR] VALIDATION_CSV not found in settings.py: {settings_path}")
+
+    validation_csv = str(module.VALIDATION_CSV)
+
+    print(f"[INFO] Loaded VALIDATION_CSV from settings.py: {validation_csv}")
+
+    return validation_csv
+
+
+SETTINGS_FILE = "/data/Deep_Angiography/AngioVision/configs/settings.py"
+
+DEFAULT_GT_PATH = load_validation_csv(SETTINGS_FILE)
+
+
+
 DEFAULT_UNMATCHED_GT_OUT = "/data/Deep_Angiography/AngioVision/fine-tuning/output/unmatched_gt_rows.csv"
 DEFAULT_RANDOM_SEED = 42
 
