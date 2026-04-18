@@ -1088,10 +1088,10 @@ def build_argparser():
     )
 
     ap.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
-    ap.add_argument("--vit_name", default="google/vit-base-patch16-224-in21k", type=str)
+    ap.add_argument("--vit_name", default="microsoft/rad-dino", type=str)
     ap.add_argument(
         "--bert_name",
-        default="dmis-lab/biobert-base-cased-v1.1",
+        default="UCSD-VA-health/RadBERT-RoBERTa-4m",
         type=str,
         help="Text encoder model name. Should match training.",
     )

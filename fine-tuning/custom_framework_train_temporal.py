@@ -1074,7 +1074,7 @@ def train(args) -> None:
 
     if ckpt_path.exists():
         print(f"[INFO] Existing checkpoint found; skipping training.")
-        run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_csv_path)
+        # run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_csv_path)
         return
 
     dataset = StudyDataset(
@@ -1258,7 +1258,7 @@ def train(args) -> None:
     print(f"[INFO] Run dir:     {run_dir}")
     print(f"[INFO] Loss CSV:    {loss_csv_path}")
 
-    run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_csv_path)
+    # run_post_training_pipeline(args=args, run_name=run_name, run_dir=run_dir, loss_csv=loss_csv_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
