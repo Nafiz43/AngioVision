@@ -18,10 +18,11 @@ from tqdm import tqdm
 # =========================================================
 # EASY CONFIG (EDIT HERE OR VIA ENV VARS)
 # =========================================================
+INPUT_DIR = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed"
 DEFAULT_BASE_DIR = Path(
     os.getenv(
         "SEQ_BASE_DIR",
-        "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed",
+        INPUT_DIR,
     )
 )
 

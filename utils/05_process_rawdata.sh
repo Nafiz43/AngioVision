@@ -1,0 +1,5 @@
+python3 00_process_dicom_sequences_multi_thread.py
+python3 01_filter_nonDSA_files.py
+python3 02_dicom_frame_stats.py
+python3 03_create_mosaics_and_calculate_sizes.py
+python3 04_generate_consolidated_metadata.py

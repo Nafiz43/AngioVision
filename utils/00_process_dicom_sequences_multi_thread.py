@@ -32,6 +32,10 @@ import multiprocessing as mp
 # ----------------------------
 # Configuration
 # ----------------------------
+INPUT_ROOT = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM"
+OUTPUT_ROOT= "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed"
+
+
 FRAME_FORMAT = "png"
 KEYWORDS: List[str] = []   # if empty, matches all dirs
 NA_VALUE = "NA"
@@ -322,8 +326,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Process DSA DICOM directories and extract frames + metadata (parallel)"
     )
-    parser.add_argument("--input_root", type=Path, default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM"))
-    parser.add_argument("--output_root", type=Path, default=Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed"))
+    parser.add_argument("--input_root", type=Path, default=Path(INPUT_ROOT))
+    parser.add_argument("--output_root", type=Path, default=Path(OUTPUT_ROOT))
 
     parser.add_argument(
         "--workers",
