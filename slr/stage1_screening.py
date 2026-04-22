@@ -479,8 +479,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Stage 1 — Title & Abstract Screening (ollama / qwen2.5:72b)"
     )
-    parser.add_argument("--input",     default="slr_stage1_screening.csv", help="Path to input CSV (default: slr_stage1_screening.csv)")
-    parser.add_argument("--output",    default="stage1_results.csv",       help="Path to output CSV (default: stage1_results.csv)")
+    parser.add_argument("--input",     default="results/slr_stage1_screening.csv", help="Path to input CSV (default: slr_stage1_screening.csv)")
+    parser.add_argument("--output",    default="results/stage1_results.csv",       help="Path to output CSV (default: stage1_results.csv)")
     parser.add_argument("--model",     default=MODEL,                      help=f"Ollama model name (default: {MODEL})")
     parser.add_argument("--no-resume", action="store_true",                help="Start fresh, ignore existing output")
     parser.add_argument("--summary-only", action="store_true",             help="Skip screening, just re-print summary from existing output")

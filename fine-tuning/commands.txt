@@ -1392,7 +1392,7 @@ python3 custom_framework_train_temporal.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv \
   --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv \
   --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented \
-  --epochs 520 \
+  --epochs 300 \
   --num_workers 32 \
   --max_sequences_per_study 16 \
   --max_frames_per_sequence 32 \
@@ -1412,3 +1412,17 @@ python3 custom_framework_train_temporal.py \
   --head_lr 1e-4 \
   --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/ \
   --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/
+
+
+  python3 custom_framework_validate_temporal.py \
+  --checkpoint_root /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints \
+  --vit_name google/vit-base-patch16-224-in21k \
+  --bert_name dmis-lab/biobert-base-cased-v1.1 \
+  --embed_dim 256 \
+  --pooling mean \
+  --frame_chunk_size 32 \
+  --max_frames 0 \
+  --temporal_mode sinusoidal \
+  --frame_temporal_scale 0.75 \
+  --enable_sequence_temporal \
+  --sequence_temporal_scale 0.5 \

@@ -455,8 +455,8 @@ def pdf_to_markdown(pdf_path: Path) -> Optional[str]:
 # Paths
 # =========================================================================== #
 
-INPUT_DIR  = Path("/data/Deep_Angiography/Z-SLR/articles")
-OUTPUT_DIR = Path("/data/Deep_Angiography/Z-SLR/articles-processed")
+INPUT_DIR  = Path("/data/Deep_Angiography/AngioVision/slr/articles")
+OUTPUT_DIR = Path("/data/Deep_Angiography/AngioVision/slr/articles-processed")
 INDEX_FILE = OUTPUT_DIR / "_index.json"
 
 

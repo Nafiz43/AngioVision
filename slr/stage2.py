@@ -65,7 +65,7 @@ RETRY_DELAY        = 5
 REPAIR_LIMIT       = 2
 MAX_FULLTEXT_CHARS = 80_000
 
-DEFAULT_FULLTEXT_DIR = "/data/Deep_Angiography/Z-SLR/articles-processed"
+DEFAULT_FULLTEXT_DIR = "/data/Deep_Angiography/AngioVision/slr/articles-processed"
 DEFAULT_OUTPUT       = "stage2_results.jsonl"
 
 logging.basicConfig(
@@ -106,7 +106,7 @@ RESPOND ONLY with a valid JSON object in the schema below. No preamble, no markd
     "train_test_split": "..."
   },
   "task": {
-    "primary_task": "denoising" | "enhancement" | "subtraction" | "registration" |
+    "primary_task": "denoising" | "diagonosis" | "enhancement" | "subtraction" | "registration" |
                     "motion_correction" | "segmentation" | "detection" |
                     "classification" | "localization" | "outcome_prediction" | "other",
     "secondary_tasks": [],

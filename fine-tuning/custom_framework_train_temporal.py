@@ -59,6 +59,10 @@ OPTIMISATIONS applied vs. original
     "Input image size (224*224) doesn't match model (518*518)" crash seen with
     microsoft/rad-dino and other non-224 checkpoints.
 
+16. Train command persistence  – _save_train_command() writes the exact
+    invocation (interpreter + all argv) to train_cmd.sh inside the run dir,
+    making every checkpoint directory self-documenting and fully reproducible.
+
 BACKWARD COMPATIBILITY
 ────────────────────────
 All existing CLI flags are preserved.  New flags have safe defaults.
@@ -73,6 +77,7 @@ import math
 import os
 import random
 import re
+import shlex
 import subprocess
 import sys
 from collections import deque
@@ -894,6 +899,30 @@ def _loss_csv_name(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Train command persistence  (OPTIMISATION 16)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _save_train_command(run_dir: Path, args: argparse.Namespace) -> None:
+    """Write the exact CLI invocation AND the full resolved config to the run dir.
+
+    train_cmd.sh  – raw argv, executable, reproduces the run exactly.
+    train_config.txt – every arg including defaults never passed on the CLI.
+    """
+    # 1. Executable shell script (raw argv — reproduces the run)
+    cmd = " ".join(shlex.quote(a) for a in [sys.executable] + sys.argv)
+    sh = run_dir / "train_cmd.sh"
+    sh.write_text(f"#!/usr/bin/env bash\n{cmd}\n")
+    sh.chmod(sh.stat().st_mode | 0o111)
+    print(f"[INFO] Train command saved : {sh}")
+
+    # 2. Full resolved config (all args including defaults never passed on CLI)
+    cfg_lines = [f"{k} = {v!r}" for k, v in sorted(vars(args).items())]
+    cfg_path = run_dir / "train_config.txt"
+    cfg_path.write_text("\n".join(cfg_lines) + "\n")
+    print(f"[INFO] Full config saved   : {cfg_path}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Checkpoint helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1065,6 +1094,9 @@ def train(args) -> None:
     run_name  = _run_dir_name(args.epochs, args.batch_size, args.max_sequences_per_study, args.max_frames_per_sequence)
     run_dir   = out_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── OPTIMISATION 16: persist the exact CLI invocation + full config ──
+    _save_train_command(run_dir, args)
 
     ckpt_path     = run_dir / "last.pt"
     loss_csv_path = run_dir / _loss_csv_name(args.epochs, args.batch_size, args.max_sequences_per_study, args.max_frames_per_sequence)

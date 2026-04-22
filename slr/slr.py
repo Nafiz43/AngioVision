@@ -5,18 +5,23 @@ Sources: PubMed, Semantic Scholar, arXiv
 Output:  slr_stage1_screening.csv  (ready for title/abstract screening)
 
 Usage:
-    pip install biopython requests
+    # Run Semantic Scholar only (default):
     python slr_fetch.py
+
+    # Run all sources (PubMed + Semantic Scholar + arXiv):
+    python slr_fetch.py all
+
+    pip install biopython requests
 
 Optional: set your NCBI API key as an env var for higher PubMed rate limits:
     export NCBI_API_KEY="your_key_here"
-    (Get a free key at: https://www.ncbi.nlm.nih.gov/account/)
 """
 
 import csv
 import time
 import os
 import re
+import sys
 import json
 import requests
 from Bio import Entrez
@@ -25,12 +30,15 @@ from Bio import Entrez
 # CONFIGURATION
 # ─────────────────────────────────────────────
 
-ENTREZ_EMAIL   = "nikhan@ucdavis.edu"          # required by NCBI
+ENTREZ_EMAIL   = "nikhan@ucdavis.edu"
 NCBI_API_KEY   = os.getenv("NCBI_API_KEY", "b62cdd0f606eecea1e4ec3fb9b348b8b9809")
-OUTPUT_FILE    = "slr_stage1_screening.csv"
-MAX_PER_SOURCE = 2000                            # max records to pull per source
+OUTPUT_FILE    = "/data/Deep_Angiography/AngioVision/slr/results/slr_stage1_screening.csv"
+MAX_PER_SOURCE = 2000
 
-# ── Boolean query (adapted from your SLR protocol) ─────────────────────────
+# CLI: "all" runs all sources; default runs Semantic Scholar only
+RUN_ALL = len(sys.argv) > 1 and sys.argv[1].strip().lower() == "all"
+
+# ── Queries ────────────────────────────────────────────────────────────────
 
 PUBMED_QUERY = (
     "(angiograph*[tiab] OR fluoroscop*[tiab] OR "
@@ -40,26 +48,27 @@ PUBMED_QUERY = (
     "AND (processing[tiab] OR enhancement[tiab] OR denois*[tiab] OR "
     "subtraction[tiab] OR registration[tiab] OR motion[tiab] OR "
     "segmentation[tiab] OR detection[tiab] OR classification[tiab] OR "
-    "localization[tiab]) "
+    "localization[tiab] OR diagnosis[tiab]) "
     "AND (\"deep learning\"[tiab] OR \"machine learning\"[tiab] OR "
-    "CNN[tiab] OR transformer[tiab]) "
+    "CNN[tiab] OR transformer[tiab] OR \"artificial intelligence\"[tiab] OR AI[tiab]) "
     "AND (\"2000\"[pdat] : \"3000\"[pdat]) "
     "AND english[lang]"
 )
 
-# Semantic Scholar / arXiv keyword list (API uses text search, not Boolean)
 SS_QUERIES = [
     "deep learning digital subtraction angiography sequence",
     "CNN fluoroscopy image enhancement temporal",
     "transformer angiographic vessel segmentation",
     "machine learning DSA motion correction",
     "deep learning fluoroscopic sequence processing",
+    "artificial intelligence angiography diagnosis detection",
+    "deep learning DSA sequence classification localization",
 ]
 
 ARXIV_QUERY = (
     "ti_abs:(angiograph* OR fluoroscop* OR DSA) AND "
-    "ti_abs:(deep learning OR CNN OR transformer OR machine learning) AND "
-    "ti_abs:(segmentation OR enhancement OR detection OR registration)"
+    "ti_abs:(deep learning OR CNN OR transformer OR machine learning OR artificial intelligence OR AI) AND "
+    "ti_abs:(segmentation OR enhancement OR detection OR registration OR diagnosis OR localization OR classification)"
 )
 
 # ─────────────────────────────────────────────
@@ -67,28 +76,28 @@ ARXIV_QUERY = (
 # ─────────────────────────────────────────────
 
 def clean(text):
-    """Strip newlines and extra whitespace."""
     if not text:
         return ""
     return re.sub(r"\s+", " ", str(text)).strip()
 
 
 def dedup(records):
-    """Deduplicate by DOI (case-insensitive), then by title similarity."""
+    """Deduplicate by DOI (case-insensitive), then by normalised title."""
     seen_doi   = {}
     seen_title = {}
     out = []
     for r in records:
-        doi   = r.get("doi", "").strip().lower()
-        title = r.get("title", "").strip().lower()
-        # normalise title for fuzzy-ish dedup (remove punctuation, lower)
+        doi       = r.get("doi", "").strip().lower()
+        title     = r.get("title", "").strip().lower()
         title_key = re.sub(r"[^a-z0-9 ]", "", title)
+
         if doi and doi in seen_doi:
             seen_doi[doi]["source"] += f", {r['source']}"
             continue
         if title_key and title_key in seen_title:
             seen_title[title_key]["source"] += f", {r['source']}"
             continue
+
         out.append(r)
         if doi:
             seen_doi[doi] = r
@@ -98,8 +107,8 @@ def dedup(records):
 
 
 CSV_FIELDS = [
-    "record_id",    # sequential ID for screening tool
-    "source",       # PubMed | SemanticScholar | arXiv
+    "record_id",
+    "source",
     "title",
     "authors",
     "year",
@@ -107,14 +116,28 @@ CSV_FIELDS = [
     "doi",
     "url",
     "abstract",
-    # Stage-1 screening columns (fill in manually or via LLM)
-    "screen_decision",   # Include / Exclude / Maybe
+    "screen_decision",
     "screen_reason",
     "notes",
 ]
 
+
+def load_existing_csv(path):
+    """Load existing CSV records; returns [] if file doesn't exist."""
+    if not os.path.exists(path):
+        print(f"[Reconcile] No existing file found at {path} — starting fresh.")
+        return []
+    records = []
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            records.append(dict(row))
+    print(f"[Reconcile] Loaded {len(records)} existing records from {path}")
+    return records
+
+
 # ─────────────────────────────────────────────
-# SOURCE 1 — PubMed (via Biopython Entrez)
+# SOURCE 1 — PubMed
 # ─────────────────────────────────────────────
 
 def fetch_pubmed(query, max_results=MAX_PER_SOURCE):
@@ -122,80 +145,56 @@ def fetch_pubmed(query, max_results=MAX_PER_SOURCE):
     Entrez.email   = ENTREZ_EMAIL
     Entrez.api_key = NCBI_API_KEY if NCBI_API_KEY else None
 
-    # Step 1: get PMIDs
     handle = Entrez.esearch(db="pubmed", term=query,
                             retmax=max_results, usehistory="y")
     search = Entrez.read(handle)
     handle.close()
-    total  = int(search["Count"])
-    pmids  = search["IdList"]
+    total = int(search["Count"])
+    pmids = search["IdList"]
     print(f"  → {total} total hits; fetching {len(pmids)} records …")
 
     if not pmids:
         return []
 
-    # Step 2: fetch full records in batches
     records = []
     batch   = 200
     for start in range(0, len(pmids), batch):
-        chunk = pmids[start:start + batch]
+        chunk  = pmids[start:start + batch]
         handle = Entrez.efetch(db="pubmed", id=",".join(chunk),
                                rettype="xml", retmode="xml")
         data   = Entrez.read(handle)
         handle.close()
-        time.sleep(0.4)  # be polite to NCBI
+        time.sleep(0.4)
 
         for article in data["PubmedArticle"]:
             try:
                 med = article["MedlineCitation"]
                 art = med["Article"]
-
                 title = clean(art.get("ArticleTitle", ""))
-
-                # authors
                 auth_list = art.get("AuthorList", [])
-                authors   = "; ".join(
+                authors = "; ".join(
                     f"{a.get('LastName', '')} {a.get('ForeName', '')}".strip()
-                    for a in auth_list
-                    if "LastName" in a
+                    for a in auth_list if "LastName" in a
                 )
-
-                # year
                 pub_date = art.get("Journal", {}).get(
                     "JournalIssue", {}).get("PubDate", {})
-                year = pub_date.get("Year", pub_date.get("MedlineDate", "")[:4])
-
-                # journal
-                journal = clean(
-                    art.get("Journal", {}).get("Title", "")
-                )
-
-                # abstract
-                abstract_obj = art.get("Abstract", {})
+                year    = pub_date.get("Year", pub_date.get("MedlineDate", "")[:4])
+                journal = clean(art.get("Journal", {}).get("Title", ""))
+                abstract_obj   = art.get("Abstract", {})
                 abstract_texts = abstract_obj.get("AbstractText", [])
                 if isinstance(abstract_texts, list):
                     abstract = " ".join(str(t) for t in abstract_texts)
                 else:
                     abstract = str(abstract_texts)
                 abstract = clean(abstract)
-
-                # DOI
-                ids  = article.get("PubmedData", {}).get(
-                    "ArticleIdList", [])
-                doi  = next((str(i) for i in ids
-                             if str(i).startswith("10.")), "")
+                ids  = article.get("PubmedData", {}).get("ArticleIdList", [])
+                doi  = next((str(i) for i in ids if str(i).startswith("10.")), "")
                 pmid = str(med.get("PMID", ""))
                 url  = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else ""
-
                 records.append({
-                    "source":        "PubMed",
-                    "title":         title,
-                    "authors":       authors,
-                    "year":          str(year),
-                    "journal_venue": journal,
-                    "doi":           doi,
-                    "url":           url,
-                    "abstract":      abstract,
+                    "source": "PubMed", "title": title, "authors": authors,
+                    "year": str(year), "journal_venue": journal, "doi": doi,
+                    "url": url, "abstract": abstract,
                 })
             except Exception as e:
                 print(f"  [warn] parse error: {e}")
@@ -205,11 +204,35 @@ def fetch_pubmed(query, max_results=MAX_PER_SOURCE):
 
 
 # ─────────────────────────────────────────────
-# SOURCE 2 — Semantic Scholar (free API)
+# SOURCE 2 — Semantic Scholar (with backoff)
 # ─────────────────────────────────────────────
 
-SS_BASE  = "https://api.semanticscholar.org/graph/v1/paper/search"
+SS_BASE   = "https://api.semanticscholar.org/graph/v1/paper/search"
 SS_FIELDS = "title,authors,year,venue,externalIds,abstract,openAccessPdf,url"
+
+
+def _ss_get_with_backoff(params, max_retries=6):
+    """GET with exponential back-off on 429 / 5xx errors."""
+    delay = 5  # initial wait in seconds
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(SS_BASE, params=params, timeout=30)
+            if resp.status_code == 200:
+                return resp
+            if resp.status_code == 429:
+                wait = delay * (2 ** attempt)
+                print(f"  [429] Rate-limited. Waiting {wait}s before retry {attempt+1}/{max_retries} …")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+        except requests.exceptions.Timeout:
+            wait = delay * (2 ** attempt)
+            print(f"  [timeout] Waiting {wait}s before retry {attempt+1}/{max_retries} …")
+            time.sleep(wait)
+        except Exception as e:
+            raise e
+    raise Exception(f"SS request failed after {max_retries} retries")
+
 
 def fetch_semantic_scholar(queries, max_per_query=100):
     print(f"\n[Semantic Scholar] Searching {len(queries)} queries …")
@@ -217,8 +240,8 @@ def fetch_semantic_scholar(queries, max_per_query=100):
     seen_ss_ids = set()
 
     for q in queries:
-        offset = 0
-        limit  = min(100, max_per_query)
+        offset  = 0
+        limit   = min(100, max_per_query)
         fetched = 0
         print(f"  Query: '{q}'")
 
@@ -230,8 +253,7 @@ def fetch_semantic_scholar(queries, max_per_query=100):
                 "offset": offset,
             }
             try:
-                resp = requests.get(SS_BASE, params=params, timeout=20)
-                resp.raise_for_status()
+                resp = _ss_get_with_backoff(params)
                 data = resp.json()
             except Exception as e:
                 print(f"  [warn] SS request failed: {e}")
@@ -247,16 +269,13 @@ def fetch_semantic_scholar(queries, max_per_query=100):
                     continue
                 seen_ss_ids.add(sid)
 
-                ext  = p.get("externalIds") or {}
-                doi  = ext.get("DOI", "")
-                arxiv_id = ext.get("ArXiv", "")
-
-                authors = "; ".join(
+                ext      = p.get("externalIds") or {}
+                doi      = ext.get("DOI", "")
+                authors  = "; ".join(
                     a.get("name", "") for a in (p.get("authors") or [])
                 )
-                pdf_url = (p.get("openAccessPdf") or {}).get("url", "")
-                url     = p.get("url", pdf_url)
-
+                pdf_url  = (p.get("openAccessPdf") or {}).get("url", "")
+                url      = p.get("url", pdf_url)
                 all_records.append({
                     "source":        "SemanticScholar",
                     "title":         clean(p.get("title", "")),
@@ -272,19 +291,24 @@ def fetch_semantic_scholar(queries, max_per_query=100):
             offset  += len(papers)
             if len(papers) < limit:
                 break
-            time.sleep(1.1)  # SS rate limit ~1 req/s
 
-        print(f"    → {fetched} fetched so far (total unique: {len(all_records)})")
+            # Polite inter-request delay to avoid 429s
+            time.sleep(3)
+
+        print(f"    → {fetched} fetched (total unique so far: {len(all_records)})")
+        # Extra pause between different query strings
+        time.sleep(5)
 
     print(f"  ✓ {len(all_records)} Semantic Scholar records")
     return all_records
 
 
 # ─────────────────────────────────────────────
-# SOURCE 3 — arXiv (REST API)
+# SOURCE 3 — arXiv
 # ─────────────────────────────────────────────
 
 ARXIV_BASE = "https://export.arxiv.org/api/query"
+
 
 def fetch_arxiv(query, max_results=MAX_PER_SOURCE):
     print(f"\n[arXiv] Searching … (max {max_results})")
@@ -293,7 +317,7 @@ def fetch_arxiv(query, max_results=MAX_PER_SOURCE):
     start   = 0
 
     while start < max_results:
-        size = min(batch, max_results - start)
+        size   = min(batch, max_results - start)
         params = {
             "search_query": query,
             "start":        start,
@@ -302,52 +326,44 @@ def fetch_arxiv(query, max_results=MAX_PER_SOURCE):
             "sortOrder":    "descending",
         }
         try:
-            resp = requests.get(ARXIV_BASE, params=params, timeout=30)
+            resp = requests.get(ARXIV_BASE, params=params, timeout=60)
             resp.raise_for_status()
             xml = resp.text
         except Exception as e:
             print(f"  [warn] arXiv request failed: {e}")
             break
 
-        # Simple XML parsing (no lxml needed)
         entries = re.findall(r"<entry>(.*?)</entry>", xml, re.DOTALL)
         if not entries:
             break
 
         for entry in entries:
-            def tag(t):
-                m = re.search(rf"<{t}[^>]*>(.*?)</{t}>", entry, re.DOTALL)
+            def tag(t, _e=entry):
+                m = re.search(rf"<{t}[^>]*>(.*?)</{t}>", _e, re.DOTALL)
                 return clean(m.group(1)) if m else ""
 
-            title    = tag("title")
-            abstract = tag("summary")
-            published = tag("published")[:4]  # year only
-            doi_m    = re.search(r'<arxiv:doi[^>]*>(.*?)</arxiv:doi>', entry)
-            doi      = clean(doi_m.group(1)) if doi_m else ""
-            link_m   = re.search(r'<id>(.*?)</id>', entry)
-            url      = clean(link_m.group(1)) if link_m else ""
-            authors  = "; ".join(
-                re.findall(r"<name>(.*?)</name>", entry)
-            )
+            title     = tag("title")
+            abstract  = tag("summary")
+            published = tag("published")[:4]
+            doi_m     = re.search(r'<arxiv:doi[^>]*>(.*?)</arxiv:doi>', entry)
+            doi       = clean(doi_m.group(1)) if doi_m else ""
+            link_m    = re.search(r'<id>(.*?)</id>', entry)
+            url       = clean(link_m.group(1)) if link_m else ""
+            authors   = "; ".join(re.findall(r"<name>(.*?)</name>", entry))
             journal_m = re.search(
                 r'<arxiv:journal_ref[^>]*>(.*?)</arxiv:journal_ref>', entry)
-            journal  = clean(journal_m.group(1)) if journal_m else "arXiv preprint"
+            journal   = clean(journal_m.group(1)) if journal_m else "arXiv preprint"
 
             records.append({
-                "source":        "arXiv",
-                "title":         title,
-                "authors":       authors,
-                "year":          published,
-                "journal_venue": journal,
-                "doi":           doi,
-                "url":           url,
-                "abstract":      abstract,
+                "source": "arXiv", "title": title, "authors": authors,
+                "year": published, "journal_venue": journal, "doi": doi,
+                "url": url, "abstract": abstract,
             })
 
         start += len(entries)
         if len(entries) < size:
             break
-        time.sleep(3)  # arXiv asks for 3s between requests
+        time.sleep(3)
 
     print(f"  ✓ {len(records)} arXiv records parsed")
     return records
@@ -359,51 +375,83 @@ def fetch_arxiv(query, max_results=MAX_PER_SOURCE):
 
 def main():
     print("=" * 60)
-    print("AngioVision SLR — Phase 1: Automated Paper Collection")
+    mode = "ALL SOURCES" if RUN_ALL else "SEMANTIC SCHOLAR ONLY"
+    print(f"AngioVision SLR — Phase 1: Automated Paper Collection [{mode}]")
     print("=" * 60)
 
-    all_records = []
+    new_records = []
 
-    # --- PubMed ---
-    try:
-        all_records += fetch_pubmed(PUBMED_QUERY)
-    except Exception as e:
-        print(f"[ERROR] PubMed failed: {e}")
+    if RUN_ALL:
+        try:
+            new_records += fetch_pubmed(PUBMED_QUERY)
+        except Exception as e:
+            print(f"[ERROR] PubMed failed: {e}")
 
-    # --- Semantic Scholar ---
     try:
-        all_records += fetch_semantic_scholar(SS_QUERIES, max_per_query=100)
+        new_records += fetch_semantic_scholar(SS_QUERIES, max_per_query=100)
     except Exception as e:
         print(f"[ERROR] Semantic Scholar failed: {e}")
 
-    # --- arXiv ---
-    try:
-        all_records += fetch_arxiv(ARXIV_QUERY)
-    except Exception as e:
-        print(f"[ERROR] arXiv failed: {e}")
+    if RUN_ALL:
+        try:
+            new_records += fetch_arxiv(ARXIV_QUERY)
+        except Exception as e:
+            print(f"[ERROR] arXiv failed: {e}")
 
-    # --- Deduplicate ---
-    print(f"\n[Dedup] {len(all_records)} total → deduplicating …")
-    unique = dedup(all_records)
+    # ── Reconcile with existing CSV ──────────────────────────────────────
+    existing = load_existing_csv(OUTPUT_FILE)
+
+    # Strip record_id and screening columns from existing so dedup works
+    # on content fields only; we'll re-assign IDs at the end.
+    existing_content = []
+    existing_screening = {}  # title_key → {screen_decision, screen_reason, notes}
+    for row in existing:
+        title_key = re.sub(r"[^a-z0-9 ]", "", row.get("title", "").lower())
+        doi       = row.get("doi", "").strip().lower()
+        existing_screening[title_key] = {
+            "screen_decision": row.get("screen_decision", ""),
+            "screen_reason":   row.get("screen_reason", ""),
+            "notes":           row.get("notes", ""),
+        }
+        if doi:
+            existing_screening[doi] = existing_screening[title_key]
+        existing_content.append({k: row[k] for k in CSV_FIELDS
+                                  if k in row and k not in
+                                  ("record_id", "screen_decision", "screen_reason", "notes")})
+
+    combined = existing_content + new_records
+    print(f"\n[Reconcile] {len(existing_content)} existing + "
+          f"{len(new_records)} new = {len(combined)} total before dedup")
+
+    unique = dedup(combined)
     print(f"  ✓ {len(unique)} unique records after deduplication")
 
-    # --- Write CSV ---
+    # Re-attach any existing screening decisions
+    for rec in unique:
+        title_key = re.sub(r"[^a-z0-9 ]", "", rec.get("title", "").lower())
+        doi       = rec.get("doi", "").strip().lower()
+        screening = (existing_screening.get(doi)
+                     or existing_screening.get(title_key)
+                     or {})
+        rec["screen_decision"] = screening.get("screen_decision", "")
+        rec["screen_reason"]   = screening.get("screen_reason", "")
+        rec["notes"]           = screening.get("notes", "")
+
+    # ── Write CSV ────────────────────────────────────────────────────────
     unique.sort(key=lambda r: (r.get("year", "0000") or "0000"), reverse=True)
 
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
         for i, rec in enumerate(unique, 1):
-            rec["record_id"]      = f"R{i:04d}"
-            rec["screen_decision"] = ""
-            rec["screen_reason"]   = ""
-            rec["notes"]           = ""
+            rec["record_id"] = f"R{i:04d}"
             writer.writerow(rec)
 
     print(f"\n✅ Saved → {OUTPUT_FILE}  ({len(unique)} records)")
     print("\nNext steps:")
     print("  • Open the CSV in Excel / LibreOffice Calc")
-    print("  • Fill 'screen_decision' column: Include / Exclude / Maybe")
+    print("  • Fill 'screen_decision': Include / Exclude / Maybe")
     print("  • Fill 'screen_reason' when excluding (maps to E1–E5 criteria)")
     print("  • Records with 'Maybe' go to full-text review (Stage 2)")
 
