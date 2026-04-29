@@ -942,7 +942,7 @@ def generate_html(graph_data: dict) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Generate multi-mode Task network HTML.")
     parser.add_argument("--input",  "-i", default="/data/Deep_Angiography/AngioVision/slr/results/stage2_results.jsonl")
-    parser.add_argument("--output", "-o", default="/data/Deep_Angiography/AngioVision/slr/results/task_network.html")
+    parser.add_argument("--output", "-o", default="/data/Deep_Angiography/AngioVision/index.html")
     args = parser.parse_args()
 
     ip, op = Path(args.input), Path(args.output)
