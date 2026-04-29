@@ -39,3 +39,5 @@ fine-tuning/d_checkpoints
 fine-tuning/gpt2
 fine-tuning/statistical-test-result-black
 utils/output
+/slr/analysis-results
+/slr/d-analysis-results

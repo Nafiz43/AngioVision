@@ -1,0 +1,4 @@
+python3 01_topical_analysis.py
+python3 02_forest_plot.py
+python3 03_metric_plot.py
+python3 04_forest_plot_binary_analysis.py

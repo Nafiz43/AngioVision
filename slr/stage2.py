@@ -59,14 +59,14 @@ from tabulate import tabulate
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL              = "gpt-oss:20b"
 TEMPERATURE        = 0
-MAX_TOKENS         = 1024
+MAX_TOKENS         = 2048
 RETRY_LIMIT        = 3
 RETRY_DELAY        = 5
 REPAIR_LIMIT       = 2
 MAX_FULLTEXT_CHARS = 80_000
 
 DEFAULT_FULLTEXT_DIR = "/data/Deep_Angiography/AngioVision/slr/articles-processed"
-DEFAULT_OUTPUT       = "stage2_results.jsonl"
+DEFAULT_OUTPUT       = "results/stage2_results.jsonl"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,61 +76,134 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── System prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are a systematic review data extraction assistant. You will be given the full text
-of a research article in Markdown format. Extract the following structured information precisely.
+SYSTEM_PROMPT = """You are a systematic literature review (SLR) data extraction assistant specializing in deep learning and medical image analysis research. You will be given the full text of a research article in Markdown format. Your task is to extract structured bibliographic, methodological, and evaluative information precisely and completely to support a PRISMA-compliant systematic review on deep learning methods for angiographic sequence analysis.
 
-If a field cannot be determined from the text, return null for that field.
-Do not infer or hallucinate values not present in the paper.
+EXTRACTION RULES:
+- If a field cannot be determined from the text, return null for that field.
+- Do not infer, guess, or hallucinate values not explicitly stated or clearly implied in the paper.
+- For list fields, return an empty list [] if none are found — do not return null.
+- For enumerated fields (those with "|" options), choose the closest matching value. If none fit, use "other" and explain in the nearest descriptive field.
+- Keywords should be taken verbatim from the paper's keyword section if present; otherwise extract up to 10 salient domain terms from the abstract and body.
+- Architecture names should be extracted as the authors name them (e.g., "nnU-Net", "ResNet-50", "VideoSwinTransformer") — do not map them to a family yourself.
+- Task labels must reflect the clinical or technical goal of the work, not just the algorithmic operation.
+- Be exhaustive for the evaluation section: capture ALL metrics reported, not just the primary one.
 
-RESPOND ONLY with a valid JSON object in the schema below. No preamble, no markdown fences.
+RESPOND ONLY with a valid JSON object matching the schema below. No preamble, no markdown fences, no trailing commentary.
 
 {
   "study_identity": {
-    "authors": ["Last FM", ...],
+    "title": "...",
     "journal_or_venue": "...",
-    "doi": "...",
+    "year": null,
     "publication_type": "journal" | "conference" | "preprint" | "other"
   },
+
+  "keywords": ["...", "..."],
+
   "imaging": {
-    "modality": "DSA" | "fluoroscopy" | "DSA+fluoroscopy" | "other",
-    "anatomy": "coronary" | "cerebral" | "peripheral" | "abdominal" | "multi" | "other",
+    "modality": "DSA" | "fluoroscopy" | "DSA+fluoroscopy" | "X-ray" | "CT-angiography" | "MR-angiography" | "ultrasound" | "multi-modal" | "other",
+    "anatomy": "coronary" | "cerebral" | "peripheral" | "abdominal" | "retinal" | "pulmonary" | "multi" | "other",
+    "anatomy_detail": "...",
     "frame_rate_fps": null,
-    "sequence_length_frames": null
+    "sequence_length_frames": null,
+    "image_resolution": "...",
+    "contrast_agent_used": true | false | null
   },
+
   "dataset": {
-    "source": "public" | "private" | "phantom" | "mixed",
+    "source": "public" | "private" | "phantom" | "synthetic" | "mixed",
     "dataset_name": null,
+    "dataset_url_or_ref": null,
     "n_patients": null,
     "n_sequences": null,
     "n_frames": null,
-    "train_test_split": "..."
+    "n_annotations": null,
+    "annotation_type": "manual" | "semi-automatic" | "automatic" | "none" | null,
+    "annotator_count": null,
+    "inter_rater_agreement_reported": true | false,
+    "train_test_split": "...",
+    "data_augmentation_used": true | false | null,
+    "class_imbalance_addressed": true | false | null
   },
+
   "task": {
-    "primary_task": "denoising" | "diagonosis" | "enhancement" | "subtraction" | "registration" |
-                    "motion_correction" | "segmentation" | "detection" |
-                    "classification" | "localization" | "outcome_prediction" | "other",
+    "primary_task": "Image Enhancement & Denoising" |
+                    "Background Subtraction" |
+                    "Motion Correction & Registration" |
+                    "Vessel Segmentation" |
+                    "Object Detection & Localisation" |
+                    "Temporal Sequence Modelling" |
+                    "Outcome Prediction" |
+                    "Disease Classification & Grading" |
+                    "Optical Flow & Frame Interpolation" |
+                    "Anomaly Detection" |
+                    "3D Reconstruction & Depth Estimation" |
+                    "Report Generation & Summarisation" |
+                    "Landmark & Keypoint Detection" |
+                    "Catheter & Device Tracking" |
+                    "Contrast Flow Analysis" |
+                    "other",
     "secondary_tasks": [],
-    "task_description": "..."
+    "task_description": "...",
+    "clinical_application": "..."
   },
+
   "method": {
-    "architecture_family": "CNN" | "U-Net" | "GAN" | "Transformer" | "RNN" |
-                           "Mamba" | "hybrid" | "classical" | "other",
     "architecture_name": "...",
-    "input_type": "2D_frame" | "3D_sequence" | "optical_flow" | "mixed",
+    "architecture_description": "...",
+    "input_type": "2D_frame" | "3D_sequence" | "optical_flow" | "multi-frame_stack" | "mixed" | "other",
     "temporal_modelling": true | false,
+    "temporal_mechanism": "...",
     "pretrained_backbone": null,
-    "training_supervision": "fully_supervised" | "self_supervised" | "weakly_supervised" | "unsupervised"
+    "pretrained_dataset": null,
+    "training_supervision": "fully_supervised" | "self_supervised" | "weakly_supervised" | "semi_supervised" | "unsupervised" | "other",
+    "loss_functions": ["...", "..."],
+    "post_processing_steps": "...",
+    "computational_framework": "...",
+    "hardware_used": "...",
+    "inference_time_reported": true | false,
+    "model_complexity_reported": true | false
   },
+
   "evaluation": {
-    "metrics": ["PSNR", "SSIM", "Dice", ...],
-    "best_metric_value": "...",
-    "comparators": ["method_name", ...],
-    "validation_design": "held_out_test" | "cross_validation" | "prospective" | "other"
+    "metrics": ["PSNR", "SSIM", "Dice", "..."],
+    "primary_metric": "...",
+    "primary_metric_value": "...",
+    "all_reported_results": [
+      {
+        "metric": "...",
+        "value": "...",
+        "dataset_split": "test" | "validation" | "cross_val" | "other"
+      }
+    ],
+    "comparators": ["method_name", "..."],
+    "ablation_study_performed": true | false,
+    "statistical_significance_reported": true | false,
+    "validation_design": "held_out_test" | "cross_validation" | "prospective" | "external_validation" | "other",
+    "failure_case_analysis": true | false
   },
-  "limitations": "...",
-  "future_work_stated": "...",
-  "open_source_code": true | false,
-  "open_source_data": true | false
+
+  "clinical_validation": {
+    "clinical_expert_involved": true | false,
+    "reader_study_performed": true | false,
+    "patient_outcome_measured": true | false,
+    "regulatory_approval_mentioned": true | false,
+    "clinical_deployment_mentioned": true | false
+  },
+
+  "reproducibility": {
+    "open_source_code": true | false,
+    "code_url": null,
+    "open_source_data": true | false,
+    "data_url": null,
+    "hyperparameters_reported": true | false,
+    "training_details_sufficient": true | false
+  },
+
+  "study_quality": {
+    "limitations": "...",
+    "future_work_stated": "..."
+  }
 }"""
 
 REPAIR_SYSTEM = """You are a JSON repair assistant. You will be given a broken or empty response
@@ -293,21 +366,22 @@ def extract_all(fulltext_dir, output_jsonl, resume=True):
 
     log.info(f"Found {len(md_files)} .md files in {fulltext_dir}")
 
-    # Resume: track by md filename
+    # Resume: track by _md_file key (the .md filename) to correctly match f.name
     done_files = set()
     if resume and os.path.exists(output_jsonl):
         with open(output_jsonl, encoding="utf-8") as f:
             for line in f:
                 try:
                     rec = json.loads(line)
-                    if "_source_file" in rec:
-                        done_files.add(rec["_source_file"])
+                    if "_md_file" in rec:
+                        done_files.add(rec["_md_file"])
                 except Exception:
                     pass
         log.info(f"Resuming: {len(done_files)} files already processed.")
 
     pending = [f for f in md_files if f.name not in done_files]
     log.info(f"Pending: {len(pending)} files to process.")
+    log.info(f"Model Being Used: {MODEL}")
 
     with open(output_jsonl, "a", encoding="utf-8") as out_f:
         with tqdm(total=len(pending), desc="Extracting", unit="article",

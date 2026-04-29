@@ -50,7 +50,7 @@ from tabulate import tabulate
 from collections import defaultdict
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL       = "qwen2.5:72b"
+MODEL       = "llama3.1:latest"
 # MODEL     = "llama3.2:1b"
 
 TEMPERATURE  = 0
@@ -261,6 +261,55 @@ def _error_record(reason, raw):
     }
 
 
+# ── Included titles export ────────────────────────────────────────────────────
+
+def _save_included_titles(df, output_path):
+    """
+    Save titles of all INCLUDE decisions to a plain text file.
+    Lines flagged for human review are annotated with [Need-to-Check].
+    Output path is derived from the results CSV path:
+        results/stage1_results.csv  →  results/stage1_included.txt
+    """
+    results_dir = os.path.dirname(output_path) or "."
+    txt_path = os.path.join(results_dir, "stage1_included.txt")
+
+    included = df[df["llm_decision"] == "INCLUDE"].copy()
+
+    if included.empty:
+        log.info("  No INCLUDE records found — skipping stage1_included.txt.")
+        return
+
+    # Normalise the flag column to boolean safely
+    def _is_flagged(val):
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            return val.strip().lower() in ("true", "1", "yes")
+        try:
+            return bool(val)
+        except Exception:
+            return False
+
+    included["_flagged"] = included["llm_flag_for_human_review"].apply(_is_flagged)
+
+    lines = []
+    for _, row in included.iterrows():
+        title = str(row.get("title", "")).strip() or "(no title)"
+        suffix = "  [Need-to-Check]" if row["_flagged"] else ""
+        lines.append(f"{title}{suffix}")
+
+    with open(txt_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+    flagged_count = included["_flagged"].sum()
+    log.info(
+        f"  Included titles saved to: {txt_path}  "
+        f"({len(lines)} total, {flagged_count} flagged [Need-to-Check])"
+    )
+    print(f"  Included titles saved to: {txt_path}  "
+          f"({len(lines)} total, {flagged_count} flagged [Need-to-Check])\n")
+
+
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
 def _print_summary(output_path):
@@ -410,6 +459,9 @@ def _print_summary(output_path):
     criteria_path = output_path.replace(".csv", "_criteria_summary.csv")
     criteria_df.to_csv(criteria_path, index=False)
     print(f"  Criteria summary CSV saved to: {criteria_path}\n")
+
+    # ── 7. Save included titles text file ─────────────────────────
+    _save_included_titles(df, output_path)
 
 
 # ── Main screening loop ───────────────────────────────────────────────────────

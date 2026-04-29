@@ -489,8 +489,14 @@ def next_number(index: dict) -> int:
 # =========================================================================== #
 
 def collect_pdfs(root: Path) -> List[Path]:
-    """Recursively collect all PDFs, sorted deterministically."""
-    return sorted(root.rglob("*.pdf"), key=lambda p: (p.parent.name, p.name))
+    """Recursively collect all PDFs, sorted numerically by filename stem (1.pdf, 2.pdf, ...)."""
+    def sort_key(p: Path):
+        try:
+            return (0, int(p.stem))   # numeric stem → sort as integer
+        except ValueError:
+            return (1, p.stem)        # non-numeric stem → alphabetical, after numeric
+
+    return sorted(root.rglob("*.pdf"), key=sort_key)
 
 
 def process_all(skip_existing: bool = True) -> None:

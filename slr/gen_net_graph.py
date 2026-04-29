@@ -84,7 +84,7 @@ def _make_task_node(tid: int, pt: str, meta: dict, degree: int) -> dict:
         "task_description": meta["task_description"],
         "example_journal":  meta["example_journal"],
         "color":            TASK_COLOR,
-        "font":             {"color": "#fff", "size": 14, "face": "DM Sans, sans-serif"},
+        "font":             {"size": 14, "face": "DM Sans, sans-serif"},
         "shape":            "dot",
         "borderWidth":      2,
         "shadow":           True,
@@ -106,23 +106,27 @@ def build_graph(records: list[dict]) -> dict:
     future_edges: set[tuple[str, str]] = set()
 
     for rec in records:
-        task_block   = rec.get("task",   {}) or {}
-        method_block = rec.get("method", {}) or {}
-        identity     = rec.get("study_identity", {}) or {}
-        eval_block   = rec.get("evaluation", {}) or {}
+        task_block     = rec.get("task",          {}) or {}
+        method_block   = rec.get("method",        {}) or {}
+        identity       = rec.get("study_identity",{}) or {}
+        eval_block     = rec.get("evaluation",    {}) or {}
+        # FIX: limitations and future_work_stated live inside study_quality
+        study_quality  = rec.get("study_quality", {}) or {}
 
         pt = (task_block.get("primary_task") or "").strip()
         if not pt:
             continue
 
         # Source article info attached to every right-side node
+        # FIX: authors and doi are not guaranteed fields in study_identity;
+        #      fall back gracefully — they will show as "N/A" when absent.
         source_entry = {
-            "title":       safe_str(rec.get("title")),
-            "year":        safe_str(rec.get("year")),
-            "journal":     safe_str(identity.get("journal_or_venue")),
-            "doi":         safe_str(identity.get("doi")),
-            "pub_type":    safe_str(identity.get("publication_type")),
-            "authors":     safe_str(identity.get("authors")),
+            "title":    safe_str(rec.get("title") or identity.get("title")),
+            "year":     safe_str(rec.get("year")  or identity.get("year")),
+            "journal":  safe_str(identity.get("journal_or_venue")),
+            "doi":      safe_str(identity.get("doi")),
+            "pub_type": safe_str(identity.get("publication_type")),
+            "authors":  safe_str(identity.get("authors")),
         }
 
         if pt not in task_meta:
@@ -144,7 +148,10 @@ def build_graph(records: list[dict]) -> dict:
                     "temporal_modelling":   safe_str(method_block.get("temporal_modelling")),
                     "pretrained_backbone":  safe_str(method_block.get("pretrained_backbone")),
                     "training_supervision": safe_str(method_block.get("training_supervision")),
-                    "best_metric":          safe_str(eval_block.get("best_metric_value")),
+                    # FIX: was best_metric_value — correct key is primary_metric_value
+                    "best_metric":          safe_str(eval_block.get("primary_metric_value")),
+                    # bonus: also store the metric name for context
+                    "primary_metric":       safe_str(eval_block.get("primary_metric")),
                     "metrics":              safe_str(eval_block.get("metrics")),
                     "validation_design":    safe_str(eval_block.get("validation_design")),
                     "comparators":          safe_str(eval_block.get("comparators")),
@@ -157,7 +164,8 @@ def build_graph(records: list[dict]) -> dict:
             arch_edges.add((pt, an))
 
         # ── B: limitations ───────────────────────────────────────────────
-        lim_raw = safe_str(rec.get("limitations") or "")
+        # FIX: was rec.get("limitations") — correct location is study_quality
+        lim_raw = safe_str(study_quality.get("limitations") or "")
         if lim_raw and lim_raw != "N/A":
             lk = lim_raw[:80]
             if lk not in lim_meta:
@@ -168,7 +176,8 @@ def build_graph(records: list[dict]) -> dict:
             lim_edges.add((pt, lk))
 
         # ── C: future work ───────────────────────────────────────────────
-        fw_raw = safe_str(rec.get("future_work_stated") or "")
+        # FIX: was rec.get("future_work_stated") — correct location is study_quality
+        fw_raw = safe_str(study_quality.get("future_work_stated") or "")
         if fw_raw and fw_raw != "N/A":
             fk = fw_raw[:80]
             if fk not in future_meta:
@@ -207,12 +216,13 @@ def build_graph(records: list[dict]) -> dict:
             "pretrained_backbone":  meta["pretrained_backbone"],
             "training_supervision": meta["training_supervision"],
             "best_metric":          meta["best_metric"],
+            "primary_metric":       meta["primary_metric"],
             "metrics":              meta["metrics"],
             "validation_design":    meta["validation_design"],
             "comparators":          meta["comparators"],
             "sources":              meta["sources"],
             "color": NODE_COLORS["architecture"],
-            "font":  {"color": "#fff", "size": 13, "face": "DM Sans, sans-serif"},
+            "font":  {"size": 13, "face": "DM Sans, sans-serif"},
             "shape": "dot", "borderWidth": 2, "shadow": True,
         })
     for eid, (pt, an) in enumerate(arch_edges):
@@ -235,7 +245,7 @@ def build_graph(records: list[dict]) -> dict:
             "full_text": meta["full_text"],
             "sources":   meta["sources"],
             "color": NODE_COLORS["limitation"],
-            "font":  {"color": "#fff", "size": 12, "face": "DM Sans, sans-serif"},
+            "font":  {"size": 12, "face": "DM Sans, sans-serif"},
             "shape": "dot", "borderWidth": 2, "shadow": True,
         })
     for eid, (pt, lk) in enumerate(lim_edges):
@@ -258,7 +268,7 @@ def build_graph(records: list[dict]) -> dict:
             "full_text": meta["full_text"],
             "sources":   meta["sources"],
             "color": NODE_COLORS["future_work"],
-            "font":  {"color": "#fff", "size": 12, "face": "DM Sans, sans-serif"},
+            "font":  {"size": 12, "face": "DM Sans, sans-serif"},
             "shape": "dot", "borderWidth": 2, "shadow": True,
         })
     for eid, (pt, fk) in enumerate(future_edges):
@@ -315,7 +325,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       --bg:#f4f7fb; --surface:#fff; --surface2:#f0f4f9; --border:#d0d7e3;
       --text:#0f172a; --muted:#64748b; --accent:#2563eb;
       --shadow:0 8px 32px rgba(15,23,42,.10);
-      --net-bg:radial-gradient(ellipse at 50% 40%,#e8f0fe 0%,#f4f7fb 100%);
+      --net-bg:radial-gradient(ellipse at 50% 40%,#dce8fb 0%,#edf2f9 100%);
       --status-fg:#16a34a; --status-bg:rgba(22,163,74,.07); --status-br:rgba(22,163,74,.22);
       --badge-bg:rgba(37,99,235,.10); --badge-fg:#2563eb;
       --btn-sec-bg:#e8eef6; --btn-sec-fg:#0f172a;
@@ -637,8 +647,9 @@ function rebuildNetwork(){
   nodesDS=new vis.DataSet(visNodes.map(n=>{ const c=Object.assign({},n); c.title=buildTooltip(n); return c; }));
   edgesDS=new vis.DataSet(visEdges.map(e=>Object.assign({},e)));
 
-  const isDark=document.documentElement.getAttribute("data-theme")!=="light";
-  const nodeFontColor=isDark?"#ffffff":"#0f172a";
+  // Font color: white in dark mode, black in light mode
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  const nodeFontColor = isDark ? "#ffffff" : "#000000";
 
   network=new vis.Network(container,{nodes:nodesDS,edges:edgesDS},{
     autoResize:true,
@@ -818,7 +829,8 @@ function showDetail(id){
       `<div class="detail-section-label">Temporal modelling</div><div class="detail-value">${esc(n.temporal_modelling)}</div>`+
       `<div class="detail-section-label">Pretrained backbone</div><div class="detail-value">${esc(n.pretrained_backbone)}</div>`+
       `<div class="detail-section-label">Training supervision</div><div class="detail-value">${esc(n.training_supervision)}</div>`+
-      `<div class="detail-section-label">Best metric</div><div class="detail-value">${esc(n.best_metric)}</div>`+
+      `<div class="detail-section-label">Primary metric</div><div class="detail-value">${esc(n.primary_metric)}</div>`+
+      `<div class="detail-section-label">Best metric value</div><div class="detail-value">${esc(n.best_metric)}</div>`+
       `<div class="detail-section-label">Evaluation metrics</div><div class="detail-value">${esc(n.metrics)}</div>`+
       `<div class="detail-section-label">Validation design</div><div class="detail-value">${esc(n.validation_design)}</div>`+
       `<div class="detail-section-label">Comparators</div><div class="detail-value">${esc(n.comparators)}</div>`+
@@ -883,7 +895,7 @@ function toggleTheme(){
   const next=html.getAttribute("data-theme")==="dark"?"light":"dark";
   html.setAttribute("data-theme",next);
   document.getElementById("themeBtn").innerHTML=next==="light"?"<span>\uD83C\uDF19</span> Dark mode":"<span>\u2600\uFE0F</span> Light mode";
-  if(network) network.setOptions({nodes:{font:{color:next==="light"?"#0f172a":"#ffffff"}}});
+  if(network) network.setOptions({nodes:{font:{color:next==="light"?"#000000":"#ffffff"}}});
   document.getElementById("mynetwork").style.background=getComputedStyle(document.documentElement).getPropertyValue("--net-bg").trim();
 }
 
