@@ -133,7 +133,7 @@ plt.ylabel("Number of Studies")
 plt.legend()
 plt.tight_layout()
 
-plt.savefig(os.path.join(out_dir, "fig1_histogram_primary_metrics.png"), dpi=300)
+plt.savefig(os.path.join(out_dir, "fig1_histogram_primary_metrics.pdf"), bbox_inches="tight")
 plt.close()
 
 
@@ -148,7 +148,7 @@ plt.title("Density Distribution of Primary Metrics (Normalized)")
 plt.xlabel("Metric Value (%)")
 plt.tight_layout()
 
-plt.savefig(os.path.join(out_dir, "fig2_kde_primary_metrics.png"), dpi=300)
+plt.savefig(os.path.join(out_dir, "fig2_kde_primary_metrics.pdf"), bbox_inches="tight")
 plt.close()
 
 
@@ -164,7 +164,7 @@ plt.title("Primary Metric Distribution by Metric Type (0–100 Scale)")
 plt.ylabel("Metric Value (%)")
 plt.tight_layout()
 
-plt.savefig(os.path.join(out_dir, "fig3_boxplot_metrics.png"), dpi=300)
+plt.savefig(os.path.join(out_dir, "fig3_boxplot_metrics.pdf"), bbox_inches="tight")
 plt.close()
 
 

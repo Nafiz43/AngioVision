@@ -30,23 +30,23 @@ VENUE_NORMALIZATION = {
 # Figure registry (preserved structure & paths)
 FIGURES = {
     "temporal_trends": {
-        "file": "temporal_trends_refined.png",
+        "file": "temporal_trends_refined.pdf",
         "desc": "Publication volume over time (from 2000 onwards)"
     },
     "modality_distribution": {
-        "file": "modality_distribution_refined.png",
+        "file": "modality_distribution_refined.pdf",
         "desc": "Distribution of imaging modalities (top 10)"
     },
     "task_distribution": {
-        "file": "task_distribution_refined.png",
+        "file": "task_distribution_refined.pdf",
         "desc": "Distribution of primary clinical/research tasks (top 10)"
     },
     "anatomy_distribution": {
-        "file": "anatomy_distribution_refined.png",
+        "file": "anatomy_distribution_refined.pdf",
         "desc": "Distribution of anatomical regions (top 10)"
     },
     "venue_stacked": {
-        "file": "venue_analysis_stacked.png",
+        "file": "venue_analysis_stacked.pdf",
         "desc": "Top venues split into journal vs conference counts"
     },
 }
@@ -241,7 +241,7 @@ def run_venue_dominance(raw_venue_counts: Counter) -> None:
     plt.minorticks_on()
     ax.grid(True, which="minor", linestyle=":", linewidth=0.5, color='#F3F4F6')
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "venue_zipf_plot.png", dpi=300, facecolor='#FAFAFA')
+    plt.savefig(OUTPUT_DIR / "venue_zipf_plot.pdf", dpi=300, facecolor='#FAFAFA')
     plt.close(fig)
 
     # Cumulative Dominance Curve
@@ -266,7 +266,7 @@ def run_venue_dominance(raw_venue_counts: Counter) -> None:
     plt.axhline(0.5, linestyle="--", color='#FF9F1C', linewidth=2, alpha=0.8)
     plt.axhline(0.8, linestyle="--", color='#2EC4B6', linewidth=2, alpha=0.8)
     plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "venue_cumulative_curve.png", dpi=300, facecolor='#FAFAFA')
+    plt.savefig(OUTPUT_DIR / "venue_cumulative_curve.pdf", dpi=300, facecolor='#FAFAFA')
     plt.close(fig2)
 
 
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         print(f"  Path       : {path}")
         print(f"  Description: {meta['desc']}\n")
 
-    dom_files = ["venue_zipf_plot.png", "venue_cumulative_curve.png", "venue_dominance_stats.txt"]
+    dom_files = ["venue_zipf_plot.pdf", "venue_cumulative_curve.pdf", "venue_dominance_stats.txt"]
     for f_name in dom_files:
         p = OUTPUT_DIR / f_name
         print(f"- {p}")
@@ -304,15 +304,15 @@ if __name__ == "__main__":
 
     files_output = {
         "Topical Analysis": [
-            "temporal_trends_refined.png",
-            "modality_distribution_refined.png",
-            "task_distribution_refined.png",
-            "anatomy_distribution_refined.png",
+            "temporal_trends_refined.pdf",
+            "modality_distribution_refined.pdf",
+            "task_distribution_refined.pdf",
+            "anatomy_distribution_refined.pdf",
         ],
         "Venue & Dominance Analysis": [
-            "venue_analysis_stacked.png",
-            "venue_zipf_plot.png",
-            "venue_cumulative_curve.png",
+            "venue_analysis_stacked.pdf",
+            "venue_zipf_plot.pdf",
+            "venue_cumulative_curve.pdf",
         ],
         "Statistics & Reports": [
             "venue_dominance_stats.txt",

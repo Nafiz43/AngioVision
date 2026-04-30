@@ -12,7 +12,6 @@ import numpy as np
 DATA_PATH = "/data/Deep_Angiography/AngioVision/slr/results/stage2_results.jsonl"
 OUT_DIR = "/data/Deep_Angiography/AngioVision/slr/analysis-results"
 
-OUT_PNG = Path(OUT_DIR) / "forest_plot_reporting_quality.png"
 OUT_PDF = Path(OUT_DIR) / "forest_plot_reporting_quality.pdf"
 OUT_MD  = Path(OUT_DIR) / "reporting_quality_summary.md"
 
@@ -180,7 +179,6 @@ plt.xlim(0, 1)
 plt.grid(axis="x", linestyle="--", alpha=0.5)
 plt.tight_layout()
 
-plt.savefig(OUT_PNG, dpi=300, bbox_inches="tight")
 plt.savefig(OUT_PDF, bbox_inches="tight")
 
-print(f"Saved:\n- {OUT_PNG}\n- {OUT_PDF}")
+print(f"Saved:\n- {OUT_PDF}")
