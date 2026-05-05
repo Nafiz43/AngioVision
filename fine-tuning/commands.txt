@@ -1414,10 +1414,11 @@ python3 custom_framework_train_temporal.py \
   --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/
 
 
+
+/usr/bin/python3 custom_framework_train_temporal.py --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv --reports_csv /data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed_Augmented --epochs 300 --num_workers 32 --max_sequences_per_study 16 --max_frames_per_sequence 32 --pooling logsumexp --batch_size 16 --grad_accum 4 --frame_chunk_size 32 --amp --vit_grad_ckpt --vit_trainable_blocks 3 --freeze_text --temporal_mode sinusoidal --frame_temporal_scale 0.75 --enable_sequence_temporal --sequence_temporal_scale 0.5 --vision_backbone_lr 1e-5 --head_lr 1e-4 --out_dir /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/ --output_dir /data/Deep_Angiography/AngioVision/fine-tuning/output/
+
   python3 custom_framework_validate_temporal.py \
-  --checkpoint_root /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints \
-  --vit_name google/vit-base-patch16-224-in21k \
-  --bert_name dmis-lab/biobert-base-cased-v1.1 \
+  --checkpoint_root /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/300_16_16_32 \
   --embed_dim 256 \
   --pooling mean \
   --frame_chunk_size 32 \
@@ -1425,4 +1426,15 @@ python3 custom_framework_train_temporal.py \
   --temporal_mode sinusoidal \
   --frame_temporal_scale 0.75 \
   --enable_sequence_temporal \
-  --sequence_temporal_scale 0.5 \
+  --sequence_temporal_scale 0.5 
+
+
+  rsync -avh \
+  --info=progress2 \
+  --partial \
+  --append-verify \
+  --log-file=/data2/goldman/rsync.log \
+  --log-file-format="%t [%p] %o %f %b" \
+  --stats \
+  /data2/goldman/IR_2026_04/ \
+  nikhan@jackstraw.ucdmc.ucdavis.edu:/data/Deep_Angiography/DICOM/Deep_Angiography_DB_V01_Copy_XA/received/

@@ -32,7 +32,7 @@ import multiprocessing as mp
 # ----------------------------
 # Configuration
 # ----------------------------
-INPUT_ROOT = "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM"
+INPUT_ROOT = "/data/Deep_Angiography/DICOM/Deep_Angiography_DB_V01_Copy_XA/received"
 OUTPUT_ROOT= "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed"
 
 
@@ -343,8 +343,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--skip_existing",
-        action="store_true",
-        help="Skip DICOMs that already have frames/ + metadata.csv"
+        type=lambda x: x.lower() not in ("false", "0", "no"),
+        default=True,
+        help="Skip DICOMs that already have frames/ + metadata.csv (default: True). Pass --skip_existing false to disable."
     )
 
     args = parser.parse_args()
