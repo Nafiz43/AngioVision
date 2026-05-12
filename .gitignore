@@ -41,3 +41,4 @@ fine-tuning/statistical-test-result-black
 utils/output
 /slr/analysis-results
 /slr/d-analysis-results
+/utils/to_transfer

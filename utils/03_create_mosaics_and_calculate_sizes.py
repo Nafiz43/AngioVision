@@ -47,7 +47,7 @@ from tqdm import tqdm
 # =========================================================
 # EASY-TO-CHANGE DEFAULTS
 # =========================================================
-DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_23/DICOM_Sequence_Processed")
+DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
 DEFAULT_OUTPUT_CSV = Path("mosaic_sizes.csv")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -58,7 +58,7 @@ DEFAULT_MOSAIC_NAME = "mosaic.png"
 DEFAULT_MAX_FRAMES = 500
 DEFAULT_STRIDE = 1
 
-DEFAULT_TILE_SIZE = (384, 384)
+DEFAULT_TILE_SIZE = (512, 512)
 DEFAULT_MOSAIC_MAX_COLS = 6
 
 DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) - 1)

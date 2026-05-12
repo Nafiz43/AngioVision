@@ -20,7 +20,7 @@ Workflow:
 
 Usage:
     python angiovision_interactive.py \\
-        --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/500_16_16_32/last.pt \\
+        --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/gen/500_16_16_32/last.pt \\
         [--decoder_model_name microsoft/biogpt | gpt2] \\
         [--vit_name google/vit-base-patch16-224-in21k] \\
         [--bert_name dmis-lab/biobert-base-cased-v1.1] \\
