@@ -118,6 +118,10 @@ TEST_NEGATIVE_DIRS = [
     Path("/data/Deep_Angiography/DICOM_Sequence_Processed/2z108dmE04/2.16.840.1.113883.3.16.94573398129999594088048109325098324578")
 ]
 
+NON_DSA_DEST_ROOT = Path(
+    "/data/Deep_Angiography/DICOM_Sequence_Processed/00_potential_nondsas"
+)
+
 # ── Detection / output paths ──────────────────────────────────────────────
 SOURCE_ROOT = Path(
     "/data/Deep_Angiography/DICOM_Sequence_Processed/00_sequence_to_check"
@@ -719,14 +723,36 @@ def detect_and_copy(thresholds: dict) -> None:
     n_skipped   = sum(1 for r in results
                       if r["verdict"] not in ("potential_dsa", "no_mask_detected"))
 
-    to_copy = [r for r in results if r["verdict"] == "potential_dsa"]
-    print(f"\nCopying {len(to_copy):,} potential DSA sequences → {DEST_ROOT} ...")
+    potential_dsas = [r for r in results if r["verdict"] == "potential_dsa"]
+    potential_nondsas = [r for r in results if r["verdict"] == "no_mask_detected"]
 
-    with tqdm(total=len(to_copy), unit="seq", desc="Copying",
-              dynamic_ncols=True) as pbar:
-        for res in to_copy:
+    print(f"\nCopying {len(potential_dsas):,} potential DSA sequences → {DEST_ROOT} ...")
+
+    with tqdm(total=len(potential_dsas), unit="seq", desc="Copying DSAs",
+            dynamic_ncols=True) as pbar:
+        for res in potential_dsas:
             ok = copy_sequence(Path(res["sequence_dir"]))
             res["copied"] = ok
+            pbar.update(1)
+
+    print(f"\nCopying {len(potential_nondsas):,} potential non-DSA sequences → {NON_DSA_DEST_ROOT} ...")
+
+    NON_DSA_DEST_ROOT.mkdir(parents=True, exist_ok=True)
+
+    with tqdm(total=len(potential_nondsas), unit="seq", desc="Copying non-DSAs",
+            dynamic_ncols=True) as pbar:
+        for res in potential_nondsas:
+            sop_dir = Path(res["sequence_dir"])
+            dest_dir = NON_DSA_DEST_ROOT / sop_dir.parent.name / sop_dir.name
+
+            try:
+                if not dest_dir.exists():
+                    shutil.copytree(sop_dir, dest_dir)
+                res["copied"] = True
+            except Exception as e:
+                print(f"[COPY ERROR] {sop_dir}: {e}")
+                res["copied"] = False
+
             pbar.update(1)
 
     fieldnames = [
