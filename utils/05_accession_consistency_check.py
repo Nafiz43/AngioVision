@@ -21,10 +21,10 @@ import pandas as pd
 
 # ─── CONFIGURATION ────────────────────────────────────────────────────────────
 
-FILE1_PATH   = Path("/data/Deep_Angiography/Deep_Angio_DB_v02/Filtering_IR_2026_04_17_v01.csv")
-FILE2_PATH   = Path("/data/Deep_Angiography/DICOM-metadata-stats/n_consolidated_metadata_ALL_Sequences.csv")
+FILE1_PATH   = Path("/data/Deep_Angiography/Reports/Report_List_v01_01.csv")
+FILE2_PATH   = Path("/data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_ALL_Sequences.csv")
 
-FILE1_COL    = "Accession Number"   # column name in File 1
+FILE1_COL    = "Anon Acc #"   # column name in File 1
 FILE2_COL    = "AccessionNumber"    # column name in File 2
 
 OUTPUT_CSV   = Path("accession_in_file1_not_in_file2.csv")   # written to CWD
