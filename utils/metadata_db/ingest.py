@@ -1,51 +1,34 @@
 #!/usr/bin/env python3
 """
-DICOM → Neo4j Ingestion Pipeline
-Recursively walks /data/Deep_Angiography/DICOM, extracts metadata from every
-.dcm file, and loads it into Neo4j as a property graph.
+DICOM → SQLite Ingestion Pipeline
 
-Graph schema:
-  (:Patient {patient_id, patient_name, patient_sex, patient_age})
-      -[:UNDERWENT]->
-  (:Study {study_instance_uid, study_date, study_time, study_description,
-           accession_number, referring_physician})
-      -[:HAS_SERIES]->
-  (:Series {series_instance_uid, series_number, series_date, series_time,
-            series_description, modality, body_part, protocol_name})
-      -[:HAS_INSTANCE]->
-  (:Instance {sop_instance_uid, sop_class_uid, instance_number,
-              acquisition_date, acquisition_time, content_date, content_time,
-              image_type, rows, columns, bits_allocated, bits_stored,
-              number_of_frames, frame_time, cine_rate, frame_count,
-              kvp, exposure_time, xray_tube_current, avg_pulse_width,
-              distance_source_to_detector, distance_source_to_patient,
-              radiation_setting, radiation_mode, dose_product,
-              intensifier_size, focal_spots, imager_pixel_spacing,
-              positioner_motion, positioner_primary_angle, positioner_secondary_angle,
-              patient_position, window_center, window_width,
-              lossy_image_compression, photometric_interpretation,
-              samples_per_pixel, pixel_representation,
-              contrast_bolus_agent, contrast_bolus_ingredient,
-              manufacturer, manufacturer_model, station_name,
-              software_versions, device_serial_number,
-              detector_id, detector_description,
-              specific_character_set, longitudinal_temporal_info_modified,
-              source_file, source_path, form_type})
+Recursively walks a DICOM directory, parses metadata from every .dcm file
+in parallel (ProcessPoolExecutor), and stores everything in a flat SQLite
+table keyed on SOPInstanceUID.
 
-  (:AccessionNumber {value})   ← primary key node for easy lookup
-      -[:BELONGS_TO]-> (:Study)
+Design principles:
+  • SOPInstanceUID is the only skip condition — every parseable file is stored
+  • Missing AccessionNumber → synthetic key MISSING_{sop_uid[:12]}
+  • INSERT OR IGNORE — re-runs are safe and idempotent
+  • Full audit trail: parse_error, sqlite_inserted_at columns
+  • Resume-friendly: re-run skips already-inserted UIDs via INSERT OR IGNORE
+  • Chunked submission — tqdm starts immediately, no upfront blocking
+  • No external services required
 
 Requirements:
-    pip install pydicom neo4j tqdm
-    Neo4j running and config.py present with NEO4J_URI/USER/PASSWORD/DATABASE
+    pip install pydicom tqdm
 """
 
 import os
 import sys
+import sqlite3
 import logging
 import argparse
+import datetime
+import itertools
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tqdm import tqdm
 
@@ -56,24 +39,12 @@ except ImportError:
     print("ERROR: pydicom not installed.  Run: pip install pydicom")
     sys.exit(1)
 
-try:
-    from neo4j import GraphDatabase
-except ImportError:
-    print("ERROR: neo4j driver not installed.  Run: pip install neo4j")
-    sys.exit(1)
-
-try:
-    from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE
-except ImportError:
-    # Fallback defaults — override via CLI or config.py
-    NEO4J_URI      = "bolt://localhost:7687"
-    NEO4J_USER     = "neo4j"
-    NEO4J_PASSWORD = "neo4j-admin"
-    NEO4J_DATABASE = "neo4j"
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-DICOM_ROOT = Path("/data/Deep_Angiography/DICOM")
-BATCH_SIZE = 200   # instances per transaction; lower if RAM-constrained
+# ── Constants ──────────────────────────────────────────────────────────────────
+DICOM_ROOT    = Path("/data/Deep_Angiography/DICOM")
+SQLITE_DB     = Path("/data/Deep_Angiography/AngioVision/dicom_staging.db")
+PARSE_WORKERS = max(1, os.cpu_count() - 1)
+SQL_FLUSH     = 1000   # rows buffered before each SQLite commit
+SUBMIT_CHUNK  = 2000   # futures submitted per chunk — keeps queue shallow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,433 +52,501 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Schema ────────────────────────────────────────────────────────────────────
-SCHEMA_QUERIES = [
-    # Primary key / uniqueness constraints
-    "CREATE CONSTRAINT accession_unique   IF NOT EXISTS FOR (a:AccessionNumber) REQUIRE a.value IS UNIQUE",
-    "CREATE CONSTRAINT patient_id_unique  IF NOT EXISTS FOR (p:Patient)         REQUIRE p.patient_id IS UNIQUE",
-    "CREATE CONSTRAINT study_uid_unique   IF NOT EXISTS FOR (s:Study)           REQUIRE s.study_instance_uid IS UNIQUE",
-    "CREATE CONSTRAINT series_uid_unique  IF NOT EXISTS FOR (r:Series)          REQUIRE r.series_instance_uid IS UNIQUE",
-    "CREATE CONSTRAINT instance_uid_unique IF NOT EXISTS FOR (i:Instance)       REQUIRE i.sop_instance_uid IS UNIQUE",
-    # Lookup indexes
-    "CREATE INDEX study_accession_idx  IF NOT EXISTS FOR (s:Study)    ON (s.accession_number)",
-    "CREATE INDEX study_date_idx       IF NOT EXISTS FOR (s:Study)    ON (s.study_date)",
-    "CREATE INDEX instance_acq_date    IF NOT EXISTS FOR (i:Instance) ON (i.acquisition_date)",
-    "CREATE INDEX series_modality_idx  IF NOT EXISTS FOR (r:Series)   ON (r.modality)",
-    "CREATE INDEX patient_sex_idx      IF NOT EXISTS FOR (p:Patient)  ON (p.patient_sex)",
-]
+# ── SQLite schema ──────────────────────────────────────────────────────────────
+SQLITE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dicom_files (
 
-# ── Cypher upsert ─────────────────────────────────────────────────────────────
-INGEST_QUERY = """
-UNWIND $rows AS row
+    sop_instance_uid                     TEXT PRIMARY KEY,
 
-// ── AccessionNumber node (primary key anchor) ─────────────────
-MERGE (acc:AccessionNumber {value: row.accession_number})
+    accession_number                     TEXT,
+    study_instance_uid                   TEXT,
+    series_instance_uid                  TEXT,
 
-// ── Patient ───────────────────────────────────────────────────
-MERGE (p:Patient {patient_id: row.patient_id})
-SET   p.patient_name       = row.patient_name,
-      p.patient_sex        = row.patient_sex,
-      p.patient_age        = row.patient_age,
-      p.pregnancy_status   = row.pregnancy_status,
-      p.identity_removed   = row.patient_identity_removed,
-      p.deidentification   = row.deidentification_method
+    patient_id                           TEXT,
+    patient_name                         TEXT,
+    patient_sex                          TEXT,
+    patient_age                          TEXT,
+    pregnancy_status                     TEXT,
+    patient_identity_removed             TEXT,
+    deidentification_method              TEXT,
 
-// ── Study ─────────────────────────────────────────────────────
-MERGE (st:Study {study_instance_uid: row.study_instance_uid})
-SET   st.accession_number         = row.accession_number,
-      st.study_date               = row.study_date,
-      st.study_time               = row.study_time,
-      st.study_description        = row.study_description,
-      st.referring_physician      = row.referring_physician,
-      st.requested_procedure_desc = row.requested_procedure_description,
-      st.performed_step_date      = row.performed_procedure_step_start_date,
-      st.performed_step_time      = row.performed_procedure_step_start_time,
-      st.performed_step_desc      = row.performed_procedure_step_description
+    study_date                           TEXT,
+    study_time                           TEXT,
+    study_description                    TEXT,
+    referring_physician                  TEXT,
+    requested_procedure_description      TEXT,
+    performed_procedure_step_start_date  TEXT,
+    performed_procedure_step_start_time  TEXT,
+    performed_procedure_step_description TEXT,
 
-// ── Series ────────────────────────────────────────────────────
-MERGE (se:Series {series_instance_uid: row.series_instance_uid})
-SET   se.series_number      = row.series_number,
-      se.series_date        = row.series_date,
-      se.series_time        = row.series_time,
-      se.series_description = row.series_description,
-      se.modality           = row.modality,
-      se.protocol_name      = row.protocol_name,
-      se.acquisition_number = row.acquisition_number
+    series_date                          TEXT,
+    series_time                          TEXT,
+    series_description                   TEXT,
+    series_number                        TEXT,
+    acquisition_number                   TEXT,
+    modality                             TEXT,
+    protocol_name                        TEXT,
 
-// ── Instance ──────────────────────────────────────────────────
-MERGE (ins:Instance {sop_instance_uid: row.sop_instance_uid})
-SET   ins.sop_class_uid                    = row.sop_class_uid,
-      ins.instance_number                  = row.instance_number,
-      ins.image_type                       = row.image_type,
-      ins.acquisition_date                 = row.acquisition_date,
-      ins.acquisition_time                 = row.acquisition_time,
-      ins.content_date                     = row.content_date,
-      ins.content_time                     = row.content_time,
-      // Image geometry
-      ins.rows                             = toInteger(row.rows),
-      ins.columns                          = toInteger(row.columns),
-      ins.bits_allocated                   = toInteger(row.bits_allocated),
-      ins.bits_stored                      = toInteger(row.bits_stored),
-      ins.high_bit                         = toInteger(row.high_bit),
-      ins.samples_per_pixel                = toInteger(row.samples_per_pixel),
-      ins.pixel_representation             = row.pixel_representation,
-      ins.photometric_interpretation       = row.photometric_interpretation,
-      ins.number_of_frames                 = toInteger(row.number_of_frames),
-      ins.frame_count                      = toInteger(row.frame_count),
-      ins.frame_time                       = toFloat(row.frame_time),
-      ins.cine_rate                        = toInteger(row.cine_rate),
-      ins.images_in_acquisition            = toInteger(row.images_in_acquisition),
-      ins.representative_frame_number      = toInteger(row.representative_frame_number),
-      ins.start_trim                       = toInteger(row.start_trim),
-      ins.stop_trim                        = toInteger(row.stop_trim),
-      ins.recommended_display_frame_rate   = toInteger(row.recommended_display_frame_rate),
-      // Acquisition / radiation
-      ins.kvp                              = toFloat(row.kvp),
-      ins.exposure_time                    = toInteger(row.exposure_time),
-      ins.xray_tube_current                = toInteger(row.xray_tube_current),
-      ins.avg_pulse_width                  = toFloat(row.avg_pulse_width),
-      ins.radiation_setting                = row.radiation_setting,
-      ins.radiation_mode                   = row.radiation_mode,
-      ins.dose_product                     = toFloat(row.dose_product),
-      // Geometry
-      ins.distance_source_to_detector      = toFloat(row.distance_source_to_detector),
-      ins.distance_source_to_patient       = toFloat(row.distance_source_to_patient),
-      ins.est_magnification_factor         = toFloat(row.est_magnification_factor),
-      ins.intensifier_size                 = toFloat(row.intensifier_size),
-      ins.imager_pixel_spacing             = row.imager_pixel_spacing,
-      ins.focal_spots                      = row.focal_spots,
-      ins.positioner_motion                = row.positioner_motion,
-      ins.positioner_primary_angle         = toFloat(row.positioner_primary_angle),
-      ins.positioner_secondary_angle       = toFloat(row.positioner_secondary_angle),
-      ins.patient_position                 = row.patient_position,
-      // Display
-      ins.window_center                    = toFloat(row.window_center),
-      ins.window_width                     = toFloat(row.window_width),
-      ins.voi_lut_function                 = row.voi_lut_function,
-      ins.lossy_image_compression          = row.lossy_image_compression,
-      ins.longitudinal_temporal_info       = row.longitudinal_temporal_info_modified,
-      ins.pixel_intensity_relationship     = row.pixel_intensity_relationship,
-      // Contrast
-      ins.contrast_bolus_agent             = row.contrast_bolus_agent,
-      ins.contrast_bolus_ingredient        = row.contrast_bolus_ingredient,
-      // Equipment
-      ins.manufacturer                     = row.manufacturer,
-      ins.manufacturer_model               = row.manufacturer_model_name,
-      ins.station_name                     = row.station_name,
-      ins.software_versions                = row.software_versions,
-      ins.device_serial_number             = row.device_serial_number,
-      ins.detector_id                      = row.detector_id,
-      ins.detector_description             = row.detector_description,
-      ins.specific_character_set           = row.specific_character_set,
-      // File location
-      ins.source_file                      = row.source_file,
-      ins.source_path                      = row.source_path
+    sop_class_uid                        TEXT,
+    instance_number                      TEXT,
+    image_type                           TEXT,
+    acquisition_date                     TEXT,
+    acquisition_time                     TEXT,
+    content_date                         TEXT,
+    content_time                         TEXT,
 
-// ── Relationships ─────────────────────────────────────────────
-MERGE (p)-[:UNDERWENT]->(st)
-MERGE (acc)-[:BELONGS_TO]->(st)
-MERGE (st)-[:HAS_SERIES]->(se)
-MERGE (se)-[:HAS_INSTANCE]->(ins)
+    rows                                 TEXT,
+    columns                              TEXT,
+    bits_allocated                       TEXT,
+    bits_stored                          TEXT,
+    high_bit                             TEXT,
+    samples_per_pixel                    TEXT,
+    pixel_representation                 TEXT,
+    photometric_interpretation           TEXT,
+    number_of_frames                     TEXT,
+    frame_count                          TEXT,
+    frame_time                           TEXT,
+    cine_rate                            TEXT,
+    images_in_acquisition                TEXT,
+    representative_frame_number          TEXT,
+    start_trim                           TEXT,
+    stop_trim                            TEXT,
+    recommended_display_frame_rate       TEXT,
+
+    kvp                                  TEXT,
+    exposure_time                        TEXT,
+    xray_tube_current                    TEXT,
+    avg_pulse_width                      TEXT,
+    radiation_setting                    TEXT,
+    radiation_mode                       TEXT,
+    dose_product                         TEXT,
+
+    distance_source_to_detector          TEXT,
+    distance_source_to_patient           TEXT,
+    est_magnification_factor             TEXT,
+    intensifier_size                     TEXT,
+    imager_pixel_spacing                 TEXT,
+    focal_spots                          TEXT,
+    positioner_motion                    TEXT,
+    positioner_primary_angle             TEXT,
+    positioner_secondary_angle           TEXT,
+    patient_position                     TEXT,
+
+    window_center                        TEXT,
+    window_width                         TEXT,
+    voi_lut_function                     TEXT,
+    lossy_image_compression              TEXT,
+    longitudinal_temporal_info_modified  TEXT,
+    pixel_intensity_relationship         TEXT,
+
+    contrast_bolus_agent                 TEXT,
+    contrast_bolus_ingredient            TEXT,
+
+    manufacturer                         TEXT,
+    manufacturer_model_name              TEXT,
+    station_name                         TEXT,
+    software_versions                    TEXT,
+    device_serial_number                 TEXT,
+    detector_id                          TEXT,
+    detector_description                 TEXT,
+    specific_character_set               TEXT,
+
+    source_file                          TEXT,
+    source_path                          TEXT,
+
+    parse_error                          TEXT,
+    sqlite_inserted_at                   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_accession_number   ON dicom_files (accession_number);
+CREATE INDEX IF NOT EXISTS idx_patient_id         ON dicom_files (patient_id);
+CREATE INDEX IF NOT EXISTS idx_study_uid          ON dicom_files (study_instance_uid);
+CREATE INDEX IF NOT EXISTS idx_series_uid         ON dicom_files (series_instance_uid);
+CREATE INDEX IF NOT EXISTS idx_modality           ON dicom_files (modality);
+CREATE INDEX IF NOT EXISTS idx_series_description ON dicom_files (series_description);
+CREATE INDEX IF NOT EXISTS idx_frame_count        ON dicom_files (frame_count);
+CREATE INDEX IF NOT EXISTS idx_source_path        ON dicom_files (source_path);
+CREATE INDEX IF NOT EXISTS idx_patient_sex        ON dicom_files (patient_sex);
+CREATE INDEX IF NOT EXISTS idx_study_date         ON dicom_files (study_date);
+CREATE INDEX IF NOT EXISTS idx_acquisition_date   ON dicom_files (acquisition_date);
+CREATE INDEX IF NOT EXISTS idx_parse_error        ON dicom_files (parse_error)
+    WHERE parse_error IS NOT NULL;
 """
 
-# ── DICOM tag extraction ───────────────────────────────────────────────────────
-def safe_str(ds, tag_name: str, default: str = "") -> str:
-    """Safely get a DICOM tag value as a clean string."""
+ALL_COLUMNS = [
+    "sop_instance_uid", "accession_number", "study_instance_uid",
+    "series_instance_uid", "patient_id", "patient_name", "patient_sex",
+    "patient_age", "pregnancy_status", "patient_identity_removed",
+    "deidentification_method", "study_date", "study_time", "study_description",
+    "referring_physician", "requested_procedure_description",
+    "performed_procedure_step_start_date", "performed_procedure_step_start_time",
+    "performed_procedure_step_description", "series_date", "series_time",
+    "series_description", "series_number", "acquisition_number", "modality",
+    "protocol_name", "sop_class_uid", "instance_number", "image_type",
+    "acquisition_date", "acquisition_time", "content_date", "content_time",
+    "rows", "columns", "bits_allocated", "bits_stored", "high_bit",
+    "samples_per_pixel", "pixel_representation", "photometric_interpretation",
+    "number_of_frames", "frame_count", "frame_time", "cine_rate",
+    "images_in_acquisition", "representative_frame_number", "start_trim",
+    "stop_trim", "recommended_display_frame_rate", "kvp", "exposure_time",
+    "xray_tube_current", "avg_pulse_width", "radiation_setting", "radiation_mode",
+    "dose_product", "distance_source_to_detector", "distance_source_to_patient",
+    "est_magnification_factor", "intensifier_size", "imager_pixel_spacing",
+    "focal_spots", "positioner_motion", "positioner_primary_angle",
+    "positioner_secondary_angle", "patient_position", "window_center",
+    "window_width", "voi_lut_function", "lossy_image_compression",
+    "longitudinal_temporal_info_modified", "pixel_intensity_relationship",
+    "contrast_bolus_agent", "contrast_bolus_ingredient", "manufacturer",
+    "manufacturer_model_name", "station_name", "software_versions",
+    "device_serial_number", "detector_id", "detector_description",
+    "specific_character_set", "source_file", "source_path",
+    "parse_error", "sqlite_inserted_at",
+]
+
+INSERT_SQL = (
+    f"INSERT OR IGNORE INTO dicom_files ({', '.join(ALL_COLUMNS)}) "
+    f"VALUES ({', '.join(['?'] * len(ALL_COLUMNS))})"
+)
+
+
+# ── DICOM parsing (runs in subprocess) ────────────────────────────────────────
+def safe_str(ds, tag_name: str) -> str:
     try:
         val = getattr(ds, tag_name, None)
         if val is None:
-            return default
-        # Handle sequences — skip them
+            return ""
+        if hasattr(val, "sequence_of_items"):
+            return ""
         if hasattr(val, "__iter__") and not isinstance(val, str):
-            try:
-                return str(val).strip()
-            except Exception:
-                return default
+            return str(val).strip()
         return str(val).strip()
     except Exception:
-        return default
+        return ""
 
-def extract_metadata(dcm_path: Path) -> Optional[dict]:
-    """Read a .dcm file and return a flat metadata dict, or None on failure."""
+
+def parse_dicom_file(path_str: str) -> Optional[dict]:
+    """
+    Parse one .dcm file and return a flat metadata dict.
+    Module-level function — required for ProcessPoolExecutor pickle compatibility.
+
+    Returns:
+        dict with parse_error=None  — good row
+        dict with parse_error set   — unreadable file stored as audit stub
+        None                        — not DICOM or no SOPInstanceUID; skip silently
+    """
+    path = Path(path_str)
+    now  = datetime.datetime.utcnow().isoformat()
+
     try:
-        ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True, force=False)
+        ds = pydicom.dcmread(path_str, stop_before_pixels=True, force=False)
     except InvalidDicomError:
-        log.debug(f"Not a valid DICOM file (skipping): {dcm_path}")
         return None
-    except Exception as e:
-        log.warning(f"Failed to read {dcm_path}: {e}")
+    except Exception as exc:
+        return {col: None for col in ALL_COLUMNS} | {
+            "sop_instance_uid":   f"UNREADABLE_{path.stem[:40]}",
+            "source_file":        path.name,
+            "source_path":        path_str,
+            "parse_error":        str(exc)[:500],
+            "sqlite_inserted_at": now,
+        }
+
+    sop_uid = safe_str(ds, "SOPInstanceUID")
+    if not sop_uid:
         return None
 
-    # Derive accession number — mandatory primary key
-    accession = safe_str(ds, "AccessionNumber")
-    if not accession:
-        log.debug(f"No AccessionNumber in {dcm_path.name} — skipping")
-        return None
+    accession = safe_str(ds, "AccessionNumber") or f"MISSING_{sop_uid[:12]}"
 
-    # Frame count: prefer NumberOfFrames tag, fallback to 1
     try:
         frame_count = int(ds.NumberOfFrames)
     except Exception:
         frame_count = 1
 
     return {
-        # ── Keys / UIDs
-        "accession_number":           accession,
-        "sop_instance_uid":           safe_str(ds, "SOPInstanceUID"),
-        "sop_class_uid":              safe_str(ds, "SOPClassUID"),
-        "study_instance_uid":         safe_str(ds, "StudyInstanceUID"),
-        "series_instance_uid":        safe_str(ds, "SeriesInstanceUID"),
-        # ── Patient
-        "patient_id":                 safe_str(ds, "PatientID"),
-        "patient_name":               safe_str(ds, "PatientName"),
-        "patient_sex":                safe_str(ds, "PatientSex"),
-        "patient_age":                safe_str(ds, "PatientAge"),
-        "pregnancy_status":           safe_str(ds, "PregnancyStatus"),
-        "patient_identity_removed":   safe_str(ds, "PatientIdentityRemoved"),
-        "deidentification_method":    safe_str(ds, "DeidentificationMethod"),
-        # ── Study
-        "study_date":                 safe_str(ds, "StudyDate"),
-        "study_time":                 safe_str(ds, "StudyTime"),
-        "study_description":          safe_str(ds, "StudyDescription"),
-        "referring_physician":        safe_str(ds, "ReferringPhysicianName"),
-        "requested_procedure_description": safe_str(ds, "RequestedProcedureDescription"),
+        "sop_instance_uid":                    sop_uid,
+        "accession_number":                    accession,
+        "study_instance_uid":                  safe_str(ds, "StudyInstanceUID"),
+        "series_instance_uid":                 safe_str(ds, "SeriesInstanceUID"),
+        "patient_id":                          safe_str(ds, "PatientID"),
+        "patient_name":                        safe_str(ds, "PatientName"),
+        "patient_sex":                         safe_str(ds, "PatientSex"),
+        "patient_age":                         safe_str(ds, "PatientAge"),
+        "pregnancy_status":                    safe_str(ds, "PregnancyStatus"),
+        "patient_identity_removed":            safe_str(ds, "PatientIdentityRemoved"),
+        "deidentification_method":             safe_str(ds, "DeidentificationMethod"),
+        "study_date":                          safe_str(ds, "StudyDate"),
+        "study_time":                          safe_str(ds, "StudyTime"),
+        "study_description":                   safe_str(ds, "StudyDescription"),
+        "referring_physician":                 safe_str(ds, "ReferringPhysicianName"),
+        "requested_procedure_description":     safe_str(ds, "RequestedProcedureDescription"),
         "performed_procedure_step_start_date": safe_str(ds, "PerformedProcedureStepStartDate"),
         "performed_procedure_step_start_time": safe_str(ds, "PerformedProcedureStepStartTime"),
-        "performed_procedure_step_description": safe_str(ds, "PerformedProcedureStepDescription"),
-        # ── Series
-        "series_date":                safe_str(ds, "SeriesDate"),
-        "series_time":                safe_str(ds, "SeriesTime"),
-        "series_description":         safe_str(ds, "SeriesDescription"),
-        "series_number":              safe_str(ds, "SeriesNumber"),
-        "acquisition_number":         safe_str(ds, "AcquisitionNumber"),
-        "modality":                   safe_str(ds, "Modality"),
-        "protocol_name":              safe_str(ds, "ProtocolName"),
-        # ── Instance / acquisition
-        "instance_number":            safe_str(ds, "InstanceNumber"),
-        "image_type":                 safe_str(ds, "ImageType"),
-        "acquisition_date":           safe_str(ds, "AcquisitionDate"),
-        "acquisition_time":           safe_str(ds, "AcquisitionTime"),
-        "content_date":               safe_str(ds, "ContentDate"),
-        "content_time":               safe_str(ds, "ContentTime"),
-        # ── Image geometry
-        "rows":                       safe_str(ds, "Rows"),
-        "columns":                    safe_str(ds, "Columns"),
-        "bits_allocated":             safe_str(ds, "BitsAllocated"),
-        "bits_stored":                safe_str(ds, "BitsStored"),
-        "high_bit":                   safe_str(ds, "HighBit"),
-        "samples_per_pixel":          safe_str(ds, "SamplesPerPixel"),
-        "pixel_representation":       safe_str(ds, "PixelRepresentation"),
-        "photometric_interpretation": safe_str(ds, "PhotometricInterpretation"),
-        "number_of_frames":           safe_str(ds, "NumberOfFrames") or str(frame_count),
-        "frame_count":                str(frame_count),
-        "frame_time":                 safe_str(ds, "FrameTime"),
-        "cine_rate":                  safe_str(ds, "CineRate"),
-        "images_in_acquisition":      safe_str(ds, "ImagesInAcquisition"),
-        "representative_frame_number":safe_str(ds, "RepresentativeFrameNumber"),
-        "start_trim":                 safe_str(ds, "StartTrim"),
-        "stop_trim":                  safe_str(ds, "StopTrim"),
-        "recommended_display_frame_rate": safe_str(ds, "RecommendedDisplayFrameRate"),
-        # ── Radiation / acquisition parameters
-        "kvp":                        safe_str(ds, "KVP"),
-        "exposure_time":              safe_str(ds, "ExposureTime"),
-        "xray_tube_current":          safe_str(ds, "XRayTubeCurrent"),
-        "avg_pulse_width":            safe_str(ds, "AveragePulseWidth"),
-        "radiation_setting":          safe_str(ds, "RadiationSetting"),
-        "radiation_mode":             safe_str(ds, "RadiationMode"),
-        "dose_product":               safe_str(ds, "ImageAndFluoroscopyAreaDoseProduct"),
-        # ── Geometry
-        "distance_source_to_detector":  safe_str(ds, "DistanceSourceToDetector"),
-        "distance_source_to_patient":   safe_str(ds, "DistanceSourceToPatient"),
-        "est_magnification_factor":     safe_str(ds, "EstimatedRadiographicMagnificationFactor"),
-        "intensifier_size":             safe_str(ds, "IntensifierSize"),
-        "imager_pixel_spacing":         safe_str(ds, "ImagerPixelSpacing"),
-        "focal_spots":                  safe_str(ds, "FocalSpots"),
-        "positioner_motion":            safe_str(ds, "PositionerMotion"),
-        "positioner_primary_angle":     safe_str(ds, "PositionerPrimaryAngle"),
-        "positioner_secondary_angle":   safe_str(ds, "PositionerSecondaryAngle"),
-        "patient_position":             safe_str(ds, "PatientPosition"),
-        # ── Display / pixel
-        "window_center":                safe_str(ds, "WindowCenter"),
-        "window_width":                 safe_str(ds, "WindowWidth"),
-        "voi_lut_function":             safe_str(ds, "VOILUTFunction"),
-        "lossy_image_compression":      safe_str(ds, "LossyImageCompression"),
+        "performed_procedure_step_description":safe_str(ds, "PerformedProcedureStepDescription"),
+        "series_date":                         safe_str(ds, "SeriesDate"),
+        "series_time":                         safe_str(ds, "SeriesTime"),
+        "series_description":                  safe_str(ds, "SeriesDescription"),
+        "series_number":                       safe_str(ds, "SeriesNumber"),
+        "acquisition_number":                  safe_str(ds, "AcquisitionNumber"),
+        "modality":                            safe_str(ds, "Modality"),
+        "protocol_name":                       safe_str(ds, "ProtocolName"),
+        "sop_class_uid":                       safe_str(ds, "SOPClassUID"),
+        "instance_number":                     safe_str(ds, "InstanceNumber"),
+        "image_type":                          safe_str(ds, "ImageType"),
+        "acquisition_date":                    safe_str(ds, "AcquisitionDate"),
+        "acquisition_time":                    safe_str(ds, "AcquisitionTime"),
+        "content_date":                        safe_str(ds, "ContentDate"),
+        "content_time":                        safe_str(ds, "ContentTime"),
+        "rows":                                safe_str(ds, "Rows"),
+        "columns":                             safe_str(ds, "Columns"),
+        "bits_allocated":                      safe_str(ds, "BitsAllocated"),
+        "bits_stored":                         safe_str(ds, "BitsStored"),
+        "high_bit":                            safe_str(ds, "HighBit"),
+        "samples_per_pixel":                   safe_str(ds, "SamplesPerPixel"),
+        "pixel_representation":                safe_str(ds, "PixelRepresentation"),
+        "photometric_interpretation":          safe_str(ds, "PhotometricInterpretation"),
+        "number_of_frames":                    safe_str(ds, "NumberOfFrames") or str(frame_count),
+        "frame_count":                         str(frame_count),
+        "frame_time":                          safe_str(ds, "FrameTime"),
+        "cine_rate":                           safe_str(ds, "CineRate"),
+        "images_in_acquisition":               safe_str(ds, "ImagesInAcquisition"),
+        "representative_frame_number":         safe_str(ds, "RepresentativeFrameNumber"),
+        "start_trim":                          safe_str(ds, "StartTrim"),
+        "stop_trim":                           safe_str(ds, "StopTrim"),
+        "recommended_display_frame_rate":      safe_str(ds, "RecommendedDisplayFrameRate"),
+        "kvp":                                 safe_str(ds, "KVP"),
+        "exposure_time":                       safe_str(ds, "ExposureTime"),
+        "xray_tube_current":                   safe_str(ds, "XRayTubeCurrent"),
+        "avg_pulse_width":                     safe_str(ds, "AveragePulseWidth"),
+        "radiation_setting":                   safe_str(ds, "RadiationSetting"),
+        "radiation_mode":                      safe_str(ds, "RadiationMode"),
+        "dose_product":                        safe_str(ds, "ImageAndFluoroscopyAreaDoseProduct"),
+        "distance_source_to_detector":         safe_str(ds, "DistanceSourceToDetector"),
+        "distance_source_to_patient":          safe_str(ds, "DistanceSourceToPatient"),
+        "est_magnification_factor":            safe_str(ds, "EstimatedRadiographicMagnificationFactor"),
+        "intensifier_size":                    safe_str(ds, "IntensifierSize"),
+        "imager_pixel_spacing":                safe_str(ds, "ImagerPixelSpacing"),
+        "focal_spots":                         safe_str(ds, "FocalSpots"),
+        "positioner_motion":                   safe_str(ds, "PositionerMotion"),
+        "positioner_primary_angle":            safe_str(ds, "PositionerPrimaryAngle"),
+        "positioner_secondary_angle":          safe_str(ds, "PositionerSecondaryAngle"),
+        "patient_position":                    safe_str(ds, "PatientPosition"),
+        "window_center":                       safe_str(ds, "WindowCenter"),
+        "window_width":                        safe_str(ds, "WindowWidth"),
+        "voi_lut_function":                    safe_str(ds, "VOILUTFunction"),
+        "lossy_image_compression":             safe_str(ds, "LossyImageCompression"),
         "longitudinal_temporal_info_modified": safe_str(ds, "LongitudinalTemporalInformationModified"),
-        "pixel_intensity_relationship": safe_str(ds, "PixelIntensityRelationship"),
-        # ── Contrast
-        "contrast_bolus_agent":         safe_str(ds, "ContrastBolusAgent"),
-        "contrast_bolus_ingredient":    safe_str(ds, "ContrastBolusIngredient"),
-        # ── Equipment
-        "manufacturer":                 safe_str(ds, "Manufacturer"),
-        "manufacturer_model_name":      safe_str(ds, "ManufacturerModelName"),
-        "station_name":                 safe_str(ds, "StationName"),
-        "software_versions":            safe_str(ds, "SoftwareVersions"),
-        "device_serial_number":         safe_str(ds, "DeviceSerialNumber"),
-        "detector_id":                  safe_str(ds, "DetectorID"),
-        "detector_description":         safe_str(ds, "DetectorDescription"),
-        "specific_character_set":       safe_str(ds, "SpecificCharacterSet"),
-        # ── File location
-        "source_file":                  dcm_path.name,
-        "source_path":                  str(dcm_path),
+        "pixel_intensity_relationship":        safe_str(ds, "PixelIntensityRelationship"),
+        "contrast_bolus_agent":                safe_str(ds, "ContrastBolusAgent"),
+        "contrast_bolus_ingredient":           safe_str(ds, "ContrastBolusIngredient"),
+        "manufacturer":                        safe_str(ds, "Manufacturer"),
+        "manufacturer_model_name":             safe_str(ds, "ManufacturerModelName"),
+        "station_name":                        safe_str(ds, "StationName"),
+        "software_versions":                   safe_str(ds, "SoftwareVersions"),
+        "device_serial_number":                safe_str(ds, "DeviceSerialNumber"),
+        "detector_id":                         safe_str(ds, "DetectorID"),
+        "detector_description":                safe_str(ds, "DetectorDescription"),
+        "specific_character_set":              safe_str(ds, "SpecificCharacterSet"),
+        "source_file":                         path.name,
+        "source_path":                         path_str,
+        "parse_error":                         None,
+        "sqlite_inserted_at":                  now,
     }
+
 
 # ── File discovery ─────────────────────────────────────────────────────────────
 def iter_dicom_files(root: Path):
-    """Yield all .dcm files (case-insensitive) under root."""
+    """Yield absolute path strings for every .dcm file under root."""
     for dirpath, _, filenames in os.walk(str(root)):
         for fname in filenames:
             if fname.lower().endswith(".dcm"):
-                yield Path(dirpath) / fname
+                yield str(Path(dirpath) / fname)
 
-# ── Neo4j helpers ─────────────────────────────────────────────────────────────
-def apply_schema(session):
-    for q in SCHEMA_QUERIES:
-        try:
-            session.run(q)
-        except Exception as e:
-            log.warning(f"Schema skipped ({e}): {q[:70]}")
-    log.info("Schema / constraints applied.")
 
-def ingest_batch(session, batch: list[dict]):
-    session.run(INGEST_QUERY, rows=batch)
+# ── Chunked iterator ───────────────────────────────────────────────────────────
+def chunked(iterable, size: int):
+    """Yield successive fixed-size chunks from any iterable."""
+    it = iter(iterable)
+    while True:
+        chunk = list(itertools.islice(it, size))
+        if not chunk:
+            break
+        yield chunk
 
-FATAL_CODES = {
-    "Neo.ClientError.Security.Unauthorized",
-    "Neo.ClientError.Security.AuthenticationRateLimit",
-    "Neo.ClientError.Security.AuthorizationExpired",
-    "Neo.ClientError.Security.TokenExpired",
-}
+
+# ── SQLite helpers ─────────────────────────────────────────────────────────────
+def open_db(db_path: Path) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db_path), check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    con.executescript(SQLITE_SCHEMA)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA cache_size=-65536")
+    con.commit()
+    log.info(f"SQLite DB opened: {db_path}")
+    return con
+
+
+def flush_batch(con: sqlite3.Connection, batch: list[dict]) -> tuple[int, int]:
+    """INSERT OR IGNORE batch. Returns (inserted, ignored)."""
+    if not batch:
+        return 0, 0
+    before = con.execute("SELECT COUNT(*) FROM dicom_files").fetchone()[0]
+    con.executemany(INSERT_SQL, [[r.get(col) for col in ALL_COLUMNS] for r in batch])
+    con.commit()
+    after   = con.execute("SELECT COUNT(*) FROM dicom_files").fetchone()[0]
+    new     = after - before
+    ignored = len(batch) - new
+    return new, ignored
+
+
+def db_summary(con: sqlite3.Connection):
+    total       = con.execute("SELECT COUNT(*) FROM dicom_files").fetchone()[0]
+    with_error  = con.execute("SELECT COUNT(*) FROM dicom_files WHERE parse_error IS NOT NULL").fetchone()[0]
+    missing_acc = con.execute("SELECT COUNT(*) FROM dicom_files WHERE accession_number LIKE 'MISSING_%'").fetchone()[0]
+    log.info("─" * 60)
+    log.info(f"Total rows in DB    : {total:>10,}")
+    log.info(f"Parse errors        : {with_error:>10,}")
+    log.info(f"Missing accession   : {missing_acc:>10,}")
+    log.info("─" * 60)
+    log.info("Modality breakdown:")
+    for r in con.execute(
+        "SELECT modality, COUNT(*) AS n FROM dicom_files "
+        "WHERE parse_error IS NULL GROUP BY modality ORDER BY n DESC LIMIT 15"
+    ).fetchall():
+        log.info(f"  {(r['modality'] or 'NULL'):12s}  {r['n']:>10,}")
+    log.info("─" * 60)
+
 
 # ── Main ───────────────────────────────────────────────────────────────────────
-def main(dicom_root: Path, uri: str, user: str, password: str,
-         database: str, batch_size: int, dry_run: bool, limit: int):
+def main():
+    parser = argparse.ArgumentParser(
+        description="Ingest DICOM metadata into SQLite (parallel, resumable).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python dicom_ingest_sqlite.py
+  python dicom_ingest_sqlite.py --workers 26
+  python dicom_ingest_sqlite.py --root /data/DICOM --db /data/meta.db
+  python dicom_ingest_sqlite.py --dry-run
+  python dicom_ingest_sqlite.py --limit 5000
+  python dicom_ingest_sqlite.py --summary-only
+        """,
+    )
+    parser.add_argument("--root",    default=str(DICOM_ROOT))
+    parser.add_argument("--db",      default=str(SQLITE_DB))
+    parser.add_argument("--workers", type=int, default=PARSE_WORKERS)
+    parser.add_argument("--flush",   type=int, default=SQL_FLUSH)
+    parser.add_argument("--chunk",   type=int, default=SUBMIT_CHUNK,
+                        help="Futures submitted per chunk (default: 2000)")
+    parser.add_argument("--limit",   type=int, default=0)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--summary-only", action="store_true")
+    args = parser.parse_args()
 
-    log.info(f"DICOM root: {dicom_root}")
-    log.info(f"Neo4j:      {uri}  db={database}")
-    log.info(f"Batch size: {batch_size}")
-    log.info(f"Dry run:    {dry_run}  |  Limit: {limit if limit else 'none'}")
+    dicom_root = Path(args.root)
+    db_path    = Path(args.db)
+
+    log.info(f"DICOM root : {dicom_root}")
+    log.info(f"SQLite DB  : {db_path}")
+    log.info(f"Workers    : {args.workers}")
+    log.info(f"Flush size : {args.flush}")
+    log.info(f"Chunk size : {args.chunk}")
+    log.info(f"Limit      : {args.limit or 'none'}")
+    log.info(f"Dry run    : {args.dry_run}")
+
+    if args.summary_only:
+        db_summary(open_db(db_path))
+        return
 
     if not dicom_root.exists():
         log.error(f"DICOM root does not exist: {dicom_root}")
         raise SystemExit(1)
 
-    if dry_run:
-        log.info("Dry run — scanning files only, no writes.")
-        count = 0
-        for p in iter_dicom_files(dicom_root):
-            meta = extract_metadata(p)
-            if meta:
-                count += 1
-                if limit and count >= limit:
-                    break
-        log.info(f"Dry run complete. Valid DICOM files found (up to limit): {count:,}")
+    # ── Walk files ─────────────────────────────────────────────────────
+    log.info("Collecting .dcm file paths...")
+    all_paths = list(iter_dicom_files(dicom_root))
+    if args.limit:
+        all_paths = all_paths[: args.limit]
+    total = len(all_paths)
+    log.info(f"Found {total:,} .dcm files")
+
+    if total == 0:
+        log.warning("No .dcm files found — nothing to do.")
         return
 
-    # Verify Neo4j connection
-    log.info("Verifying Neo4j connection...")
-    try:
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-        driver.verify_connectivity()
-        log.info("Neo4j connection OK.")
-    except Exception as e:
-        log.error(f"Cannot connect to Neo4j: {e}")
-        raise SystemExit(1)
+    con = open_db(db_path) if not args.dry_run else None
 
-    with driver.session(database=database) as session:
-        apply_schema(session)
+    inserted  = 0
+    duplicate = 0
+    skipped   = 0
+    errored   = 0
+    buffer: list[dict] = []
 
-        batch    = []
-        ingested = 0
-        skipped  = 0
-        errors   = 0
+    # ── Key fix: submit in chunks so tqdm starts immediately ───────────
+    # Submitting all 816K futures at once blocks the main thread for
+    # tens of seconds before as_completed() can yield anything.
+    # Chunked submission keeps the queue shallow and tqdm responsive.
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        with tqdm(total=total, unit="file", desc="Ingesting DICOM",
+                  dynamic_ncols=True) as pbar:
 
-        with tqdm(unit="file", dynamic_ncols=True, desc="Ingesting DICOM") as pbar:
-            for dcm_path in iter_dicom_files(dicom_root):
-                meta = extract_metadata(dcm_path)
-                if meta is None:
-                    skipped += 1
-                    pbar.update(1)
-                    continue
+            for path_chunk in chunked(all_paths, args.chunk):
 
-                batch.append(meta)
+                # Submit one chunk of futures
+                futures = {pool.submit(parse_dicom_file, p): p
+                           for p in path_chunk}
 
-                if len(batch) >= batch_size:
+                # Drain this chunk before submitting the next
+                for fut in as_completed(futures):
                     try:
-                        ingest_batch(session, batch)
-                        ingested += len(batch)
+                        result = fut.result()
                     except Exception as exc:
-                        err_str = str(exc)
-                        if any(code in err_str for code in FATAL_CODES):
-                            log.error(f"FATAL auth error — stopping: {exc}")
-                            driver.close()
-                            raise SystemExit(1)
-                        log.error(f"Batch failed ({len(batch)} rows): {exc}")
-                        errors += len(batch)
-                    batch = []
+                        log.warning(f"Worker crashed: {exc}")
+                        skipped += 1
+                        pbar.update(1)
+                        continue
 
-                pbar.update(1)
-                pbar.set_postfix(ingested=ingested, skipped=skipped, errors=errors)
+                    if result is None:
+                        skipped += 1
+                    else:
+                        if result.get("parse_error"):
+                            errored += 1
+                        if not args.dry_run:
+                            buffer.append(result)
 
-                if limit and (ingested + errors) >= limit:
-                    log.info(f"Reached limit of {limit} — stopping.")
-                    break
+                    # Flush SQLite buffer when full
+                    if con and len(buffer) >= args.flush:
+                        new, ign = flush_batch(con, buffer)
+                        inserted  += new
+                        duplicate += ign
+                        buffer = []
 
-            # Flush remainder
-            if batch:
-                try:
-                    ingest_batch(session, batch)
-                    ingested += len(batch)
-                except Exception as exc:
-                    log.error(f"Final batch failed: {exc}")
-                    errors += len(batch)
+                    pbar.update(1)
+                    pbar.set_postfix(
+                        ins=inserted,
+                        dup=duplicate,
+                        skip=skipped,
+                        err=errored,
+                    )
 
-    driver.close()
+    # ── Final flush ────────────────────────────────────────────────────
+    if con and buffer:
+        new, ign = flush_batch(con, buffer)
+        inserted  += new
+        duplicate += ign
 
     log.info("─" * 60)
-    log.info(f"Done.  Ingested: {ingested:,}  |  Skipped: {skipped:,}  |  Errors: {errors:,}")
-    log.info("")
-    log.info("Sample Cypher queries to try in Neo4j Browser:")
-    log.info("")
-    log.info("  // All studies for a given AccessionNumber")
-    log.info("  MATCH (acc:AccessionNumber {value:'0BrnGBKrkm'})-[:BELONGS_TO]->(st:Study)")
-    log.info("        -[:HAS_SERIES]->(se:Series)-[:HAS_INSTANCE]->(i:Instance)")
-    log.info("  RETURN acc, st, se, i LIMIT 25")
-    log.info("")
-    log.info("  // Instance count per modality")
-    log.info("  MATCH (se:Series)-[:HAS_INSTANCE]->(i:Instance)")
-    log.info("  RETURN se.modality, count(i) AS instances ORDER BY instances DESC")
-    log.info("")
-    log.info("  // DSA series with high frame counts")
-    log.info("  MATCH (se:Series)-[:HAS_INSTANCE]->(i:Instance)")
-    log.info("  WHERE se.series_description CONTAINS 'DSA' AND i.frame_count > 20")
-    log.info("  RETURN se.series_description, i.frame_count, i.source_path")
-    log.info("  ORDER BY i.frame_count DESC LIMIT 50")
-    log.info("")
-    log.info("  // Patient → Study → Series tree")
-    log.info("  MATCH (p:Patient)-[:UNDERWENT]->(st:Study)-[:HAS_SERIES]->(se:Series)")
-    log.info("  RETURN p.patient_id, st.study_description, collect(se.series_description)")
-    log.info("  LIMIT 20")
+    log.info(f"Files found         : {total:>10,}")
+    log.info(f"Rows inserted       : {inserted:>10,}")
+    log.info(f"Duplicates skipped  : {duplicate:>10,}  (INSERT OR IGNORE)")
+    log.info(f"No-UID skipped      : {skipped:>10,}  (not DICOM or no SOPInstanceUID)")
+    log.info(f"Parse errors stored : {errored:>10,}  (stub rows with parse_error set)")
+    if args.dry_run:
+        log.info("(dry run — nothing written to SQLite)")
+    elif con:
+        db_summary(con)
+        con.close()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Ingest DICOM metadata into Neo4j.")
-    parser.add_argument("--root",     type=str, default=str(DICOM_ROOT),   help="Root DICOM directory.")
-    parser.add_argument("--uri",      type=str, default=NEO4J_URI,         help="Neo4j bolt URI.")
-    parser.add_argument("--user",     type=str, default=NEO4J_USER,        help="Neo4j username.")
-    parser.add_argument("--password", type=str, default=NEO4J_PASSWORD,    help="Neo4j password.")
-    parser.add_argument("--database", type=str, default=NEO4J_DATABASE,    help="Neo4j database name.")
-    parser.add_argument("--batch",    type=int, default=BATCH_SIZE,        help="Instances per transaction.")
-    parser.add_argument("--limit",    type=int, default=0,                 help="Stop after N files (0 = no limit).")
-    parser.add_argument("--dry-run",  action="store_true",                 help="Scan & parse only, no Neo4j writes.")
-    args = parser.parse_args()
-
-    main(
-        dicom_root = Path(args.root),
-        uri        = args.uri,
-        user       = args.user,
-        password   = args.password,
-        database   = args.database,
-        batch_size = args.batch,
-        dry_run    = args.dry_run,
-        limit      = args.limit,
-    )
+    main()

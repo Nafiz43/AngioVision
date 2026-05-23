@@ -50,12 +50,12 @@ from tqdm import tqdm
 # =============================================================================
 # CONFIGURATION — edit these variables
 # =============================================================================
-CSV_PATH       = "/data/Deep_Angiography/Reports/Report_List_v01_01_augmented.csv"
+CSV_PATH       = "/data/Deep_Angiography/Reports/Report_List_v01_01_merged_raw.csv"
 NUM_REPORTS_TO_CLEAN = None    # number of reports to clean (None = all)
 NUM_REPORTS_IN_DOCX  = 20     # number of reports to show in side-by-side DOCX
 REPORT_COLUMN  = "radrpt"     # column name holding report text; None = auto-detect
 OUTPUT_DOCX    = "/data/Deep_Angiography/Reports/report_comparison.docx"
-OUTPUT_CSV     = "/data/Deep_Angiography/Reports/Cleaned_Report_List_v01_01_augmented.csv"
+OUTPUT_CSV     = "/data/Deep_Angiography/Reports/Report_List_v01_01_cleaned.csv"
 
 # Parallelism: None = use os.cpu_count(); otherwise set an integer.
 # Presidio + spaCy are CPU-bound and release the GIL poorly, so processes win over threads.

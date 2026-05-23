@@ -10,10 +10,18 @@ overlap = set(f1['AccessionNumber']).intersection(set(f2['AccessionNumber']))
 print(f"F1 total: {len(f1)}")
 print(f"F2 total: {len(f2)}")
 print(f"Overlapping accessions: {len(overlap)}")
-c=0
+
 if overlap:
     print("\nOverlapping AccessionNumbers:")
-    
     for acc in sorted(overlap):
-        c+=1
-    print(f"  {acc}")
+        print(f"  {acc}")
+
+# Remove overlapping accessions from f1
+f1_filtered = f1[~f1['AccessionNumber'].isin(overlap)]
+
+print(f"\nF1 after removing overlaps: {len(f1_filtered)}")
+
+# Save result
+output_path = '/data/Deep_Angiography/DICOM-metadata-stats/accession_data_request.csv'
+f1_filtered.to_csv(output_path, index=False)
+print(f"Saved to: {output_path}")
