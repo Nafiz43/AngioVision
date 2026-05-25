@@ -6,6 +6,10 @@ Serves the browser UI and exposes a REST API that bridges:
   - SQL → SQLite execution
   - Results → synthesis (Ollama)
 
+Tables served:
+  dicom_files          — one row per .dcm file (DICOM metadata)
+  radiology_reports    — one row per accession number (radrpt text)
+
 Usage:
     python3 dicom_query_server.py
     python3 dicom_query_server.py --db /path/to/dicom_staging.db --port 5050
@@ -125,20 +129,129 @@ One row per .dcm file. All values are stored as TEXT — cast when needed.
   parse_error            — NULL for good rows; non-NULL = file was unreadable
   sqlite_inserted_at     — UTC ISO8601 timestamp when row was written
 
+---
+
+## Table: radiology_reports
+
+One row per unique accession number. Joinable to dicom_files on accession_number.
+Contains the FULL free-text radiology report for each study in the `radrpt` column.
+
+  accession_number   TEXT PRIMARY KEY   — links directly to dicom_files.accession_number
+  radrpt             TEXT               — full free-text radiology report (may be thousands of characters)
+  source_csv         TEXT               — path to the source CSV file
+  csv_inserted_at    TEXT               — UTC ISO8601 timestamp when row was ingested
+
+### CRITICAL: radrpt is a free-text narrative field in radiology_reports, NOT in dicom_files.
+  Do NOT search dicom_files columns (e.g. referring_physician, study_description) for report content.
+  Always search r.radrpt when the user asks about anything written IN a report.
+
+### Typical structure of a radrpt value (interventional radiology):
+  The report text contains labelled sections separated by keywords. Common patterns include:
+
+  PROCEDURE:       list of performed steps (e.g. "Femoral artery access", "Celiac artery selection")
+  DATE:            date and time of the procedure
+  INDICATION:      clinical indication / diagnosis
+  PHYSICIANS:      attending physician name(s) — also appears as "Attending:" sub-field
+  FLUOROSCOPY TIME: total fluoroscopy time in minutes (numeric value in text)
+  FLUOROSCOPY DOSE: radiation dose (numeric value, units vary — mGy, µGy·m², cGy·cm²)
+  CONTRAST:        contrast agent used and volume (e.g. "130mL omni 300")
+  TECHNIQUE/FINDINGS: detailed narrative of the procedure
+  COMPLICATION:    any complications noted
+  IMPRESSION:      summary of key findings
+  PLAN:            follow-up plan
+  SIGNED BY / Electronically Signed By:
+                   the physician who signed off the final report
+                   (e.g. "Final Report Electronically Signed By: Smith on 11/1/2018")
+                   This is the authorising/signing physician — distinct from referring_physician.
+
+### Key text-search mappings (user intent → correct SQL pattern):
+  "signed by <name>"         → LOWER(r.radrpt) LIKE '%signed by%<lowercase name>%'
+  "electronically signed by" → LOWER(r.radrpt) LIKE '%electronically signed by%<name>%'
+  "attending physician"      → LOWER(r.radrpt) LIKE '%attending%<name>%'
+                               OR LOWER(r.radrpt) LIKE '%physicians%<name>%'
+  "fluoroscopy dose"         → extract numeric value after 'FLUOROSCOPY DOSE:' in radrpt
+  "fluoroscopy time"         → extract numeric value after 'FLUOROSCOPY TIME:' in radrpt
+  "contrast volume"          → LOWER(r.radrpt) LIKE '%contrast%'
+  "indication / diagnosis"   → LOWER(r.radrpt) LIKE '%indication%<term>%'
+  "complication"             → LOWER(r.radrpt) LIKE '%complication%'
+  "impression"               → LOWER(r.radrpt) LIKE '%impression%<term>%'
+  "procedure type"           → LOWER(r.radrpt) LIKE '%procedure%<term>%'
+
+### Joining the two tables:
+  SELECT d.accession_number, d.series_description, d.frame_count,
+         d.modality, d.study_date, r.radrpt
+  FROM   dicom_files d
+  JOIN   radiology_reports r USING (accession_number)
+  WHERE  d.parse_error IS NULL
+  LIMIT  5;
+
+### Report text search examples:
+
+  -- Reports signed by a specific doctor (search radrpt, NOT referring_physician):
+  SELECT DISTINCT r.accession_number, d.study_date, r.radrpt
+  FROM   radiology_reports r
+  JOIN   dicom_files d USING (accession_number)
+  WHERE  LOWER(r.radrpt) LIKE '%signed by%moreno%'
+    AND  d.parse_error IS NULL;
+
+  -- Reports mentioning stenosis:
+  SELECT DISTINCT r.accession_number, d.study_date
+  FROM   radiology_reports r
+  JOIN   dicom_files d USING (accession_number)
+  WHERE  LOWER(r.radrpt) LIKE '%stenosis%'
+    AND  d.parse_error IS NULL;
+
+  -- Average DICOM dose_product for studies signed by a specific doctor:
+  -- (dose_product is in dicom_files; signing doctor is in radrpt text)
+  SELECT AVG(CAST(d.dose_product AS REAL)) AS avg_dose
+  FROM   dicom_files d
+  JOIN   radiology_reports r USING (accession_number)
+  WHERE  d.parse_error IS NULL
+    AND  LOWER(r.radrpt) LIKE '%signed by%smith%'
+    AND  d.dose_product IS NOT NULL
+    AND  d.dose_product != '';
+
+  -- Fluoroscopy dose from report text (numeric extraction):
+  -- Use SUBSTR + INSTR to extract value after 'FLUOROSCOPY DOSE:' label
+  SELECT r.accession_number,
+         TRIM(SUBSTR(r.radrpt,
+              INSTR(UPPER(r.radrpt), 'FLUOROSCOPY DOSE:') + 17,
+              20)) AS fluoro_dose_raw
+  FROM   radiology_reports r
+  JOIN   dicom_files d USING (accession_number)
+  WHERE  UPPER(r.radrpt) LIKE '%FLUOROSCOPY DOSE:%'
+    AND  d.parse_error IS NULL;
+
+  -- Coverage check — accessions in DICOM but with no report:
+  SELECT DISTINCT d.accession_number
+  FROM   dicom_files d
+  LEFT JOIN radiology_reports r USING (accession_number)
+  WHERE  d.parse_error IS NULL
+    AND  r.accession_number IS NULL
+    AND  d.accession_number NOT LIKE 'MISSING_%';
+
+---
+
 ## SQL Rules
 
-1. Always add `WHERE parse_error IS NULL` unless the question is about errors.
-2. All numeric columns are TEXT — cast explicitly:
-     CAST(frame_count AS INTEGER), CAST(kvp AS REAL), CAST(rows AS INTEGER)
-3. Text search: use LIKE with % and LOWER():
-     WHERE LOWER(series_description) LIKE '%dsa%'
-4. Date range filtering: string comparison works (YYYYMMDD):
-     WHERE study_date BETWEEN '20090101' AND '20121231'
-5. Use DISTINCT when counting unique entities.
-6. Default LIMIT 25 unless aggregating or user asks for all.
-7. DSA queries: LOWER(series_description) LIKE '%dsa%'
-8. accession_number LIKE 'MISSING_%' means DICOM had no AccessionNumber tag.
-9. Output ONLY the SQL query — no explanation, no markdown fences, no preamble.
+1. Always add `WHERE parse_error IS NULL` (on dicom_files) unless the question is about errors.
+2. All numeric columns in dicom_files are TEXT — cast explicitly:
+     CAST(frame_count AS INTEGER), CAST(kvp AS REAL), CAST(dose_product AS REAL)
+3. Text search on radrpt: always use LOWER() + LIKE with % wildcards:
+     WHERE LOWER(r.radrpt) LIKE '%signed by%smith%'
+     WHERE LOWER(r.radrpt) LIKE '%stenosis%'
+4. NEVER search dicom_files columns for physician names that appear in report text.
+   "Signed By", "Attending", "PHYSICIANS:" are inside radrpt, not in referring_physician.
+5. Date range filtering on study_date (YYYYMMDD string):
+     WHERE d.study_date BETWEEN '20090101' AND '20121231'
+6. Use DISTINCT when counting or listing unique accession numbers or studies.
+7. Default LIMIT 25 unless the user asks for all or the query is an aggregation.
+8. DSA series: LOWER(d.series_description) LIKE '%dsa%'
+9. accession_number LIKE 'MISSING_%' means DICOM had no AccessionNumber tag.
+10. When joining radiology_reports use JOIN ... USING (accession_number).
+11. For cross-table queries (e.g. dose by signing doctor): JOIN both tables, filter on
+    radrpt text for the doctor, aggregate on dicom_files numeric columns.
+12. Output ONLY the SQL query — no explanation, no markdown fences, no preamble.
 """
 
 SYNTHESIS_SYSTEM = """
@@ -147,12 +260,17 @@ query a DICOM imaging database.
 
 You receive: the question, the SQL executed, and the raw results (JSON).
 
+The database has two tables:
+- dicom_files: DICOM metadata (one row per .dcm file)
+- radiology_reports: free-text radiology reports (one row per accession number)
+
 Produce a clear, concise, human-readable answer in PLAIN TEXT only.
 - Do NOT use markdown tables (no | pipes, no --- separators)
 - Do NOT use markdown headers (no ## or **bold**)
 - Use plain dashes (-) for lists when listing items
 - Summarise patterns when many results; enumerate each item when ≤ 10 rows
 - Highlight clinically or technically interesting findings
+- If results reference radiology report text (radrpt), summarise key findings mentioned
 - If results are empty, say so and suggest why
 - Do NOT re-state the SQL; be direct and informative
 """
@@ -162,8 +280,17 @@ You are an expert SQLite query debugger for a DICOM database.
 You receive: the original question, the failed SQL, the SQLite error, and schema context.
 Produce a corrected SQL query that fixes the error.
 Output ONLY the corrected SQL — no explanation, no markdown fences.
-Remember: all columns are TEXT — always CAST numeric values before comparison.
-Always include parse_error IS NULL unless asking about errors.
+
+Key rules:
+- All columns in dicom_files are TEXT — always CAST numeric values before comparison
+- Always include parse_error IS NULL on dicom_files unless asking about errors
+- radiology_reports joins to dicom_files on accession_number (use USING or ON clause)
+- radrpt is a TEXT column in radiology_reports, NOT in dicom_files
+- NEVER search referring_physician or any dicom_files column for physician names that
+  appear in report text — "Signed By", "Attending", "PHYSICIANS:" are inside radrpt
+- For "signed by <name>" queries: WHERE LOWER(r.radrpt) LIKE '%signed by%<name>%'
+- For cross-table aggregations (e.g. avg dose by signing doctor): JOIN both tables,
+  filter on radrpt LIKE for the doctor, AVG(CAST(d.dose_product AS REAL)) from dicom_files
 """
 
 # ── Global state ──────────────────────────────────────────────────────────────
@@ -247,11 +374,41 @@ def get_db_stats() -> dict:
             modalities = con.execute(
                 "SELECT modality, COUNT(*) as cnt FROM dicom_files WHERE parse_error IS NULL GROUP BY modality ORDER BY cnt DESC LIMIT 5"
             ).fetchall()
+
+            # radiology_reports stats
+            rpt_table_exists = con.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='radiology_reports'"
+            ).fetchone()[0]
+            if rpt_table_exists:
+                rpt_total = con.execute("SELECT COUNT(*) FROM radiology_reports").fetchone()[0]
+                rpt_linked = con.execute(
+                    "SELECT COUNT(DISTINCT d.accession_number) "
+                    "FROM dicom_files d "
+                    "JOIN radiology_reports r USING (accession_number) "
+                    "WHERE d.parse_error IS NULL"
+                ).fetchone()[0]
+                rpt_unlinked = con.execute(
+                    "SELECT COUNT(DISTINCT d.accession_number) "
+                    "FROM dicom_files d "
+                    "LEFT JOIN radiology_reports r USING (accession_number) "
+                    "WHERE d.parse_error IS NULL "
+                    "  AND r.accession_number IS NULL "
+                    "  AND d.accession_number NOT LIKE 'MISSING_%'"
+                ).fetchone()[0]
+            else:
+                rpt_total = rpt_linked = rpt_unlinked = 0
+
             _db_stats_cache = {
-                "instances": total, "patients": patients,
-                "studies": studies, "series": series, "errors": errors,
-                "modalities": [{"modality": r[0] or "?", "count": r[1]} for r in modalities],
-                "db_path": str(_db_path),
+                "instances":   total,
+                "patients":    patients,
+                "studies":     studies,
+                "series":      series,
+                "errors":      errors,
+                "modalities":  [{"modality": r[0] or "?", "count": r[1]} for r in modalities],
+                "db_path":     str(_db_path),
+                "rpt_total":   rpt_total,
+                "rpt_linked":  rpt_linked,
+                "rpt_unlinked": rpt_unlinked,
             }
             return _db_stats_cache
         finally:
@@ -433,7 +590,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AngioVision · DICOM Query</title>
+<title>AngioVision · Query Engine</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
@@ -444,6 +601,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   --text:#e6edf3;--text2:#8b949e;--text3:#57636d;
   --accent:#58a6ff;--accent2:#1f6feb;--accent-bg:rgba(88,166,255,.1);
   --green:#3fb950;--amber:#d29922;--red:#f85149;--purple:#bc8cff;--teal:#39c5cf;
+  --report:#f0883e;--report-bg:rgba(240,136,62,.1);
   --mono:'JetBrains Mono',monospace;
   --sans:'Syne',sans-serif;
 }
@@ -516,7 +674,17 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .v-num{color:#79c0ff}
 .v-path{color:var(--purple);font-size:10.5px}
 .v-id{color:var(--teal);font-size:10.5px}
+.v-report{color:var(--report);font-size:10.5px;font-style:italic}
 .tbl-footer{padding:8px 14px;font-size:10px;font-family:var(--mono);color:var(--text3);border-top:1px solid var(--border);background:var(--bg3);display:flex;align-items:center;gap:8px}
+
+/* ── Chip groups ── */
+.chips-wrap{padding:4px 20px 8px;display:flex;flex-direction:column;gap:4px}
+.chip-group{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip-group-label{font-size:9px;font-family:var(--mono);color:var(--text3);text-transform:uppercase;letter-spacing:.6px;padding-right:2px;white-space:nowrap}
+.chip{padding:5px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:100px;font-size:11.5px;font-family:var(--mono);color:var(--text2);cursor:pointer;transition:all .15s;user-select:none}
+.chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.chip.report{border-color:rgba(240,136,62,.3);color:var(--report)}
+.chip.report:hover{border-color:var(--report);background:var(--report-bg)}
 
 /* ── Thinking animation ── */
 .thinking{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;font-size:12px;color:var(--text2);font-family:var(--mono)}
@@ -530,11 +698,6 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .empty-icon{width:56px;height:56px;background:var(--bg3);border:1px solid var(--border);border-radius:14px;display:flex;align-items:center;justify-content:center}
 .empty-title{font-size:20px;font-weight:800}
 .empty-sub{font-size:13px;color:var(--text2);max-width:320px;line-height:1.6}
-
-/* ── Chips ── */
-.chips{padding:4px 20px 8px;display:flex;flex-wrap:wrap;gap:6px}
-.chip{padding:5px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:100px;font-size:11.5px;font-family:var(--mono);color:var(--text2);cursor:pointer;transition:all .15s;user-select:none}
-.chip:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
 
 /* ── Input bar ── */
 .input-bar{padding:14px 20px;border-top:1px solid var(--border);background:var(--bg2);display:flex;gap:8px;align-items:flex-end}
@@ -555,6 +718,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .stat{background:var(--bg3);border-radius:7px;padding:9px 10px;border:1px solid var(--border)}
 .stat-val{font-size:20px;font-weight:800;font-family:var(--mono);color:var(--accent);letter-spacing:-.5px}
+.stat-val.report{color:var(--report)}
 .stat-lab{font-size:9px;color:var(--text2);margin-top:1px;text-transform:uppercase;letter-spacing:.6px}
 .db-path{font-family:var(--mono);font-size:9.5px;color:var(--text3);word-break:break-all;line-height:1.5}
 .opt-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0}
@@ -565,6 +729,9 @@ textarea.nl-input::placeholder{color:var(--text3)}
 .tslider::before{content:'';position:absolute;width:14px;height:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s}
 .toggle input:checked~.tslider{background:var(--accent2)}
 .toggle input:checked~.tslider::before{transform:translateX(16px)}
+.rpt-coverage{margin-top:8px;height:6px;background:var(--bg4);border-radius:3px;overflow:hidden}
+.rpt-coverage-bar{height:6px;background:var(--report);border-radius:3px;transition:width .5s ease}
+.rpt-coverage-label{font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:4px}
 .hist-scroll{flex:1;overflow-y:auto;padding:8px}
 .hist-scroll::-webkit-scrollbar{width:4px}.hist-scroll::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 .hist-item{padding:8px 10px;border-radius:7px;cursor:pointer;transition:background .15s;border:1px solid transparent;margin-bottom:4px}
@@ -586,7 +753,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
     <div class="logo">
       <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="3"/></svg>
     </div>
-    <span class="hdr-title">AngioVision · DICOM Query</span>
+    <span class="hdr-title">AngioVision · Query Engine</span>
     <div class="hdr-sep"></div>
     <span class="hdr-sub">NL → SQL → SQLite</span>
     <div class="hdr-right">
@@ -609,26 +776,38 @@ textarea.nl-input::placeholder{color:var(--text3)}
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
         </div>
         <div class="empty-title">Ask about your DICOM data</div>
-        <div class="empty-sub">Natural language → SQL → results. Try the examples below or type your own question.</div>
+        <div class="empty-sub">Natural language → SQL → results. Queries span DICOM metadata and radiology reports. Try the examples below or type your own question.</div>
       </div>
     </div>
 
-    <div class="chips">
-      <span class="chip" onclick="fillQ('How many unique patients are in the database?')">Patient count</span>
-      <span class="chip" onclick="fillQ('How many studies, series, and instances do we have in total?')">Dataset overview</span>
-      <span class="chip" onclick="fillQ('List all DSA series with more than 20 frames, showing accession number and source path.')">DSA > 20 frames</span>
-      <span class="chip" onclick="fillQ('What modalities are present and how many instances does each have?')">Modalities</span>
-      <span class="chip" onclick="fillQ('How many studies were performed each year? Order by year.')">Studies by year</span>
-      <span class="chip" onclick="fillQ('Which instances have the highest dose product? Show top 10.')">Top dose</span>
-      <span class="chip" onclick="fillQ('Find all instances where KVP was above 80.')">KVP > 80</span>
-      <span class="chip" onclick="fillQ('Which patients had more than 5 distinct series in a single study?')">Patients > 5 series</span>
-      <span class="chip" onclick="fillQ('How many accession numbers are synthetic (missing from DICOM)?')">Missing accessions</span>
-      <span class="chip" onclick="fillQ('Which station names appear in the database and how many series each?')">Stations</span>
+    <div class="chips-wrap">
+      <div class="chip-group">
+        <span class="chip-group-label">DICOM</span>
+        <span class="chip" onclick="fillQ('How many unique patients are in the database?')">Patient count</span>
+        <span class="chip" onclick="fillQ('How many studies, series, and instances do we have in total?')">Dataset overview</span>
+        <span class="chip" onclick="fillQ('List all DSA series with more than 20 frames, showing accession number and source path.')">DSA > 20 frames</span>
+        <span class="chip" onclick="fillQ('What modalities are present and how many instances does each have?')">Modalities</span>
+        <span class="chip" onclick="fillQ('How many studies were performed each year? Order by year.')">Studies by year</span>
+        <span class="chip" onclick="fillQ('Which instances have the highest dose product? Show top 10.')">Top dose</span>
+        <span class="chip" onclick="fillQ('Find all instances where KVP was above 80.')">KVP > 80</span>
+        <span class="chip" onclick="fillQ('How many accession numbers are synthetic (missing from DICOM)?')">Missing accessions</span>
+      </div>
+      <div class="chip-group">
+        <span class="chip-group-label">Reports</span>
+        <span class="chip report" onclick="fillQ('How many accession numbers have a linked radiology report?')">Report coverage</span>
+        <span class="chip report" onclick="fillQ('Show 5 example radiology reports with their accession number and study date.')">Sample reports</span>
+        <span class="chip report" onclick="fillQ('Find all reports electronically signed by [Doctor Name]. Show accession number, study date, and the report text.')">Signed by doctor</span>
+        <span class="chip report" onclick="fillQ('Find all studies whose radiology report mentions stenosis. Show accession number, study date, and a snippet of the report.')">Stenosis mentions</span>
+        <span class="chip report" onclick="fillQ('Find all studies whose radiology report mentions occlusion.')">Occlusion mentions</span>
+        <span class="chip report" onclick="fillQ('What is the average DICOM dose product for studies whose radiology report was signed by a specific doctor?')">Avg dose by doctor</span>
+        <span class="chip report" onclick="fillQ('Which accession numbers have DICOM data but no linked radiology report?')">Missing reports</span>
+        <span class="chip report" onclick="fillQ('Show 5 studies with their modality, frame count, and first 300 characters of the linked radiology report.')">Metadata + report</span>
+      </div>
     </div>
 
     <div class="input-bar">
       <div class="input-wrap">
-        <textarea class="nl-input" id="nlInput" rows="1" placeholder="Ask about your DICOM database…"></textarea>
+        <textarea class="nl-input" id="nlInput" rows="1" placeholder="Ask about DICOM metadata, radiology reports, or both…"></textarea>
       </div>
       <button class="send-btn" id="sendBtn" onclick="handleSend()" title="Send (Enter)">
         <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -644,13 +823,24 @@ textarea.nl-input::placeholder{color:var(--text3)}
       <div class="db-path" id="dbPath">—</div>
     </div>
     <div class="sb-sec">
-      <div class="sb-label">Statistics</div>
+      <div class="sb-label">DICOM Instances</div>
       <div class="stat-grid">
         <div class="stat"><div class="stat-val" id="sInst">—</div><div class="stat-lab">Instances</div></div>
         <div class="stat"><div class="stat-val" id="sPat">—</div><div class="stat-lab">Patients</div></div>
         <div class="stat"><div class="stat-val" id="sStu">—</div><div class="stat-lab">Studies</div></div>
         <div class="stat"><div class="stat-val" id="sSer">—</div><div class="stat-lab">Series</div></div>
       </div>
+    </div>
+    <div class="sb-sec">
+      <div class="sb-label">Radiology Reports</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-val report" id="sRptTotal">—</div><div class="stat-lab">Reports</div></div>
+        <div class="stat"><div class="stat-val report" id="sRptLinked">—</div><div class="stat-lab">Linked</div></div>
+      </div>
+      <div class="rpt-coverage" id="rptCoverageWrap" style="display:none">
+        <div class="rpt-coverage-bar" id="rptCoverageBar" style="width:0%"></div>
+      </div>
+      <div class="rpt-coverage-label" id="rptCoverageLabel"></div>
     </div>
     <div class="sb-sec" id="modalitySec" style="display:none">
       <div class="sb-label">Modalities</div>
@@ -712,6 +902,19 @@ async function loadStats(){
     document.getElementById('sStu').textContent  = fmtNum(d.studies);
     document.getElementById('sSer').textContent  = fmtNum(d.series);
     document.getElementById('dbPath').textContent = d.db_path||'—';
+
+    // Report stats
+    document.getElementById('sRptTotal').textContent  = fmtNum(d.rpt_total);
+    document.getElementById('sRptLinked').textContent = fmtNum(d.rpt_linked);
+    if(d.rpt_total > 0 && d.studies > 0){
+      const pct = Math.min(100, Math.round(d.rpt_linked / d.studies * 100));
+      const wrap = document.getElementById('rptCoverageWrap');
+      wrap.style.display = 'block';
+      document.getElementById('rptCoverageBar').style.width = pct + '%';
+      document.getElementById('rptCoverageLabel').textContent =
+        `${pct}% of studies have a linked report  ·  ${fmtNum(d.rpt_unlinked)} missing`;
+    }
+
     if(d.modalities && d.modalities.length){
       const sec = document.getElementById('modalitySec');
       const bars = document.getElementById('modalityBars');
@@ -731,7 +934,7 @@ function fmtNum(n){ if(n===undefined||n===null||n==='—') return '—'; return 
 
 // ── SQL syntax highlight ──
 function colorSQL(sql){
-  const kws = /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT|OFFSET|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|DISTINCT|COUNT|SUM|AVG|MAX|MIN|CAST|LOWER|UPPER|NULL|IS\s+NOT|IS|CASE|WHEN|THEN|ELSE|END|WITH|UNION|ALL|EXISTS|INSERT|UPDATE|DELETE|SET|VALUES|CREATE|DROP|TABLE|INDEX|INTO|PRAGMA|REPLACE|SUBSTRING|LENGTH|TRIM|DATE|STRFTIME|COALESCE|IFNULL)\b/gi;
+  const kws = /\b(SELECT|FROM|WHERE|AND|OR|NOT|IN|LIKE|BETWEEN|ORDER\s+BY|GROUP\s+BY|HAVING|LIMIT|OFFSET|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|DISTINCT|COUNT|SUM|AVG|MAX|MIN|CAST|LOWER|UPPER|NULL|IS\s+NOT|IS|CASE|WHEN|THEN|ELSE|END|WITH|UNION|ALL|EXISTS|INSERT|UPDATE|DELETE|SET|VALUES|CREATE|DROP|TABLE|INDEX|INTO|PRAGMA|REPLACE|SUBSTRING|LENGTH|TRIM|DATE|STRFTIME|COALESCE|IFNULL|USING)\b/gi;
   return sql
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/'[^']*'/g, s=>`<span class="str">${s}</span>`)
@@ -749,6 +952,8 @@ function renderTable(rows){
     const v = r[c];
     if(v===null||v===undefined) return `<td><span class="v-null">null</span></td>`;
     const s = String(v);
+    // radrpt column: truncate and style distinctly
+    if(c==='radrpt') return `<td><span class="v-report" title="${esc(s)}">${esc(s.length>80?s.slice(0,78)+'…':s)}</span></td>`;
     if(s.startsWith('/')) return `<td><span class="v-path" title="${esc(s)}">${esc(s.length>50?'…'+s.slice(-48):s)}</span></td>`;
     if(/^\d{8}$/.test(s)&&parseInt(s)>19000101) return `<td><span class="v-num">${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}</span></td>`;
     if(s.length>32&&s.includes('.')) return `<td><span class="v-id" title="${esc(s)}">${esc(s.slice(0,28)+'…')}</span></td>`;
@@ -848,9 +1053,7 @@ async function handleSend(){
     tabs += `<button class="rc-tab" onclick="switchTab(this,'${id}-tbl')">Table <span style="font-size:9px;opacity:.7">${rowCount}</span></button>`;
     panes += `<div class="rc-pane" id="${id}-tbl">${renderTable(rows)}${rowCount?`<div class="tbl-footer"><span>${rowCount} row${rowCount!==1?'s':''}</span><button class="copy-btn" onclick="copySQL('${id}')">copy SQL</button><span style="margin-left:auto">${elapsedSec}s</span></div>`:''}</div>`;
 
-    const sqlData = sql; // capture for copy
-    const card = addMsg('msg-bot',`<div class="result-card"><div class="rc-tabs">${tabs}<div class="rc-meta"><span>${elapsedSec}s</span></div></div>${panes}</div>`);
-    card.dataset.sql = sql;
+    addMsg('msg-bot',`<div class="result-card"><div class="rc-tabs">${tabs}<div class="rc-meta"><span>${elapsedSec}s</span></div></div>${panes}</div>`);
 
     addHistory(q, rowCount, elapsed);
     setStatus('ready','ready');

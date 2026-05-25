@@ -6,6 +6,9 @@ Recursively walks a DICOM directory, parses metadata from every .dcm file
 in parallel (ProcessPoolExecutor), and stores everything in a flat SQLite
 table keyed on SOPInstanceUID.
 
+Also ingests a radiology report CSV (Anon Acc #, radrpt) into a separate
+`radiology_reports` table, joinable to `dicom_files` via accession_number.
+
 Design principles:
   • SOPInstanceUID is the only skip condition — every parseable file is stored
   • Missing AccessionNumber → synthetic key MISSING_{sop_uid[:12]}
@@ -21,6 +24,7 @@ Requirements:
 
 import os
 import sys
+import csv
 import sqlite3
 import logging
 import argparse
@@ -42,6 +46,7 @@ except ImportError:
 # ── Constants ──────────────────────────────────────────────────────────────────
 DICOM_ROOT    = Path("/data/Deep_Angiography/DICOM")
 SQLITE_DB     = Path("/data/Deep_Angiography/AngioVision/dicom_staging.db")
+REPORTS_CSV   = Path("/data/Deep_Angiography/Reports/Report_List_v01_01_merged_raw.csv")
 PARSE_WORKERS = max(1, os.cpu_count() - 1)
 SQL_FLUSH     = 1000   # rows buffered before each SQLite commit
 SUBMIT_CHUNK  = 2000   # futures submitted per chunk — keeps queue shallow
@@ -171,6 +176,27 @@ CREATE INDEX IF NOT EXISTS idx_study_date         ON dicom_files (study_date);
 CREATE INDEX IF NOT EXISTS idx_acquisition_date   ON dicom_files (acquisition_date);
 CREATE INDEX IF NOT EXISTS idx_parse_error        ON dicom_files (parse_error)
     WHERE parse_error IS NOT NULL;
+
+-- ── Radiology reports ────────────────────────────────────────────────────────
+-- One row per accession number; joins to dicom_files on accession_number.
+-- Duplicate accession numbers in the CSV are collapsed: the first radrpt
+-- encountered is kept (INSERT OR IGNORE), matching the idempotent design of
+-- the DICOM ingestion path.
+--
+-- Join example:
+--   SELECT d.accession_number, d.series_description, d.frame_count,
+--          r.radrpt
+--   FROM   dicom_files d
+--   JOIN   radiology_reports r USING (accession_number)
+--   WHERE  d.modality = 'XA';
+CREATE TABLE IF NOT EXISTS radiology_reports (
+    accession_number   TEXT PRIMARY KEY,
+    radrpt             TEXT,
+    source_csv         TEXT,
+    csv_inserted_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_rpt_accession ON radiology_reports (accession_number);
 """
 
 ALL_COLUMNS = [
@@ -207,6 +233,12 @@ INSERT_SQL = (
     f"INSERT OR IGNORE INTO dicom_files ({', '.join(ALL_COLUMNS)}) "
     f"VALUES ({', '.join(['?'] * len(ALL_COLUMNS))})"
 )
+
+INSERT_RPT_SQL = """
+    INSERT OR IGNORE INTO radiology_reports
+        (accession_number, radrpt, source_csv, csv_inserted_at)
+    VALUES (?, ?, ?, ?)
+"""
 
 
 # ── DICOM parsing (runs in subprocess) ────────────────────────────────────────
@@ -399,14 +431,98 @@ def flush_batch(con: sqlite3.Connection, batch: list[dict]) -> tuple[int, int]:
     return new, ignored
 
 
+# ── Radiology report ingestion ─────────────────────────────────────────────────
+def ingest_reports(con: sqlite3.Connection, csv_path: Path) -> tuple[int, int]:
+    """
+    Load Report_List_v01_01_merged_raw.csv into radiology_reports.
+
+    Expected columns (case-insensitive):
+        Anon Acc #   →  accession_number  (PRIMARY KEY)
+        radrpt       →  radrpt
+
+    Duplicate accession numbers in the CSV are silently ignored
+    (INSERT OR IGNORE keeps the first occurrence).
+
+    Returns:
+        (inserted, ignored) counts
+    """
+    if not csv_path.exists():
+        log.warning(f"Reports CSV not found — skipping: {csv_path}")
+        return 0, 0
+
+    now        = datetime.datetime.utcnow().isoformat()
+    source     = str(csv_path)
+    inserted   = 0
+    ignored    = 0
+    bad_rows   = 0
+
+    log.info(f"Ingesting radiology reports from: {csv_path}")
+
+    before = con.execute("SELECT COUNT(*) FROM radiology_reports").fetchone()[0]
+
+    with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+        # utf-8-sig strips the BOM that Excel sometimes adds
+        reader = csv.DictReader(fh)
+
+        # Normalise header names so column lookup is case-insensitive
+        # and strips surrounding whitespace.
+        if reader.fieldnames is None:
+            log.error("CSV appears to be empty — no headers found.")
+            return 0, 0
+
+        norm = {h.strip().lower(): h for h in reader.fieldnames}
+        acc_key = norm.get("anon acc #")
+        rpt_key = norm.get("radrpt")
+
+        if acc_key is None or rpt_key is None:
+            log.error(
+                f"Expected columns 'Anon Acc #' and 'radrpt' — "
+                f"found: {list(reader.fieldnames)}"
+            )
+            return 0, 0
+
+        rows_to_insert = []
+        for row in reader:
+            acc = (row.get(acc_key) or "").strip()
+            rpt = (row.get(rpt_key) or "").strip()
+            if not acc:
+                bad_rows += 1
+                continue
+            rows_to_insert.append((acc, rpt or None, source, now))
+
+        con.executemany(INSERT_RPT_SQL, rows_to_insert)
+        con.commit()
+
+    after    = con.execute("SELECT COUNT(*) FROM radiology_reports").fetchone()[0]
+    inserted = after - before
+    ignored  = len(rows_to_insert) - inserted
+
+    log.info(
+        f"Reports CSV — total rows: {len(rows_to_insert):,} | "
+        f"inserted: {inserted:,} | duplicates skipped: {ignored:,} | "
+        f"bad (no accession): {bad_rows:,}"
+    )
+    return inserted, ignored
+
+
 def db_summary(con: sqlite3.Connection):
     total       = con.execute("SELECT COUNT(*) FROM dicom_files").fetchone()[0]
     with_error  = con.execute("SELECT COUNT(*) FROM dicom_files WHERE parse_error IS NOT NULL").fetchone()[0]
     missing_acc = con.execute("SELECT COUNT(*) FROM dicom_files WHERE accession_number LIKE 'MISSING_%'").fetchone()[0]
+    rpt_total   = con.execute("SELECT COUNT(*) FROM radiology_reports").fetchone()[0]
+    linked      = con.execute(
+        "SELECT COUNT(DISTINCT d.accession_number) "
+        "FROM dicom_files d "
+        "JOIN radiology_reports r USING (accession_number)"
+    ).fetchone()[0]
+
     log.info("─" * 60)
-    log.info(f"Total rows in DB    : {total:>10,}")
+    log.info(f"Total DICOM rows    : {total:>10,}")
     log.info(f"Parse errors        : {with_error:>10,}")
     log.info(f"Missing accession   : {missing_acc:>10,}")
+    log.info("─" * 60)
+    log.info(f"Radiology reports   : {rpt_total:>10,}")
+    log.info(f"Accessions linked   : {linked:>10,}  (DICOM ∩ reports)")
     log.info("─" * 60)
     log.info("Modality breakdown:")
     for r in con.execute(
@@ -420,7 +536,7 @@ def db_summary(con: sqlite3.Connection):
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
-        description="Ingest DICOM metadata into SQLite (parallel, resumable).",
+        description="Ingest DICOM metadata + radiology reports into SQLite (parallel, resumable).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -430,39 +546,71 @@ Examples:
   python dicom_ingest_sqlite.py --dry-run
   python dicom_ingest_sqlite.py --limit 5000
   python dicom_ingest_sqlite.py --summary-only
+  python dicom_ingest_sqlite.py --reports-only
+  python dicom_ingest_sqlite.py --reports /path/to/custom_reports.csv
+
+Useful join query after ingestion:
+  SELECT d.accession_number, d.series_description, d.frame_count,
+         d.modality, d.study_date, r.radrpt
+  FROM   dicom_files d
+  JOIN   radiology_reports r USING (accession_number)
+  WHERE  d.modality = 'XA'
+  LIMIT  20;
         """,
     )
-    parser.add_argument("--root",    default=str(DICOM_ROOT))
-    parser.add_argument("--db",      default=str(SQLITE_DB))
-    parser.add_argument("--workers", type=int, default=PARSE_WORKERS)
-    parser.add_argument("--flush",   type=int, default=SQL_FLUSH)
-    parser.add_argument("--chunk",   type=int, default=SUBMIT_CHUNK,
+    parser.add_argument("--root",         default=str(DICOM_ROOT))
+    parser.add_argument("--db",           default=str(SQLITE_DB))
+    parser.add_argument("--reports",      default=str(REPORTS_CSV),
+                        help="Path to the radiology reports CSV (default: %(default)s)")
+    parser.add_argument("--workers",      type=int, default=PARSE_WORKERS)
+    parser.add_argument("--flush",        type=int, default=SQL_FLUSH)
+    parser.add_argument("--chunk",        type=int, default=SUBMIT_CHUNK,
                         help="Futures submitted per chunk (default: 2000)")
-    parser.add_argument("--limit",   type=int, default=0)
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument("--limit",        type=int, default=0)
+    parser.add_argument("--dry-run",      action="store_true",
+                        help="Parse DICOM files but write nothing to SQLite")
+    parser.add_argument("--summary-only", action="store_true",
+                        help="Print DB summary and exit (no ingestion)")
+    parser.add_argument("--reports-only", action="store_true",
+                        help="Skip DICOM ingestion; only load the reports CSV")
+    parser.add_argument("--skip-reports", action="store_true",
+                        help="Skip reports CSV ingestion entirely")
     args = parser.parse_args()
 
-    dicom_root = Path(args.root)
-    db_path    = Path(args.db)
+    dicom_root  = Path(args.root)
+    db_path     = Path(args.db)
+    reports_csv = Path(args.reports)
 
-    log.info(f"DICOM root : {dicom_root}")
-    log.info(f"SQLite DB  : {db_path}")
-    log.info(f"Workers    : {args.workers}")
-    log.info(f"Flush size : {args.flush}")
-    log.info(f"Chunk size : {args.chunk}")
-    log.info(f"Limit      : {args.limit or 'none'}")
-    log.info(f"Dry run    : {args.dry_run}")
+    log.info(f"DICOM root  : {dicom_root}")
+    log.info(f"SQLite DB   : {db_path}")
+    log.info(f"Reports CSV : {reports_csv}")
+    log.info(f"Workers     : {args.workers}")
+    log.info(f"Flush size  : {args.flush}")
+    log.info(f"Chunk size  : {args.chunk}")
+    log.info(f"Limit       : {args.limit or 'none'}")
+    log.info(f"Dry run     : {args.dry_run}")
 
     if args.summary_only:
         db_summary(open_db(db_path))
         return
 
+    con = open_db(db_path) if not args.dry_run else None
+
+    # ── Reports CSV ingestion (fast — runs first) ──────────────────────
+    if not args.skip_reports and not args.dry_run:
+        ingest_reports(con, reports_csv)
+
+    if args.reports_only:
+        if con:
+            db_summary(con)
+            con.close()
+        return
+
+    # ── DICOM ingestion ────────────────────────────────────────────────
     if not dicom_root.exists():
         log.error(f"DICOM root does not exist: {dicom_root}")
         raise SystemExit(1)
 
-    # ── Walk files ─────────────────────────────────────────────────────
     log.info("Collecting .dcm file paths...")
     all_paths = list(iter_dicom_files(dicom_root))
     if args.limit:
@@ -472,9 +620,10 @@ Examples:
 
     if total == 0:
         log.warning("No .dcm files found — nothing to do.")
+        if con:
+            db_summary(con)
+            con.close()
         return
-
-    con = open_db(db_path) if not args.dry_run else None
 
     inserted  = 0
     duplicate = 0
@@ -483,20 +632,15 @@ Examples:
     buffer: list[dict] = []
 
     # ── Key fix: submit in chunks so tqdm starts immediately ───────────
-    # Submitting all 816K futures at once blocks the main thread for
-    # tens of seconds before as_completed() can yield anything.
-    # Chunked submission keeps the queue shallow and tqdm responsive.
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         with tqdm(total=total, unit="file", desc="Ingesting DICOM",
                   dynamic_ncols=True) as pbar:
 
             for path_chunk in chunked(all_paths, args.chunk):
 
-                # Submit one chunk of futures
                 futures = {pool.submit(parse_dicom_file, p): p
                            for p in path_chunk}
 
-                # Drain this chunk before submitting the next
                 for fut in as_completed(futures):
                     try:
                         result = fut.result()
@@ -514,7 +658,6 @@ Examples:
                         if not args.dry_run:
                             buffer.append(result)
 
-                    # Flush SQLite buffer when full
                     if con and len(buffer) >= args.flush:
                         new, ign = flush_batch(con, buffer)
                         inserted  += new
