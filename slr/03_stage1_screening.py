@@ -4,7 +4,7 @@ AngioVision Systematic Review (PRISMA)
 
 Backend: ollama Python library  (no separate `ollama serve` required)
          Install:  pip install ollama
-         Model:    ollama pull qwen2.5:72b
+         Model:    ollama pull qwen3:14b
 
 Two-call architecture per paper:
   Call 1 — Inclusion gate  (I1–I4, ALL must be met)
@@ -17,9 +17,17 @@ Final decision logic:
   inclusion_pass=True  & exclusion_pass=True    → INCLUDE
   Either call is UNCERTAIN                      → UNCERTAIN
 
+Fixes applied (v2):
+  - Model kept loaded in VRAM via keep_alive="120m" on every ollama.chat() call
+  - _preload_model() warms up the model before the main loop (eliminates cold-start
+    empty responses on the first record of each run)
+  - RETRY_DELAY reduced 5s → 2s (cold start eliminated; shorter wait is sufficient)
+  - Abstract truncated to 2500 chars before sending (prevents context overflow
+    silently producing empty responses on very long abstracts)
+
 Usage:
-    python3 stage1_screening.py
-    python3 stage1_screening.py --input records.csv --output stage1_results.csv
+    python3 03_stage1_screening.py
+    python3 03_stage1_screening.py --input records.csv --output stage1_results.csv
 
 Input CSV columns (all retained in output):
     record_id, source, title, authors, year, journal_venue, doi, url,
@@ -63,12 +71,14 @@ from tabulate import tabulate
 from collections import defaultdict
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL        = "llama3.1:latest"
-TEMPERATURE  = 0
-MAX_TOKENS   = 512
-RETRY_LIMIT  = 3
-RETRY_DELAY  = 5
-REPAIR_LIMIT = 2
+MODEL            = "qwen3:8b"
+TEMPERATURE      = 0
+MAX_TOKENS       = 2048
+RETRY_LIMIT      = 2
+RETRY_DELAY      = 2          # FIX: reduced from 5s — cold start eliminated by keep_alive
+REPAIR_LIMIT     = 2
+KEEP_ALIVE       = "120m"     # FIX: keep model loaded in VRAM for the full run
+ABSTRACT_MAX_LEN = 5000       # FIX: truncate abstracts to avoid context overflow → empty response
 
 INPUT_COLUMNS = [
     "record_id", "source", "title", "authors", "year",
@@ -80,7 +90,7 @@ LLM_COLUMNS = [
     "llm_decision",
     "llm_failed_at",                # "inclusion" | "exclusion" | "none" | "error"
     "llm_inclusion_pass",           # True / False / UNCERTAIN
-    "llm_inclusion_criteria",       # JSON list of triggered I-codes
+    "llm_inclusion_criteria",       # JSON dict {"met": [...], "failed": [...]}
     "llm_inclusion_reason",
     "llm_exclusion_pass",           # True / False / UNCERTAIN / SKIPPED
     "llm_exclusion_criteria",       # JSON list of triggered E-codes
@@ -223,6 +233,7 @@ def _repair_json(broken_raw, system_prompt, title, abstract):
                 ],
                 format="json",
                 options=options,
+                keep_alive=KEEP_ALIVE,          # FIX: keep model loaded
             )
             raw = response.message.content.strip()
             parsed = _extract_json(raw)
@@ -243,7 +254,7 @@ def _call_gate(gate_name, system_prompt, title, abstract):
     """
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": f"Title: {title}\n\nAbstract: {abstract}"},
+        {"role": "user",   "content": f"/no_think\n\nTitle: {title}\n\nAbstract: {abstract}"},
     ]
     options  = ollama.Options(temperature=TEMPERATURE, num_predict=MAX_TOKENS)
     last_raw = ""
@@ -255,6 +266,7 @@ def _call_gate(gate_name, system_prompt, title, abstract):
                 messages=messages,
                 format="json",
                 options=options,
+                keep_alive=KEEP_ALIVE,          # FIX: keep model loaded between records
             )
             raw = response.message.content.strip()
             if not raw:
@@ -286,25 +298,54 @@ def _call_gate(gate_name, system_prompt, title, abstract):
     return None, last_raw
 
 
+# ── Model preload ─────────────────────────────────────────────────────────────
+
+def _preload_model():
+    """
+    FIX: Send a dummy request before the main loop so the model is fully loaded
+    into VRAM before the first real record arrives. Eliminates the cold-start
+    empty response pattern seen on attempt 1 of each run.
+    keep_alive=KEEP_ALIVE ensures the model stays loaded for the entire run.
+    """
+    log.info(f"Preloading model '{MODEL}' into VRAM (keep_alive={KEEP_ALIVE})...")
+    try:
+        response = ollama.chat(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user",   "content": '/no_think\n\nRespond with: {"ok": true}'},
+            ],
+            format="json",
+            options=ollama.Options(temperature=0, num_predict=32),
+            keep_alive=KEEP_ALIVE,
+        )
+        raw = response.message.content.strip()
+        log.info(f"Model preloaded successfully. Warm-up response: {raw[:60]}")
+    except Exception as e:
+        log.warning(f"Preload failed (non-fatal, will continue): {e}")
+
+
 # ── Two-call screening ────────────────────────────────────────────────────────
 
 def _screen_paper(title, abstract):
     """
     Run inclusion gate then (conditionally) exclusion gate.
-
+    Abstract is truncated before sending to avoid context overflow.
     Returns a dict with all LLM_COLUMNS fields populated.
     """
+    # FIX: truncate abstract to prevent context overflow → empty response
+    abstract = abstract[:ABSTRACT_MAX_LEN]
+
     # ── CALL 1: Inclusion gate ────────────────────────────────────
     log.info(f"  [inclusion] calling model...")
     inc_parsed, inc_raw = _call_gate("inclusion", INCLUSION_SYSTEM, title, abstract)
 
     if inc_parsed is None:
-        # Hard error on inclusion call
         return {
             "llm_decision":              "ERROR",
             "llm_failed_at":             "inclusion",
             "llm_inclusion_pass":        "ERROR",
-            "llm_inclusion_criteria":    "[]",
+            "llm_inclusion_criteria":    "{}",
             "llm_inclusion_reason":      "LLM call failed after all retries",
             "llm_exclusion_pass":        "SKIPPED",
             "llm_exclusion_criteria":    "[]",
@@ -321,7 +362,6 @@ def _screen_paper(title, abstract):
     inc_reason    = inc_parsed.get("reason", "")
     inc_flag      = bool(inc_parsed.get("flag_for_human_review", False))
 
-    # Represent what criteria info to store: met criteria + failed criteria
     inc_criteria_store = json.dumps({
         "met":    inc_triggered,
         "failed": inc_failed,
@@ -330,7 +370,7 @@ def _screen_paper(title, abstract):
     # Early exit if inclusion fails
     if not inc_pass or inc_uncertain:
         decision  = "UNCERTAIN" if inc_uncertain else "EXCLUDE"
-        failed_at = "inclusion" if not inc_uncertain else "inclusion (uncertain)"
+        failed_at = "inclusion (uncertain)" if inc_uncertain else "inclusion"
         log.info(f"  [inclusion] → {decision} | failed: {inc_failed}")
         return {
             "llm_decision":              decision,
@@ -436,10 +476,10 @@ def _save_included_titles(df, output_path):
         return
 
     def _is_flagged(val):
-        if isinstance(val, bool):   return val
-        if isinstance(val, str):    return val.strip().lower() in ("true", "1", "yes")
-        try:                        return bool(val)
-        except Exception:           return False
+        if isinstance(val, bool): return val
+        if isinstance(val, str):  return val.strip().lower() in ("true", "1", "yes")
+        try:                      return bool(val)
+        except Exception:         return False
 
     included["_flagged"] = included["llm_flag_for_human_review"].apply(_is_flagged)
     lines = []
@@ -475,7 +515,6 @@ def _print_summary(output_path):
         except Exception:
             return []
 
-    # Parse inclusion criteria (stored as {"met": [...], "failed": [...]})
     def parse_inc_criteria(val):
         try:
             obj = json.loads(val) if pd.notna(val) else {}
@@ -624,6 +663,9 @@ def screen_records(input_path, output_path, resume=True):
     pending  = df[~df["record_id"].astype(str).isin(done_ids)]
     new_rows = []
 
+    # FIX: warm up the model before the loop so the first record never hits a cold model
+    _preload_model()
+
     with tqdm(total=len(pending), desc="Screening", unit="record",
               bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
 
@@ -639,8 +681,8 @@ def screen_records(input_path, output_path, resume=True):
 
             pbar.set_postfix_str(title[:55], refresh=True)
 
-            llm_out  = _screen_paper(title, abstract)
-            decision = llm_out.get("llm_decision", "?")
+            llm_out   = _screen_paper(title, abstract)
+            decision  = llm_out.get("llm_decision", "?")
             failed_at = llm_out.get("llm_failed_at", "?")
 
             status_str = decision

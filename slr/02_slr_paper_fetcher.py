@@ -34,7 +34,7 @@ ENTREZ_EMAIL   = "nikhan@ucdavis.edu"
 NCBI_API_KEY   = os.getenv("NCBI_API_KEY", "b62cdd0f606eecea1e4ec3fb9b348b8b9809")
 OUTPUT_FILE    = "/data/Deep_Angiography/AngioVision/slr/results/slr_stage1_screening.csv"
 STATS_FILE     = "/data/Deep_Angiography/AngioVision/slr/results/slr_fetching_stats.csv"
-MAX_PER_SOURCE = 2000
+MAX_PER_SOURCE = 5000
 
 # CLI: pass "ss" to run Semantic Scholar only; default runs all sources
 RUN_ALL = not (len(sys.argv) > 1 and sys.argv[1].strip().lower() == "ss")
@@ -44,12 +44,12 @@ RUN_ALL = not (len(sys.argv) > 1 and sys.argv[1].strip().lower() == "ss")
 PUBMED_QUERY = (
     "(angiograph*[tiab] OR fluoroscop*[tiab] OR "
     "\"digital subtraction angiography\"[tiab] OR DSA[tiab]) "
-    "AND (sequence*[tiab] OR video[tiab] OR frame*[tiab] OR "
-    "time-series[tiab] OR temporal[tiab]) "
-    "AND (processing[tiab] OR enhancement[tiab] OR denois*[tiab] OR "
-    "subtraction[tiab] OR registration[tiab] OR motion[tiab] OR "
-    "segmentation[tiab] OR detection[tiab] OR classification[tiab] OR "
-    "localization[tiab] OR diagnosis[tiab]) "
+    # "AND (sequence*[tiab] OR video[tiab] OR frame*[tiab] OR "
+    # "time-series[tiab] OR temporal[tiab]) "
+    # "AND (processing[tiab] OR enhancement[tiab] OR denois*[tiab] OR "
+    # "subtraction[tiab] OR registration[tiab] OR motion[tiab] OR "
+    # "segmentation[tiab] OR detection[tiab] OR classification[tiab] OR "
+    # "localization[tiab] OR diagnosis[tiab]) "
     "AND (\"deep learning\"[tiab] OR \"machine learning\"[tiab] OR "
     "CNN[tiab] OR transformer[tiab] OR \"artificial intelligence\"[tiab] OR AI[tiab]) "
     "AND (\"2000\"[pdat] : \"3000\"[pdat]) "
@@ -57,13 +57,37 @@ PUBMED_QUERY = (
 )
 
 SS_QUERIES = [
-    "deep learning digital subtraction angiography sequence",
-    "CNN fluoroscopy image enhancement temporal",
-    "transformer angiographic vessel segmentation",
-    "machine learning DSA motion correction",
-    "deep learning fluoroscopic sequence processing",
-    "artificial intelligence angiography diagnosis detection",
-    "deep learning DSA sequence classification localization",
+    # Relaxed queries — sequence/task constraints removed, keeping core imaging + AI terms only
+
+    # --- Core imaging + AI method ---
+    "deep learning angiography",
+    "deep learning digital subtraction angiography",
+    "machine learning angiography",
+    "deep learning fluoroscopy",
+    "artificial intelligence angiography",
+    "CNN angiography",
+    "transformer angiography",
+
+    # --- DSA-specific ---
+    "deep learning DSA",
+    "neural network DSA",
+    "machine learning DSA",
+    "artificial intelligence DSA",
+
+    # --- Fluoroscopy-specific ---
+    "machine learning fluoroscopy",
+    "neural network fluoroscopy",
+    "artificial intelligence fluoroscopy",
+    "CNN fluoroscopy",
+
+    # --- Vessel / vascular focus ---
+    "deep learning vessel segmentation angiography",
+    "deep learning vascular imaging",
+    "neural network vascular segmentation",
+    "deep learning cerebrovascular angiography",
+    "deep learning coronary angiography",
+    "deep learning peripheral angiography",
+    "deep learning retinal angiography",
 ]
 
 # arXiv query disabled — arXiv results excluded from this SLR
@@ -238,7 +262,7 @@ def _ss_get_with_backoff(params, max_retries=8):
     raise Exception(f"SS request failed after {max_retries} retries")
 
 
-def fetch_semantic_scholar(queries, max_per_query=500):
+def fetch_semantic_scholar(queries, max_per_query=100):
     print(f"\n[Semantic Scholar] Searching {len(queries)} queries …")
     if SS_API_KEY:
         print(f"  ✓ Using API key — higher rate limits active")
@@ -251,7 +275,7 @@ def fetch_semantic_scholar(queries, max_per_query=500):
 
     for q in queries:
         offset  = 0
-        limit   = min(500, max_per_query)
+        limit   = min(100, max_per_query)  # SS max page size is 100
         fetched = 0
         print(f"  Query: '{q}'")
 
@@ -261,6 +285,7 @@ def fetch_semantic_scholar(queries, max_per_query=500):
                 "fields": SS_FIELDS,
                 "limit":  limit,
                 "offset": offset,
+                "year":   "2000-2026",  # restrict to publication year range
             }
             try:
                 resp = _ss_get_with_backoff(params)
@@ -307,7 +332,7 @@ def fetch_semantic_scholar(queries, max_per_query=500):
 
         print(f"    → {fetched} fetched (total unique so far: {len(all_records)})")
         # Extra pause between different query strings
-        time.sleep(3 if SS_API_KEY else 15)
+        time.sleep(15 if SS_API_KEY else 15)
 
     print(f"  ✓ {len(all_records)} Semantic Scholar records")
     return all_records
@@ -319,71 +344,14 @@ def fetch_semantic_scholar(queries, max_per_query=500):
 
 # arXiv fetch function disabled — arXiv excluded from this SLR
 # ARXIV_BASE = "https://export.arxiv.org/api/query"
-#
-# def fetch_arxiv(query, max_results=MAX_PER_SOURCE):
-#     print(f"\n[arXiv] Searching … (max {max_results})")
-#     records = []
-#     batch   = 200
-#     start   = 0
-#
-#     while start < max_results:
-#         size   = min(batch, max_results - start)
-#         params = {
-#             "search_query": query,
-#             "start":        start,
-#             "max_results":  size,
-#             "sortBy":       "relevance",
-#             "sortOrder":    "descending",
-#         }
-#         try:
-#             resp = requests.get(ARXIV_BASE, params=params, timeout=60)
-#             resp.raise_for_status()
-#             xml = resp.text
-#         except Exception as e:
-#             print(f"  [warn] arXiv request failed: {e}")
-#             break
-#
-#         entries = re.findall(r"<entry>(.*?)</entry>", xml, re.DOTALL)
-#         if not entries:
-#             break
-#
-#         for entry in entries:
-#             def tag(t, _e=entry):
-#                 m = re.search(rf"<{t}[^>]*>(.*?)</{t}>", _e, re.DOTALL)
-#                 return clean(m.group(1)) if m else ""
-#
-#             title     = tag("title")
-#             abstract  = tag("summary")
-#             published = tag("published")[:4]
-#             doi_m     = re.search(r'<arxiv:doi[^>]*>(.*?)</arxiv:doi>', entry)
-#             doi       = clean(doi_m.group(1)) if doi_m else ""
-#             link_m    = re.search(r'<id>(.*?)</id>', entry)
-#             url       = clean(link_m.group(1)) if link_m else ""
-#             authors   = "; ".join(re.findall(r"<name>(.*?)</name>", entry))
-#             journal_m = re.search(
-#                 r'<arxiv:journal_ref[^>]*>(.*?)</arxiv:journal_ref>', entry)
-#             journal   = clean(journal_m.group(1)) if journal_m else "arXiv preprint"
-#
-#             records.append({
-#                 "source": "arXiv", "title": title, "authors": authors,
-#                 "year": published, "journal_venue": journal, "doi": doi,
-#                 "url": url, "abstract": abstract,
-#             })
-#
-#         start += len(entries)
-#         if len(entries) < size:
-#             break
-#         time.sleep(3)
-#
-#     print(f"  ✓ {len(records)} arXiv records parsed")
-#     return records
+# ... (omitted for brevity)
 
 
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
 
-def write_stats(pre_dedup_counts, post_dedup_counts, run_timestamp):
+def write_stats(pre_dedup_counts, post_dedup_counts, total_after_dedup, run_timestamp):
     """Write per-source before/after dedup counts to the stats CSV."""
     import datetime
     stats_fields = ["run_timestamp", "source", "before_dedup", "after_dedup", "duplicates_removed"]
@@ -394,22 +362,21 @@ def write_stats(pre_dedup_counts, post_dedup_counts, run_timestamp):
         before = pre_dedup_counts.get(src, 0)
         after  = post_dedup_counts.get(src, 0)
         rows.append({
-            "run_timestamp":     run_timestamp,
-            "source":            src,
-            "before_dedup":      before,
-            "after_dedup":       after,
+            "run_timestamp":      run_timestamp,
+            "source":             src,
+            "before_dedup":       before,
+            "after_dedup":        after,
             "duplicates_removed": before - after,
         })
 
-    # Totals row
-    total_before = sum(r["before_dedup"]      for r in rows)
-    total_after  = sum(r["after_dedup"]        for r in rows)
+    # Totals row — use actual unique count, not sum of per-source afters
+    total_before = sum(r["before_dedup"] for r in rows)
     rows.append({
-        "run_timestamp":     run_timestamp,
-        "source":            "TOTAL",
-        "before_dedup":      total_before,
-        "after_dedup":       total_after,
-        "duplicates_removed": total_before - total_after,
+        "run_timestamp":      run_timestamp,
+        "source":             "TOTAL",
+        "before_dedup":       total_before,
+        "after_dedup":        total_after_dedup,
+        "duplicates_removed": total_before - total_after_dedup,
     })
 
     os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
@@ -449,7 +416,7 @@ def main():
             pre_dedup_counts["PubMed"] = 0
 
     try:
-        ss_recs = fetch_semantic_scholar(SS_QUERIES, max_per_query=500)
+        ss_recs = fetch_semantic_scholar(SS_QUERIES, max_per_query=100)
         pre_dedup_counts["SemanticScholar"] = len(ss_recs)
         new_records += ss_recs
     except Exception as e:
@@ -466,9 +433,7 @@ def main():
     # ── Reconcile with existing CSV ──────────────────────────────────────
     existing = load_existing_csv(OUTPUT_FILE)
 
-    # Strip record_id and screening columns from existing so dedup works
-    # on content fields only; we'll re-assign IDs at the end.
-    existing_content = []
+    existing_content   = []
     existing_screening = {}  # title_key → {screen_decision, screen_reason, notes}
     for row in existing:
         title_key = re.sub(r"[^a-z0-9 ]", "", row.get("title", "").lower())
@@ -492,13 +457,29 @@ def main():
     print(f"  ✓ {len(unique)} unique records after deduplication")
 
     # ── Count surviving records per source (post-dedup) ──────────────────
-    post_dedup_counts = {}
-    for rec in unique:
-        # A record may list multiple sources (e.g. "PubMed, SemanticScholar")
-        for src in rec.get("source", "").split(","):
-            src = src.strip()
-            if src:
-                post_dedup_counts[src] = post_dedup_counts.get(src, 0) + 1
+    # Build a lookup of which records survived dedup, keyed by doi and title_key
+    survived_dois   = {r.get("doi", "").strip().lower() for r in unique if r.get("doi")}
+    survived_titles = {re.sub(r"[^a-z0-9 ]", "", r.get("title", "").lower()) for r in unique}
+
+    post_dedup_counts = {src: 0 for src in pre_dedup_counts}
+
+    # Count how many of each source's original records survived dedup
+    seen_check = set()
+    for src_name, src_records in [("PubMed", new_records), ("SemanticScholar", new_records)]:
+        pass  # replaced below
+
+    # Rebuild per-source survived counts by checking new_records against unique
+    unique_dois   = {r.get("doi", "").strip().lower() for r in unique if r.get("doi")}
+    unique_titles = {re.sub(r"[^a-z0-9 ]", "", r.get("title", "").lower()) for r in unique}
+
+    for rec in new_records:
+        src       = rec.get("source", "").strip()
+        doi       = rec.get("doi", "").strip().lower()
+        title_key = re.sub(r"[^a-z0-9 ]", "", rec.get("title", "").lower())
+        if src not in post_dedup_counts:
+            continue
+        if (doi and doi in unique_dois) or (title_key and title_key in unique_titles):
+            post_dedup_counts[src] += 1
 
     # Re-attach any existing screening decisions
     for rec in unique:
@@ -525,7 +506,7 @@ def main():
     print(f"\n✅ Saved → {OUTPUT_FILE}  ({len(unique)} records)")
 
     # ── Write stats CSV ───────────────────────────────────────────────────
-    write_stats(pre_dedup_counts, post_dedup_counts, run_timestamp)
+    write_stats(pre_dedup_counts, post_dedup_counts, len(unique), run_timestamp)
 
     print("\nNext steps:")
     print("  • Open the CSV in Excel / LibreOffice Calc")
