@@ -30,19 +30,19 @@ VENUE_NORMALIZATION = {
 # Figure registry (preserved structure & paths)
 FIGURES = {
     "temporal_trends": {
-        "file": "temporal_trends_refined.pdf",
+        "file": "temporal_trends.pdf",
         "desc": "Publication volume over time (from 2000 onwards)"
     },
     "modality_distribution": {
-        "file": "modality_distribution_refined.pdf",
+        "file": "modality_distribution.pdf",
         "desc": "Distribution of imaging modalities (top 10)"
     },
     "task_distribution": {
-        "file": "task_distribution_refined.pdf",
+        "file": "task_distribution.pdf",
         "desc": "Distribution of primary clinical/research tasks (top 10)"
     },
     "anatomy_distribution": {
-        "file": "anatomy_distribution_refined.pdf",
+        "file": "anatomy_distribution.pdf",
         "desc": "Distribution of anatomical regions (top 10)"
     },
     "venue_stacked": {
@@ -125,7 +125,7 @@ def run_topical_analysis(df: pd.DataFrame, norm_venue_counts: Counter, venue_typ
     df_year["year"] = df_year["year"].astype(int)
     df_year = df_year[df_year["year"] >= 2000]
 
-    year_range = pd.Series(range(2000, df_year["year"].max() + 1))
+    year_range = pd.Series(range(2000, 2026))
     year_counts = df_year["year"].value_counts().reindex(year_range, fill_value=0)
 
     plt.figure(figsize=(9, 5))
@@ -304,10 +304,10 @@ if __name__ == "__main__":
 
     files_output = {
         "Topical Analysis": [
-            "temporal_trends_refined.pdf",
-            "modality_distribution_refined.pdf",
-            "task_distribution_refined.pdf",
-            "anatomy_distribution_refined.pdf",
+            "temporal_trends.pdf",
+            "modality_distribution.pdf",
+            "task_distribution.pdf",
+            "anatomy_distribution.pdf",
         ],
         "Venue & Dominance Analysis": [
             "venue_analysis_stacked.pdf",

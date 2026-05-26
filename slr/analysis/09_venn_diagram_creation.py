@@ -109,8 +109,8 @@ COLOURS = {
 }
 
 # ── Output file paths ─────────────────────────────────────
-OUT_PDF = 'results/venn_diagram.pdf'
-OUT_PNG = 'results/venn_diagram.png'
+OUT_PDF = 'analysis-results/venn_diagram.pdf'
+OUT_PNG = 'analysis-results/venn_diagram.png'
 
 # ════════════════════════════════════════════════════════
 #  ② LAYOUT CONSTANTS — tweak if spacing needs adjusting
