@@ -11,16 +11,39 @@ Two-call architecture per paper:
   Call 2 — Exclusion gate  (E1–E5, ANY one triggers exclusion)
            Skipped when Call 1 already rejects the paper.
 
-Parallel execution:
-  The script splits pending records across N worker processes (default 2).
-  Each worker writes to its own shard CSV.  The main process merges shards
-  into the final output CSV once all workers finish.  Resume works per-shard
-  so a crashed run picks up exactly where each worker left off.
+Final decision logic:
+  inclusion_pass=False                          → EXCLUDE  (failed_at=inclusion)
+  inclusion_pass=True  & exclusion_pass=False   → EXCLUDE  (failed_at=exclusion)
+  inclusion_pass=True  & exclusion_pass=True    → INCLUDE
+  Either call is UNCERTAIN                      → UNCERTAIN (treated as failed at I1)
+
+Fixes applied (v2):
+  - Model kept loaded in VRAM via keep_alive="120m" on every ollama.chat() call
+  - _preload_model() warms up the model before the main loop (eliminates cold-start
+    empty responses on the first record of each run)
+  - RETRY_DELAY reduced 5s → 2s (cold start eliminated; shorter wait is sufficient)
+  - Abstract truncated to 2500 chars before sending (prevents context overflow
+    silently producing empty responses on very long abstracts)
+
+Fixes applied (v3):
+  - UNCERTAIN rows (both new and already-processed) are normalised to
+    failed_at=inclusion, failed_criteria=["I1"] for consistent downstream counting.
+  - Summary now reports # articles that passed ALL four inclusion criteria (I1–I4).
+  - Criteria summary CSV includes a new "n_passed_all_inclusion" row.
 
 Usage:
     python3 03_stage1_screening.py
-    python3 03_stage1_screening.py --workers 2
     python3 03_stage1_screening.py --input records.csv --output stage1_results.csv
+
+Input CSV columns (all retained in output):
+    record_id, source, title, authors, year, journal_venue, doi, url,
+    abstract, screen_decision, screen_reason, notes
+
+Added columns (LLM output, merged into input):
+    llm_decision, llm_failed_at,
+    llm_inclusion_pass, llm_inclusion_criteria, llm_inclusion_reason,
+    llm_exclusion_pass, llm_exclusion_criteria, llm_exclusion_reason,
+    llm_flag_for_human_review, llm_raw_inclusion, llm_raw_exclusion
 """
 
 # ── Auto-install dependencies ─────────────────────────────────────────────────
@@ -47,7 +70,6 @@ import json
 import time
 import argparse
 import logging
-import multiprocessing
 import pandas as pd
 import ollama
 from tqdm import tqdm
@@ -55,15 +77,14 @@ from tabulate import tabulate
 from collections import defaultdict
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL            = "qwen3:14b"
+MODEL            = "qwen3:8b"
 TEMPERATURE      = 0
-MAX_TOKENS       = 512
-RETRY_LIMIT      = 3
-RETRY_DELAY      = 2
+MAX_TOKENS       = 2048
+RETRY_LIMIT      = 2
+RETRY_DELAY      = 2          # FIX: reduced from 5s — cold start eliminated by keep_alive
 REPAIR_LIMIT     = 2
-KEEP_ALIVE       = "120m"
-ABSTRACT_MAX_LEN = 2500
-DEFAULT_WORKERS  = 2
+KEEP_ALIVE       = "120m"     # FIX: keep model loaded in VRAM for the full run
+ABSTRACT_MAX_LEN = 5000       # FIX: truncate abstracts to avoid context overflow → empty response
 
 INPUT_COLUMNS = [
     "record_id", "source", "title", "authors", "year",
@@ -73,12 +94,12 @@ INPUT_COLUMNS = [
 
 LLM_COLUMNS = [
     "llm_decision",
-    "llm_failed_at",
-    "llm_inclusion_pass",
-    "llm_inclusion_criteria",
+    "llm_failed_at",                # "inclusion" | "exclusion" | "none" | "error"
+    "llm_inclusion_pass",           # True / False / UNCERTAIN
+    "llm_inclusion_criteria",       # JSON dict {"met": [...], "failed": [...]}
     "llm_inclusion_reason",
-    "llm_exclusion_pass",
-    "llm_exclusion_criteria",
+    "llm_exclusion_pass",           # True / False / UNCERTAIN / SKIPPED
+    "llm_exclusion_criteria",       # JSON list of triggered E-codes
     "llm_exclusion_reason",
     "llm_flag_for_human_review",
     "llm_raw_inclusion",
@@ -97,27 +118,12 @@ CRITERIA_LABELS = {
     "E5": "E5 — Non-English language",
 }
 
-
-# ── Per-worker logging (each worker writes to its own log file) ───────────────
-
-def _get_logger(worker_id=None):
-    name   = f"stage1.worker{worker_id}" if worker_id is not None else "stage1.main"
-    logger = logging.getLogger(name)
-    if logger.handlers:
-        return logger
-    logger.setLevel(logging.INFO)
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-
-    sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
-
-    log_file = f"stage1_worker{worker_id}.log" if worker_id is not None else "stage1.log"
-    fh = logging.FileHandler(log_file)
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
-
-    return logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("stage1.log")],
+)
+log = logging.getLogger(__name__)
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -195,6 +201,43 @@ that was supposed to be a JSON object. Return ONLY the corrected JSON object.
 No preamble, no markdown fences, no explanation."""
 
 
+# ── UNCERTAIN normalisation ───────────────────────────────────────────────────
+
+def _normalise_uncertain_row(row: dict) -> dict:
+    """
+    If llm_decision == 'UNCERTAIN', rewrite the row so it is treated uniformly
+    as: failed at inclusion gate, failed criterion = I1.
+
+    Applied both to freshly-screened rows (in _screen_paper) and to rows
+    already persisted in the output CSV (in _reprocess_uncertain_in_existing).
+    """
+    if str(row.get("llm_decision", "")).upper() != "UNCERTAIN":
+        return row
+
+    row = dict(row)  # shallow copy so we don't mutate the caller's dict
+
+    # Parse existing inc_criteria so we can overwrite only the "failed" key
+    try:
+        existing = json.loads(row.get("llm_inclusion_criteria") or "{}")
+        if not isinstance(existing, dict):
+            existing = {}
+    except (json.JSONDecodeError, TypeError):
+        existing = {}
+
+    # Keep whatever was already marked as met, but force failed → ["I1"]
+    met = existing.get("met", [])
+    # Remove I1 from met if it was mistakenly listed there
+    met = [c for c in met if c != "I1"]
+
+    row["llm_decision"]           = "UNCERTAIN"          # keep label for transparency
+    row["llm_failed_at"]          = "inclusion"           # normalised
+    row["llm_inclusion_pass"]     = "UNCERTAIN"           # keep for human review signal
+    row["llm_inclusion_criteria"] = json.dumps({"met": met, "failed": ["I1"]})
+    row["llm_flag_for_human_review"] = True
+
+    return row
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _extract_json(text):
@@ -215,7 +258,7 @@ def _extract_json(text):
     return None
 
 
-def _repair_json(broken_raw, system_prompt, title, abstract, log):
+def _repair_json(broken_raw, system_prompt, title, abstract):
     user_content = (
         f"The following response was supposed to be valid JSON but is broken or empty.\n\n"
         f"BROKEN RESPONSE:\n{broken_raw if broken_raw else '(empty)'}\n\n"
@@ -247,7 +290,11 @@ def _repair_json(broken_raw, system_prompt, title, abstract, log):
     return None, ""
 
 
-def _call_gate(gate_name, system_prompt, title, abstract, log):
+def _call_gate(gate_name, system_prompt, title, abstract):
+    """
+    Generic LLM call for a single gate (inclusion or exclusion).
+    Returns (parsed_dict, raw_str) or (None, last_raw) on total failure.
+    """
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user",   "content": f"/no_think\n\nTitle: {title}\n\nAbstract: {abstract}"},
@@ -286,7 +333,7 @@ def _call_gate(gate_name, system_prompt, title, abstract, log):
             time.sleep(RETRY_DELAY)
 
     log.warning(f"  [{gate_name}] All {RETRY_LIMIT} attempts failed. Attempting JSON repair...")
-    parsed, repair_raw = _repair_json(last_raw, system_prompt, title, abstract, log)
+    parsed, repair_raw = _repair_json(last_raw, system_prompt, title, abstract)
     if parsed:
         return parsed, f"[REPAIRED] {repair_raw}"
 
@@ -296,7 +343,12 @@ def _call_gate(gate_name, system_prompt, title, abstract, log):
 
 # ── Model preload ─────────────────────────────────────────────────────────────
 
-def _preload_model(log):
+def _preload_model():
+    """
+    Send a dummy request before the main loop so the model is fully loaded
+    into VRAM before the first real record arrives. Eliminates the cold-start
+    empty response pattern seen on attempt 1 of each run.
+    """
     log.info(f"Preloading model '{MODEL}' into VRAM (keep_alive={KEEP_ALIVE})...")
     try:
         response = ollama.chat(
@@ -310,22 +362,28 @@ def _preload_model(log):
             keep_alive=KEEP_ALIVE,
         )
         raw = response.message.content.strip()
-        log.info(f"Model preloaded. Warm-up response: {raw[:60]}")
+        log.info(f"Model preloaded successfully. Warm-up response: {raw[:60]}")
     except Exception as e:
-        log.warning(f"Preload failed (non-fatal): {e}")
+        log.warning(f"Preload failed (non-fatal, will continue): {e}")
 
 
 # ── Two-call screening ────────────────────────────────────────────────────────
 
-def _screen_paper(title, abstract, log):
+def _screen_paper(title, abstract):
+    """
+    Run inclusion gate then (conditionally) exclusion gate.
+    Abstract is truncated before sending to avoid context overflow.
+    Returns a dict with all LLM_COLUMNS fields populated.
+    UNCERTAIN results are normalised via _normalise_uncertain_row().
+    """
     abstract = abstract[:ABSTRACT_MAX_LEN]
 
     # ── CALL 1: Inclusion gate ────────────────────────────────────
     log.info(f"  [inclusion] calling model...")
-    inc_parsed, inc_raw = _call_gate("inclusion", INCLUSION_SYSTEM, title, abstract, log)
+    inc_parsed, inc_raw = _call_gate("inclusion", INCLUSION_SYSTEM, title, abstract)
 
     if inc_parsed is None:
-        return {
+        row = {
             "llm_decision":              "ERROR",
             "llm_failed_at":             "inclusion",
             "llm_inclusion_pass":        "ERROR",
@@ -338,6 +396,7 @@ def _screen_paper(title, abstract, log):
             "llm_raw_inclusion":         inc_raw,
             "llm_raw_exclusion":         "",
         }
+        return row  # ERROR rows are not UNCERTAIN — skip normalisation
 
     inc_pass      = bool(inc_parsed.get("pass", False))
     inc_uncertain = bool(inc_parsed.get("uncertain", False))
@@ -346,14 +405,17 @@ def _screen_paper(title, abstract, log):
     inc_reason    = inc_parsed.get("reason", "")
     inc_flag      = bool(inc_parsed.get("flag_for_human_review", False))
 
-    inc_criteria_store = json.dumps({"met": inc_triggered, "failed": inc_failed})
+    inc_criteria_store = json.dumps({
+        "met":    inc_triggered,
+        "failed": inc_failed,
+    })
 
-    # Early exit — exclusion gate skipped entirely
+    # Early exit if inclusion fails or uncertain
     if not inc_pass or inc_uncertain:
         decision  = "UNCERTAIN" if inc_uncertain else "EXCLUDE"
         failed_at = "inclusion (uncertain)" if inc_uncertain else "inclusion"
         log.info(f"  [inclusion] → {decision} | failed: {inc_failed}")
-        return {
+        row = {
             "llm_decision":              decision,
             "llm_failed_at":             failed_at,
             "llm_inclusion_pass":        "UNCERTAIN" if inc_uncertain else False,
@@ -366,12 +428,14 @@ def _screen_paper(title, abstract, log):
             "llm_raw_inclusion":         inc_raw,
             "llm_raw_exclusion":         "",
         }
+        # Normalise UNCERTAIN → failed at I1
+        return _normalise_uncertain_row(row)
 
     log.info(f"  [inclusion] → PASS | met: {inc_triggered}")
 
     # ── CALL 2: Exclusion gate ────────────────────────────────────
     log.info(f"  [exclusion] calling model...")
-    exc_parsed, exc_raw = _call_gate("exclusion", EXCLUSION_SYSTEM, title, abstract, log)
+    exc_parsed, exc_raw = _call_gate("exclusion", EXCLUSION_SYSTEM, title, abstract)
 
     if exc_parsed is None:
         return {
@@ -393,11 +457,12 @@ def _screen_paper(title, abstract, log):
     exc_triggered = exc_parsed.get("triggered_criteria", [])
     exc_reason    = exc_parsed.get("reason", "")
     exc_flag      = bool(exc_parsed.get("flag_for_human_review", False))
+
     exc_criteria_store = json.dumps(exc_triggered)
 
     if exc_uncertain:
         log.info(f"  [exclusion] → UNCERTAIN | triggered: {exc_triggered}")
-        return {
+        row = {
             "llm_decision":              "UNCERTAIN",
             "llm_failed_at":             "exclusion (uncertain)",
             "llm_inclusion_pass":        True,
@@ -410,6 +475,8 @@ def _screen_paper(title, abstract, log):
             "llm_raw_inclusion":         inc_raw,
             "llm_raw_exclusion":         exc_raw,
         }
+        # Exclusion-stage uncertain also normalised to failed at I1
+        return _normalise_uncertain_row(row)
 
     if not exc_pass:
         log.info(f"  [exclusion] → EXCLUDE | triggered: {exc_triggered}")
@@ -427,6 +494,7 @@ def _screen_paper(title, abstract, log):
             "llm_raw_exclusion":         exc_raw,
         }
 
+    # Both gates passed → INCLUDE
     log.info(f"  [exclusion] → PASS | no exclusion criteria triggered")
     return {
         "llm_decision":              "INCLUDE",
@@ -443,83 +511,36 @@ def _screen_paper(title, abstract, log):
     }
 
 
-# ── Worker entry point ────────────────────────────────────────────────────────
+# ── Reprocess UNCERTAIN rows in an existing output CSV ───────────────────────
 
-def _worker(worker_id, records, shard_path, progress_queue):
+def _reprocess_uncertain_in_existing(output_path: str) -> int:
     """
-    Runs in a separate process.  Screens its slice of records and writes
-    results to shard_path.  Sends (worker_id, record_id, decision) tuples
-    to progress_queue so the main process can update a unified progress bar.
+    Read the output CSV, apply _normalise_uncertain_row() to every UNCERTAIN row,
+    write back in place, and return the count of rows that were updated.
+
+    Called at the start of screen_records() (before new screening begins) so that
+    rows processed in previous runs are also corrected.
     """
-    log = _get_logger(worker_id)
+    if not os.path.exists(output_path):
+        return 0
 
-    # Load any already-processed records for this shard (resume support)
-    done_ids = set()
-    if os.path.exists(shard_path):
-        done_df  = pd.read_csv(shard_path)
-        done_ids = set(done_df["record_id"].astype(str))
-        log.info(f"Worker {worker_id}: resuming — {len(done_ids)} records already in shard.")
-    else:
-        done_df = pd.DataFrame(columns=INPUT_COLUMNS + LLM_COLUMNS)
+    df = pd.read_csv(output_path)
+    uncertain_mask = df["llm_decision"].astype(str).str.upper() == "UNCERTAIN"
+    n_uncertain    = uncertain_mask.sum()
 
-    pending  = [r for r in records if str(r["record_id"]) not in done_ids]
-    new_rows = []
+    if n_uncertain == 0:
+        return 0
 
-    _preload_model(log)
+    log.info(f"Normalising {n_uncertain} UNCERTAIN rows in existing output → failed at I1...")
+    updated_rows = []
+    for _, row in df[uncertain_mask].iterrows():
+        updated_rows.append(_normalise_uncertain_row(row.to_dict()))
 
-    for row in pending:
-        rec_id   = str(row["record_id"])
-        title    = str(row.get("title",    "") or "").strip()
-        abstract = str(row.get("abstract", "") or "").strip()
-
-        if not title and not abstract:
-            log.warning(f"Worker {worker_id}: record_id={rec_id} empty — skipping.")
-            progress_queue.put((worker_id, rec_id, "SKIP"))
-            continue
-
-        llm_out  = _screen_paper(title, abstract, log)
-        decision = llm_out.get("llm_decision", "?")
-
-        out_row = {col: row.get(col, None) for col in INPUT_COLUMNS}
-        out_row.update(llm_out)
-        new_rows.append(out_row)
-
-        # Write shard after every record (crash-safe)
-        batch_df = pd.DataFrame(new_rows, columns=INPUT_COLUMNS + LLM_COLUMNS)
-        combined = pd.concat([done_df, batch_df], ignore_index=True)
-        combined.to_csv(shard_path, index=False)
-
-        progress_queue.put((worker_id, rec_id, decision))
-
-    log.info(f"Worker {worker_id}: finished.")
-    progress_queue.put((worker_id, None, "DONE"))
-
-
-# ── Merge shards ──────────────────────────────────────────────────────────────
-
-def _merge_shards(shard_paths, output_path, input_path):
-    """
-    Merge all shard CSVs into the final output, preserving the original
-    record order from the input CSV.
-    """
-    log = _get_logger()
-    log.info("Merging shard files...")
-
-    parts = [pd.read_csv(p) for p in shard_paths if os.path.exists(p)]
-    if not parts:
-        log.error("No shard files found to merge.")
-        return
-
-    merged = pd.concat(parts, ignore_index=True)
-
-    # Restore original input order
-    input_df = pd.read_csv(input_path)
-    order    = input_df["record_id"].astype(str).tolist()
-    merged["record_id"] = merged["record_id"].astype(str)
-    merged = merged.set_index("record_id").reindex(order).reset_index()
-
-    merged.to_csv(output_path, index=False)
-    log.info(f"Merged {len(merged)} records → {output_path}")
+    updated_df = pd.DataFrame(updated_rows)
+    df.loc[uncertain_mask, updated_df.columns.tolist()] = updated_df.values
+    df.to_csv(output_path, index=False)
+    log.info(f"  {n_uncertain} UNCERTAIN rows normalised and written back to {output_path}.")
+    return n_uncertain
 
 
 # ── Included titles export ────────────────────────────────────────────────────
@@ -530,6 +551,7 @@ def _save_included_titles(df, output_path):
     included    = df[df["llm_decision"] == "INCLUDE"].copy()
 
     if included.empty:
+        log.info("  No INCLUDE records found — skipping stage1_included.txt.")
         return
 
     def _is_flagged(val):
@@ -549,14 +571,26 @@ def _save_included_titles(df, output_path):
         fh.write("\n".join(lines) + "\n")
 
     flagged_count = included["_flagged"].sum()
-    print(f"  Included titles saved to: {txt_path}  "
-          f"({len(lines)} total, {flagged_count} flagged [Need-to-Check])\n")
+    msg = (f"  Included titles saved to: {txt_path}  "
+           f"({len(lines)} total, {flagged_count} flagged [Need-to-Check])")
+    log.info(msg)
+    print(msg + "\n")
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def _print_summary(output_path):
     df = pd.read_csv(output_path)
+
+    # ── Re-normalise any UNCERTAIN rows in the loaded dataframe ──
+    # (guards against a summary-only run on an old CSV that wasn't normalised)
+    uncertain_mask = df["llm_decision"].astype(str).str.upper() == "UNCERTAIN"
+    if uncertain_mask.any():
+        updated_rows = []
+        for _, row in df[uncertain_mask].iterrows():
+            updated_rows.append(_normalise_uncertain_row(row.to_dict()))
+        updated_df = pd.DataFrame(updated_rows)
+        df.loc[uncertain_mask, updated_df.columns.tolist()] = updated_df.values
 
     def _tbl(rows, headers):
         print()
@@ -585,6 +619,7 @@ def _print_summary(output_path):
     print("  STAGE 1 SUMMARY  (two-gate architecture)")
     print("=" * 60)
 
+    # ── 1. Overall decision counts ────────────────────────────────
     decision_rows = []
     for decision, count in df["llm_decision"].value_counts().items():
         pct = 100 * count / len(df)
@@ -593,6 +628,7 @@ def _print_summary(output_path):
     decision_rows.append(["Flagged for review", flags, f"{100*flags/len(df):.1f}%"])
     _tbl(decision_rows, ["Decision", "Count", "% of total"])
 
+    # ── 2. Failure stage breakdown ────────────────────────────────
     print("─" * 60)
     print("  WHERE DID EXCLUSIONS FAIL?")
     print("─" * 60)
@@ -606,16 +642,33 @@ def _print_summary(output_path):
     else:
         print("  No EXCLUDE records.\n")
 
+    # ── 3. Inclusion gate — criteria breakdown ────────────────────
     print("─" * 60)
     print("  INCLUSION GATE — CRITERIA BREAKDOWN")
     print("─" * 60)
 
     inc_met_counts    = defaultdict(int)
     inc_failed_counts = defaultdict(int)
-    for _, row in df.iterrows():
+
+    # Track how many articles had ALL four inclusion criteria met
+    # (llm_inclusion_pass is True, i.e., not False / UNCERTAIN / ERROR / SKIPPED)
+    all_inc_passed_set = set()   # record_ids where ALL I1-I4 were met
+
+    for idx, row in df.iterrows():
         met, failed = parse_inc_criteria(row.get("llm_inclusion_criteria", "{}"))
-        for c in met:    inc_met_counts[c]    += 1
-        for c in failed: inc_failed_counts[c] += 1
+        for c in met:
+            inc_met_counts[c] += 1
+        for c in failed:
+            inc_failed_counts[c] += 1
+
+        # An article passed ALL inclusion criteria iff llm_inclusion_pass is True
+        # (the string "True" from CSV, or boolean True)
+        inc_pass_val = str(row.get("llm_inclusion_pass", "")).strip().lower()
+        if inc_pass_val in ("true", "1"):
+            all_inc_passed_set.add(row.get("record_id", idx))
+
+    n_passed_all_inclusion = len(all_inc_passed_set)
+    pct_all_inc = 100 * n_passed_all_inclusion / len(df) if len(df) else 0
 
     inc_rows = []
     for c in ["I1", "I2", "I3", "I4"]:
@@ -623,12 +676,23 @@ def _print_summary(output_path):
         inc_rows.append([c, label, inc_met_counts[c], inc_failed_counts[c]])
     _tbl(inc_rows, ["ID", "Description", "# Met", "# Failed"])
 
+    # Report articles passing ALL four inclusion criteria
+    print("─" * 60)
+    print("  ARTICLES PASSING ALL FOUR INCLUSION CRITERIA (I1–I4)")
+    print("─" * 60)
+    _tbl(
+        [[n_passed_all_inclusion, f"{pct_all_inc:.1f}%", len(df)]],
+        ["# Passed All Inclusion", "% of total", "Total records"],
+    )
+
+    # ── 4. Exclusion gate — criteria breakdown ────────────────────
     print("─" * 60)
     print("  EXCLUSION GATE — TRIGGERED CRITERIA BREAKDOWN")
     print("─" * 60)
 
     exc_triggered_counts = defaultdict(int)
     exc_gate_df = df[df["llm_exclusion_pass"].astype(str).str.upper() != "SKIPPED"]
+
     for _, row in exc_gate_df.iterrows():
         for c in parse_json_col(row.get("llm_exclusion_criteria", "[]")):
             exc_triggered_counts[c] += 1
@@ -639,6 +703,7 @@ def _print_summary(output_path):
         exc_rows.append([c, label, exc_triggered_counts[c]])
     _tbl(exc_rows, ["ID", "Description", "# Triggered"])
 
+    # ── 5. Year range by decision ─────────────────────────────────
     print("─" * 60)
     print("  YEAR RANGE BY DECISION")
     print("─" * 60)
@@ -657,17 +722,44 @@ def _print_summary(output_path):
 
     print("=" * 60)
 
+    # ── 6. Criteria summary CSV ───────────────────────────────────
     criteria_rows = []
+
+    # Inclusion criteria rows
     for c in ["I1", "I2", "I3", "I4"]:
         criteria_rows.append({
-            "criterion": c, "description": CRITERIA_LABELS[c], "type": "inclusion",
-            "n_met": inc_met_counts[c], "n_failed": inc_failed_counts[c], "n_triggered": "",
+            "criterion":                 c,
+            "description":               CRITERIA_LABELS[c],
+            "type":                      "inclusion",
+            "n_met":                     inc_met_counts[c],
+            "n_failed":                  inc_failed_counts[c],
+            "n_triggered":               "",
+            "n_passed_all_inclusion":    "",
         })
+
+    # Summary row: articles that passed ALL four inclusion criteria
+    criteria_rows.append({
+        "criterion":                 "I1-I4 (ALL)",
+        "description":               "Articles passing ALL four inclusion criteria",
+        "type":                      "inclusion_summary",
+        "n_met":                     "",
+        "n_failed":                  "",
+        "n_triggered":               "",
+        "n_passed_all_inclusion":    n_passed_all_inclusion,
+    })
+
+    # Exclusion criteria rows
     for c in ["E1", "E2", "E3", "E4", "E5"]:
         criteria_rows.append({
-            "criterion": c, "description": CRITERIA_LABELS[c], "type": "exclusion",
-            "n_met": "", "n_failed": "", "n_triggered": exc_triggered_counts[c],
+            "criterion":                 c,
+            "description":               CRITERIA_LABELS[c],
+            "type":                      "exclusion",
+            "n_met":                     "",
+            "n_failed":                  "",
+            "n_triggered":               exc_triggered_counts[c],
+            "n_passed_all_inclusion":    "",
         })
+
     criteria_path = output_path.replace(".csv", "_criteria_summary.csv")
     pd.DataFrame(criteria_rows).to_csv(criteria_path, index=False)
     print(f"  Criteria summary CSV saved to: {criteria_path}\n")
@@ -675,143 +767,74 @@ def _print_summary(output_path):
     _save_included_titles(df, output_path)
 
 
-# ── Parallel orchestration ────────────────────────────────────────────────────
+# ── Main screening loop ───────────────────────────────────────────────────────
 
-def screen_records(input_path, output_path, n_workers=DEFAULT_WORKERS, resume=True):
-    log = _get_logger()
-
+def screen_records(input_path, output_path, resume=True):
     df = pd.read_csv(input_path)
+
     required = {"record_id", "title", "abstract"}
     missing  = required - set(df.columns)
     if missing:
         raise ValueError(f"Input CSV is missing required columns: {missing}")
+
     for col in INPUT_COLUMNS:
         if col not in df.columns:
-            df[col] = None
+            df[col] = pd.NA
 
-    # Determine which records still need processing across ALL shards
-    results_dir = os.path.dirname(output_path) or "."
-    os.makedirs(results_dir, exist_ok=True)
+    done_ids = set()
+    if resume and os.path.exists(output_path):
+        # Normalise any UNCERTAIN rows from previous runs before continuing
+        n_normalised = _reprocess_uncertain_in_existing(output_path)
+        if n_normalised:
+            log.info(f"  Normalised {n_normalised} pre-existing UNCERTAIN rows → failed at I1.")
 
-    base      = os.path.splitext(os.path.basename(output_path))[0]
-    shard_dir = os.path.join(results_dir, f"{base}_shards")
-    os.makedirs(shard_dir, exist_ok=True)
+        done_df  = pd.read_csv(output_path)
+        done_ids = set(done_df["record_id"].astype(str))
+        log.info(f"Resuming: {len(done_ids)} records already processed.")
+    else:
+        done_df = pd.DataFrame(columns=INPUT_COLUMNS + LLM_COLUMNS)
 
-    shard_paths = [
-        os.path.join(shard_dir, f"shard_{i}.csv") for i in range(n_workers)
-    ]
+    pending  = df[~df["record_id"].astype(str).isin(done_ids)]
+    new_rows = []
 
-    # ── Resume: collect already-done IDs from ALL sources ────────
-    # Priority 1: existing final output CSV (from a previous completed or
-    #             interrupted single-worker run, or a previous parallel run)
-    # Priority 2: existing shard CSVs (from an interrupted parallel run)
-    # Both are checked so that no matter how the script was stopped last
-    # time, it always resumes correctly.
-    done_ids   = set()
-    prior_rows = []   # rows already processed — used to pre-seed shards below
+    # Warm up the model before the loop so the first record never hits a cold model
+    _preload_model()
 
-    if resume:
-        # Check final output CSV first
-        if os.path.exists(output_path):
-            prior_df   = pd.read_csv(output_path)
-            prior_ids  = set(prior_df["record_id"].astype(str))
-            done_ids  |= prior_ids
-            prior_rows = prior_df.to_dict("records")
-            log.info(
-                f"Resuming: found {len(prior_ids)} records in existing output CSV "
-                f"({output_path})."
-            )
-
-        # Also check shards (catches records written after the last merge)
-        shard_extra = set()
-        for sp in shard_paths:
-            if os.path.exists(sp):
-                shard_df    = pd.read_csv(sp)
-                shard_ids   = set(shard_df["record_id"].astype(str))
-                new_in_shard = shard_ids - done_ids
-                if new_in_shard:
-                    prior_rows.extend(
-                        shard_df[shard_df["record_id"].astype(str).isin(new_in_shard)]
-                        .to_dict("records")
-                    )
-                    shard_extra |= new_in_shard
-                done_ids |= shard_ids
-
-        if shard_extra:
-            log.info(
-                f"Resuming: found {len(shard_extra)} additional records in shard files."
-            )
-
-        if done_ids:
-            log.info(f"Total already processed: {len(done_ids)} records — skipping these.")
-
-        # Pre-seed shard files with prior rows so each worker's own resume
-        # logic stays consistent (workers only read their own shard file).
-        if prior_rows:
-            prior_df_all = pd.DataFrame(prior_rows, columns=INPUT_COLUMNS + LLM_COLUMNS)
-            for i, sp in enumerate(shard_paths):
-                if not os.path.exists(sp):
-                    # Distribute prior rows across shards so they're roughly balanced
-                    chunk = prior_df_all.iloc[i::n_workers]
-                    if not chunk.empty:
-                        chunk.to_csv(sp, index=False)
-                        log.info(
-                            f"Pre-seeded shard {i} with {len(chunk)} prior rows."
-                        )
-
-    all_records = df.to_dict("records")
-    pending     = [r for r in all_records if str(r["record_id"]) not in done_ids]
-    total       = len(pending)
-
-    if total == 0:
-        log.info("All records already processed. Merging and printing summary.")
-        _merge_shards(shard_paths, output_path, input_path)
-        _print_summary(output_path)
-        return
-
-    log.info(f"Pending: {total} records across {n_workers} workers.")
-
-    # Distribute pending records across workers (round-robin preserves rough balance)
-    slices = [pending[i::n_workers] for i in range(n_workers)]
-
-    # Shared queue for progress updates from workers
-    progress_queue = multiprocessing.Queue()
-
-    processes = []
-    for i, slice_ in enumerate(slices):
-        p = multiprocessing.Process(
-            target=_worker,
-            args=(i, slice_, shard_paths[i], progress_queue),
-            daemon=True,
-        )
-        p.start()
-        processes.append(p)
-        log.info(f"Worker {i} started (PID {p.pid}) — {len(slice_)} records.")
-
-    # Main process: unified progress bar fed by the queue
-    done_workers = 0
-    with tqdm(total=total, desc="Screening", unit="record",
+    with tqdm(total=len(pending), desc="Screening", unit="record",
               bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
-        while done_workers < n_workers:
-            msg = progress_queue.get()
-            worker_id, rec_id, status = msg
-            if status == "DONE":
-                done_workers += 1
-            elif status == "SKIP":
-                pbar.update(1)
-            else:
-                failed_at = ""
-                label = status
-                if status == "EXCLUDE":
-                    label = f"EXCLUDE"
-                pbar.set_postfix_str(f"W{worker_id} → {label}", refresh=True)
-                pbar.update(1)
 
-    for p in processes:
-        p.join()
+        for _, row in pending.iterrows():
+            rec_id   = str(row["record_id"])
+            title    = str(row.get("title",    "")).strip()
+            abstract = str(row.get("abstract", "")).strip()
 
-    log.info("All workers finished. Merging shards...")
-    _merge_shards(shard_paths, output_path, input_path)
+            if not title and not abstract:
+                log.warning(f"record_id={rec_id}: empty title & abstract — skipping.")
+                pbar.update(1)
+                continue
+
+            pbar.set_postfix_str(title[:55], refresh=True)
+
+            llm_out   = _screen_paper(title, abstract)
+            decision  = llm_out.get("llm_decision", "?")
+            failed_at = llm_out.get("llm_failed_at", "?")
+
+            status_str = decision
+            if decision == "EXCLUDE":
+                status_str = f"EXCLUDE [{failed_at}]"
+            pbar.set_postfix_str(f"{title[:40]}… → {status_str}", refresh=True)
+
+            out_row = {col: row.get(col, pd.NA) for col in INPUT_COLUMNS}
+            out_row.update(llm_out)
+            new_rows.append(out_row)
+
+            batch_df = pd.DataFrame(new_rows, columns=INPUT_COLUMNS + LLM_COLUMNS)
+            combined = pd.concat([done_df, batch_df], ignore_index=True)
+            combined.to_csv(output_path, index=False)
+
+            pbar.update(1)
+
+    log.info(f"\nDone. Results written to: {output_path}")
     _print_summary(output_path)
 
 
@@ -821,16 +844,18 @@ def main():
     global MODEL
 
     parser = argparse.ArgumentParser(
-        description="Stage 1 — Title & Abstract Screening (parallel two-gate)"
+        description="Stage 1 — Title & Abstract Screening (two-gate: inclusion then exclusion)"
     )
-    parser.add_argument("--input",        default="results/slr_stage1_screening.csv")
-    parser.add_argument("--output",       default="results/stage1_results.csv")
+    parser.add_argument("--input",        default="results/slr_stage1_screening.csv",
+                        help="Path to input CSV")
+    parser.add_argument("--output",       default="results/stage1_results.csv",
+                        help="Path to output CSV")
     parser.add_argument("--model",        default=MODEL,
                         help=f"Ollama model name (default: {MODEL})")
-    parser.add_argument("--workers",      type=int, default=DEFAULT_WORKERS,
-                        help=f"Number of parallel workers (default: {DEFAULT_WORKERS})")
-    parser.add_argument("--no-resume",    action="store_true")
-    parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument("--no-resume",    action="store_true",
+                        help="Start fresh, ignore existing output")
+    parser.add_argument("--summary-only", action="store_true",
+                        help="Skip screening, just re-print summary from existing output")
     args = parser.parse_args()
 
     MODEL = args.model
@@ -841,13 +866,8 @@ def main():
             sys.exit(1)
         _print_summary(args.output)
     else:
-        screen_records(
-            args.input, args.output,
-            n_workers=args.workers,
-            resume=not args.no_resume,
-        )
+        screen_records(args.input, args.output, resume=not args.no_resume)
 
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn", force=True)
     main()

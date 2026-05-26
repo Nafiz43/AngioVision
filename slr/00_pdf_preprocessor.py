@@ -184,6 +184,47 @@ _LIGATURES = {
     "\ufb03": "ffi", "\ufb04": "ffl", "\ufb05": "st", "\ufb06": "st",
 }
 
+# ---------------------------------------------------------------------------
+# Fix 1 — Minimum content line threshold before truncation is allowed.
+# Prevents firing on journal boilerplate sections (Data Availability,
+# Ethics Statement, Author Contributions, etc.) that appear mid-document
+# in Frontiers / MDPI / similar publishers before the actual References list.
+# 80 lines ≈ ~1–1.5 dense journal pages; adjust upward for very short papers.
+# ---------------------------------------------------------------------------
+_MIN_LINES_BEFORE_TRUNCATION = 80
+
+# ---------------------------------------------------------------------------
+# Fix 2 — Heading prefix patterns that signal a *real* section heading
+# rather than inline prose that happens to match a keyword.
+# A valid truncation candidate must satisfy at least one of:
+#   (a) Starts with one or more Markdown '#' characters  (## References)
+#   (b) Is entirely UPPER CASE                           (REFERENCES)
+#   (c) Matches _FUZZY_SECTION_RE (bare keyword alone on a line)
+# Plain mixed-case lines like "Data availability statement" are NOT matched
+# unless they are preceded by '#' or are all-caps, making the check robust
+# against Frontiers-style bold prose headings rendered without '#' markers.
+# ---------------------------------------------------------------------------
+def _is_valid_heading_format(stripped: str) -> bool:
+    """
+    Return True only when the line looks like a genuine section heading,
+    not just body prose that happens to contain a section keyword.
+
+    Accepted formats
+    ----------------
+    - Markdown headings : ## References  /  ### Acknowledgements
+    - ALL CAPS lines    : REFERENCES  /  ACKNOWLEDGMENTS
+    - Bare keyword only : references  (matched by _FUZZY_SECTION_RE)
+    """
+    if stripped.startswith("#"):
+        return True
+    if stripped.replace(" ", "").isupper() and len(stripped) > 2:
+        return True
+    # _FUZZY_SECTION_RE is a single-word / very-short bare keyword match;
+    # those are unambiguous even without a '#' prefix.
+    if _FUZZY_SECTION_RE.match(stripped):
+        return True
+    return False
+
 
 # =========================================================================== #
 # Postprocessing helpers
@@ -284,24 +325,47 @@ def remove_pipe_flood(text: str) -> str:
 def truncate_at_trailing_sections(text: str) -> str:
     """
     Remove everything from the first trailing section heading onward.
-    Handles plain / ALL-CAPS / numbered / markdown-heading / bold variants,
-    plus fuzzy bare-keyword match for headings left alone after noise stripping.
+
+    Fix 1 — enforces a minimum line count (_MIN_LINES_BEFORE_TRUNCATION)
+             before any truncation is considered, preventing early firing on
+             journal boilerplate that appears before the body is fully rendered.
+
+    Fix 2 — additionally requires the matched line to look like a genuine
+             section heading (Markdown '#' prefix, ALL-CAPS, or a bare
+             single-keyword line) via _is_valid_heading_format().  Mixed-case
+             prose lines such as "Data availability statement" are therefore
+             skipped even when their keyword matches the regex, eliminating
+             false truncations caused by Frontiers-style publisher boilerplate.
     """
     lines = text.splitlines()
     cut_at: Optional[int] = None
 
     for i, line in enumerate(lines):
+        # Fix 1: do not consider truncation until enough content has been seen
+        if i < _MIN_LINES_BEFORE_TRUNCATION:
+            continue
+
         stripped = line.strip()
         if not stripped:
             continue
-        if (
+
+        keyword_match = (
             _STRIP_SECTION_RE.match(line)
             or _INLINE_SECTION_RE.match(line)
             or _FUZZY_SECTION_RE.match(stripped)
-        ):
-            log.debug(f"Trailing section '{stripped[:60]}' at line {i}")
-            cut_at = i
-            break
+        )
+
+        if keyword_match:
+            # Fix 2: only truncate if the line is formatted as a real heading
+            if _is_valid_heading_format(stripped):
+                log.debug(f"Trailing section '{stripped[:60]}' at line {i}")
+                cut_at = i
+                break
+            else:
+                log.debug(
+                    f"Skipping mid-doc prose match '{stripped[:60]}' at line {i} "
+                    f"(not a heading format — Fix 2)"
+                )
 
     return "\n".join(lines[:cut_at]) if cut_at is not None else text
 

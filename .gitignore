@@ -34,6 +34,7 @@ dist/
 /bedrock-inference/logs
 slr/articles
 slr/articles-processed
+slr/d_articles-processed
 slr/results
 fine-tuning/d_checkpoints
 fine-tuning/gpt2

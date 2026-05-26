@@ -1,21 +1,29 @@
 """
-CLAIM 2024 Adherence Extraction
+Stage 2 — Full-Text Structured Data Extraction
 AngioVision Systematic Review (PRISMA)
 
-Processes all .md files in --fulltext_dir.
-For each article, the LLM is asked to score each of the 12 CLAIM 2024
-thematic clusters (Yes / No / NA) and provide a one-sentence rationale.
+Backend: ollama Python library (no separate `ollama serve` required)
+         Model:  GPT-OSS:20b   (`ollama pull GPT-OSS:20b`)
 
-The 44 CLAIM 2024 items are mapped to 12 clusters; the LLM receives the
-full item list for each cluster so it can ground its answers in the text.
+Processes ALL .md files found in --fulltext_dir.
+No cross-check with Stage 1 — articles in the folder are assumed included.
 
-Backend : ollama Python library
-Model   : gpt-oss:20b  (set via --model)
+Markdown format expected (based on actual article files):
+    # <Title>
+    **Publication Year:** <year>
+    **Source File:** `<filename>`
+
+Title, year, and source file are parsed directly from the markdown header
+before the LLM call — so they are never null even if the model misbehaves.
 
 Usage:
-    python3 claim2024_extraction.py
-    python3 claim2024_extraction.py --fulltext_dir /path/to/articles --output claim2024_results.jsonl
-    python3 claim2024_extraction.py --summary-only
+    python3 stage2_extraction.py
+    python3 stage2_extraction.py --fulltext_dir /path/to/articles --output stage2_results.jsonl
+    python3 stage2_extraction.py --summary-only
+
+Output:
+    stage2_results.jsonl        — one JSON record per article
+    stage2_results_summary.csv  — flattened CSV for quick inspection
 """
 
 # ── Auto-install dependencies ─────────────────────────────────────────────────
@@ -49,230 +57,191 @@ from tqdm import tqdm
 from tabulate import tabulate
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MODEL              = "llama3.1:8b"
+MODEL              = "gpt-oss:20b"
 TEMPERATURE        = 0
-MAX_TOKENS         = 3000
+MAX_TOKENS         = 20048
 RETRY_LIMIT        = 3
 RETRY_DELAY        = 5
 REPAIR_LIMIT       = 2
 MAX_FULLTEXT_CHARS = 80_000
 
 DEFAULT_FULLTEXT_DIR = "/data/Deep_Angiography/AngioVision/slr/articles-processed"
-DEFAULT_OUTPUT       = "results/claim2024_results.jsonl"
+DEFAULT_OUTPUT       = "results/stage2_results.jsonl"
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("claim2024_extraction.log")],
+    handlers=[logging.StreamHandler(), logging.FileHandler("stage2.log")],
 )
 log = logging.getLogger(__name__)
 
-# ── CLAIM 2024 cluster definitions ────────────────────────────────────────────
-# 44 items collapsed into 12 thematic clusters.
-# Each cluster carries the full item wording so the LLM can ground its answer.
-
-CLAIM2024_CLUSTERS = [
-    {
-        "cluster_id":   "C01",
-        "cluster_label": "AI identification & abstract completeness",
-        "section":      "Title/Abstract",
-        "items_covered": "1-2",
-        "items": [
-            "Item 1: AI/ML technique (e.g. 'deep learning', 'transformer') identified in title and/or abstract.",
-            "Item 2: Abstract contains a structured summary covering study design, methods, results, and conclusions.",
-        ],
-    },
-    {
-        "cluster_id":   "C02",
-        "cluster_label": "Background & study objectives",
-        "section":      "Introduction",
-        "items_covered": "3-5",
-        "items": [
-            "Item 3: Scientific and/or clinical background clearly stated.",
-            "Item 4: Study objectives or research questions explicitly defined.",
-            "Item 5: Rationale for using AI/ML for this specific task is provided.",
-        ],
-    },
-    {
-        "cluster_id":   "C03",
-        "cluster_label": "Study design & data sources",
-        "section":      "Methods",
-        "items_covered": "6-9",
-        "items": [
-            "Item 6: Study design described (e.g. prospective, retrospective, cross-sectional).",
-            "Item 7: Data sources and acquisition process described.",
-            "Item 8: Study setting and dates of data collection stated.",
-            "Item 9: Eligibility criteria for inclusion/exclusion of participants or images specified.",
-        ],
-    },
-    {
-        "cluster_id":   "C04",
-        "cluster_label": "Participants & image acquisition",
-        "section":      "Methods",
-        "items_covered": "10-13",
-        "items": [
-            "Item 10: Participant characteristics (age, sex, relevant clinical features) reported.",
-            "Item 11: De-identification or privacy-protection measures described.",
-            "Item 12: Institutional review board (IRB) approval or ethics waiver mentioned.",
-            "Item 13: Image acquisition protocol described (manufacturer, sequence/modality parameters, resolution).",
-        ],
-    },
-    {
-        "cluster_id":   "C05",
-        "cluster_label": "Ground truth & annotation",
-        "section":      "Methods",
-        "items_covered": "14-16",
-        "items": [
-            "Item 14: Definition and method used to obtain the reference standard (ground truth) described.",
-            "Item 15: Number of annotators and their clinical expertise reported.",
-            "Item 16: Inter-rater agreement or quality of annotations reported.",
-        ],
-    },
-    {
-        "cluster_id":   "C06",
-        "cluster_label": "Data partitioning & class handling",
-        "section":      "Methods",
-        "items_covered": "17-21",
-        "items": [
-            "Item 17: Training, validation, and test splits clearly reported.",
-            "Item 18: Method of partitioning (random split, site-based, temporal) described.",
-            "Item 19: Data augmentation strategies described.",
-            "Item 20: Class imbalance and how it was addressed described.",
-            "Item 21: Data leakage prevention measures described.",
-        ],
-    },
-    {
-        "cluster_id":   "C07",
-        "cluster_label": "Model architecture & training",
-        "section":      "Methods",
-        "items_covered": "22-26",
-        "items": [
-            "Item 22: Model architecture described in sufficient detail for replication.",
-            "Item 23: Pre-trained weights or transfer learning described (backbone, source dataset).",
-            "Item 24: Loss function(s) defined.",
-            "Item 25: Optimizer, learning rate, and key hyperparameters reported.",
-            "Item 26: Stopping criteria or training procedure described.",
-        ],
-    },
-    {
-        "cluster_id":   "C08",
-        "cluster_label": "Evaluation design & fairness",
-        "section":      "Methods",
-        "items_covered": "27-31",
-        "items": [
-            "Item 27: Performance metrics pre-specified before analysis.",
-            "Item 28: Statistical analysis plan described.",
-            "Item 29: Confidence intervals or uncertainty estimates reported.",
-            "Item 30: Robustness or sensitivity analysis performed.",
-            "Item 31: Explainability or interpretability methods applied and described.",
-        ],
-    },
-    {
-        "cluster_id":   "C09",
-        "cluster_label": "Performance & external validation",
-        "section":      "Results",
-        "items_covered": "32-36",
-        "items": [
-            "Item 32: Evaluation on internal (held-out) test data reported.",
-            "Item 33: External validation dataset described and results reported.",
-            "Item 34: Participant/image flow described (numbers screened, included, excluded).",
-            "Item 35: Failure case or error analysis reported.",
-            "Item 36: Model performance compared to human expert or prior methods.",
-        ],
-    },
-    {
-        "cluster_id":   "C10",
-        "cluster_label": "Demographic & subgroup reporting",
-        "section":      "Results",
-        "items_covered": "37-39",
-        "items": [
-            "Item 37: Demographic characteristics of the study population reported.",
-            "Item 38: Subgroup or stratified performance analysis reported (e.g. by sex, age, site).",
-            "Item 39: Fairness or algorithmic bias evaluation reported.",
-        ],
-    },
-    {
-        "cluster_id":   "C11",
-        "cluster_label": "Limitations, implications & future work",
-        "section":      "Discussion",
-        "items_covered": "40-42",
-        "items": [
-            "Item 40: Study limitations identified (methods, data, generalisability, uncertainty).",
-            "Item 41: Clinical implications and intended use of the AI model discussed.",
-            "Item 42: Reference to full study protocol or additional technical details provided.",
-        ],
-    },
-    {
-        "cluster_id":   "C12",
-        "cluster_label": "Reproducibility & funding disclosure",
-        "section":      "Other Information",
-        "items_covered": "43-44",
-        "items": [
-            "Item 43: Software, trained model, and/or data availability stated (URL or access conditions).",
-            "Item 44: Sources of funding and role of funders disclosed; author independence stated.",
-        ],
-    },
-]
-
 # ── System prompt ─────────────────────────────────────────────────────────────
-def _build_system_prompt():
-    cluster_block = ""
-    for c in CLAIM2024_CLUSTERS:
-        cluster_block += f'\n  "{c["cluster_id"]}": {{\n'
-        cluster_block += f'    // {c["cluster_label"]} (CLAIM 2024 items {c["items_covered"]})\n'
-        cluster_block += f'    "adherence": "Yes" | "No" | "NA",\n'
-        cluster_block += f'    "rationale": "One sentence citing the specific evidence or absence thereof."\n'
-        cluster_block += f'  }},'
+SYSTEM_PROMPT = """You are a systematic literature review (SLR) data extraction assistant specializing in deep learning and medical image analysis research. You will be given the full text of a research article in Markdown format. Your task is to extract structured bibliographic, methodological, and evaluative information precisely and completely to support a PRISMA-compliant systematic review on deep learning methods for angiographic sequence analysis.
 
-    return f"""You are a systematic literature review (SLR) quality assessor specialising in CLAIM 2024 — the Checklist for Artificial Intelligence in Medical Imaging (Tejani et al., Radiology: AI, 2024).
+EXTRACTION RULES:
+- If a field cannot be determined from the text, return null for that field.
+- Do not infer, guess, or hallucinate values not explicitly stated or clearly implied in the paper.
+- For list fields, return an empty list [] if none are found — do not return null.
+- For enumerated fields (those with "|" options), choose the closest matching value. If none fit, use "other" and explain in the nearest descriptive field.
+- Keywords should be taken verbatim from the paper's keyword section if present; otherwise extract up to 10 salient domain terms from the abstract and body.
+- Architecture names should be extracted as the authors name them (e.g., "nnU-Net", "ResNet-50", "VideoSwinTransformer") — do not map them to a family yourself.
+- Task labels must reflect the clinical or technical goal of the work, not just the algorithmic operation.
+- Be exhaustive for the evaluation section: capture ALL metrics reported, not just the primary one.
 
-You will be given the full text of a research article in Markdown format. Your task is to assess adherence to each of the 12 CLAIM 2024 thematic clusters listed below and return a structured JSON object.
+RESPOND ONLY with a valid JSON object matching the schema below. No preamble, no markdown fences, no trailing commentary.
 
-CLUSTER DEFINITIONS (what each cluster covers):
-{json.dumps([{
-    "cluster_id": c["cluster_id"],
-    "cluster_label": c["cluster_label"],
-    "section": c["section"],
-    "items": c["items"]
-} for c in CLAIM2024_CLUSTERS], indent=2)}
+{
+  "study_identity": {
+    "title": "...",
+    "journal_or_venue": "...",
+    "year": null,
+    "publication_type": "journal" | "conference" | "preprint" | "other"
+  },
 
-SCORING RULES:
-- "Yes"  — the cluster's requirements are clearly and explicitly addressed in the article text.
-- "No"   — the cluster's requirements are absent or so incomplete that a reader cannot verify them.
-- "NA"   — not applicable to this study design (e.g. no external dataset exists for C09; no annotators needed for a synthetic dataset in C05). Use sparingly and justify.
-- Do not infer or hallucinate information. Base scoring strictly on what is written.
-- If a cluster has multiple items, score "Yes" only if the MAJORITY of its items are satisfied. Otherwise score "No".
-- Keep rationale to one sentence maximum. Cite a specific section, sentence, or absence of evidence.
+  "keywords": ["...", "..."],
 
-RESPOND ONLY with a valid JSON object in exactly this structure. No preamble, no markdown fences, no trailing commentary.
+  "imaging": {
+    "modality": "DSA" | "fluoroscopy" | "DSA+fluoroscopy" | "X-ray" | "CT-angiography" | "MR-angiography" | "ultrasound" | "multi-modal" | "other",
+    "anatomy": "coronary" | "cerebral" | "peripheral" | "abdominal" | "retinal" | "pulmonary" | "multi" | "other",
+    "anatomy_detail": "...",
+    "frame_rate_fps": null,
+    "sequence_length_frames": null,
+    "image_resolution": "...",
+    "contrast_agent_used": true | false | null
+  },
 
-{{
-  "claim2024_adherence": {{{cluster_block}
-  }}
-}}"""
+  "dataset": {
+    "source": "public" | "private" | "phantom" | "synthetic" | "mixed",
+    "dataset_name": null,
+    "dataset_url_or_ref": null,
+    "n_patients": null,
+    "n_sequences": null,
+    "n_frames": null,
+    "n_annotations": null,
+    "annotation_type": "manual" | "semi-automatic" | "automatic" | "none" | null,
+    "annotator_count": null,
+    "inter_rater_agreement_reported": true | false,
+    "train_test_split": "...",
+    "data_augmentation_used": true | false | null,
+    "class_imbalance_addressed": true | false | null
+  },
 
-SYSTEM_PROMPT = _build_system_prompt()
+  "task": {
+    "primary_task": "Image Enhancement & Denoising" |
+                    "Background Subtraction" |
+                    "Motion Correction & Registration" |
+                    "Vessel Segmentation" |
+                    "Object Detection & Localisation" |
+                    "Temporal Sequence Modelling" |
+                    "Outcome Prediction" |
+                    "Disease Classification & Grading" |
+                    "Optical Flow & Frame Interpolation" |
+                    "Anomaly Detection" |
+                    "3D Reconstruction & Depth Estimation" |
+                    "Report Generation & Summarisation" |
+                    "Landmark & Keypoint Detection" |
+                    "Catheter & Device Tracking" |
+                    "Contrast Flow Analysis" |
+                    "other",
+    "secondary_tasks": [],
+    "task_description": "...",
+    "clinical_application": "..."
+  },
+
+  "method": {
+    "architecture_name": "...",
+    "architecture_description": "...",
+    "input_type": "2D_frame" | "3D_sequence" | "optical_flow" | "multi-frame_stack" | "mixed" | "other",
+    "temporal_modelling": true | false,
+    "temporal_mechanism": "...",
+    "pretrained_backbone": null,
+    "pretrained_dataset": null,
+    "training_supervision": "fully_supervised" | "self_supervised" | "weakly_supervised" | "semi_supervised" | "unsupervised" | "other",
+    "loss_functions": ["...", "..."],
+    "post_processing_steps": "...",
+    "computational_framework": "...",
+    "hardware_used": "...",
+    "inference_time_reported": true | false,
+    "model_complexity_reported": true | false
+  },
+
+  "evaluation": {
+    "metrics": ["PSNR", "SSIM", "Dice", "..."],
+    "primary_metric": "...",
+    "primary_metric_value": "...",
+    "all_reported_results": [
+      {
+        "metric": "...",
+        "value": "...",
+        "dataset_split": "test" | "validation" | "cross_val" | "other"
+      }
+    ],
+    "comparators": ["method_name", "..."],
+    "ablation_study_performed": true | false,
+    "statistical_significance_reported": true | false,
+    "validation_design": "held_out_test" | "cross_validation" | "prospective" | "external_validation" | "other",
+    "failure_case_analysis": true | false
+  },
+
+  "clinical_validation": {
+    "clinical_expert_involved": true | false,
+    "reader_study_performed": true | false,
+    "patient_outcome_measured": true | false,
+    "regulatory_approval_mentioned": true | false,
+    "clinical_deployment_mentioned": true | false
+  },
+
+  "reproducibility": {
+    "open_source_code": true | false,
+    "code_url": null,
+    "open_source_data": true | false,
+    "data_url": null,
+    "hyperparameters_reported": true | false,
+    "training_details_sufficient": true | false
+  },
+
+  "study_quality": {
+    "limitations": "...",
+    "future_work_stated": "..."
+  }
+}"""
 
 REPAIR_SYSTEM = """You are a JSON repair assistant. You will be given a broken or empty response
-that was supposed to be a valid JSON assessment of CLAIM 2024 adherence.
+that was supposed to be a valid JSON extraction record for a research paper.
 Return ONLY the corrected JSON object. No preamble, no markdown fences, no explanation."""
 
 
 # ── Markdown header parser ────────────────────────────────────────────────────
+
 def parse_md_header(text):
-    """Extract title, year, source_file from the first 20 lines of the markdown."""
+    """
+    Extract title, year, and source_file directly from the markdown header.
+
+    Expected format:
+        # A multimodal generative AI copilot for human pathology
+        **Publication Year:** 2024
+        **Source File:** `Copilot-Nature.pdf`
+
+    Returns dict with keys: title, year, source_file (all may be None if not found).
+    """
     title       = None
     year        = None
     source_file = None
 
-    for line in text.splitlines()[:20]:
+    for line in text.splitlines()[:20]:   # only scan the first 20 lines
         line = line.strip()
+
+        # Title: first level-1 heading
         if title is None and line.startswith("# "):
             title = line[2:].strip()
+
+        # Publication year
         if year is None:
             m = re.search(r"\*\*Publication Year:\*\*\s*(\d{4})", line)
             if m:
                 year = int(m.group(1))
+
+        # Source file
         if source_file is None:
             m = re.search(r"\*\*Source File:\*\*\s*`?([^`\n]+)`?", line)
             if m:
@@ -282,6 +251,7 @@ def parse_md_header(text):
 
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
+
 def _extract_json(text):
     if not text:
         return None
@@ -302,12 +272,11 @@ def _extract_json(text):
 
 def _repair_json(broken_raw, title):
     user_content = (
-        f"The following response was supposed to be a valid JSON CLAIM 2024 adherence record "
+        f"The following response was supposed to be a valid JSON extraction record "
         f"but is broken or empty.\n\n"
         f"BROKEN RESPONSE:\n{broken_raw if broken_raw else '(empty)'}\n\n"
         f"PAPER TITLE: {title}\n\n"
-        f"Please return the correct JSON object with keys: claim2024_adherence -> C01 through C12, "
-        f"each having 'adherence' (Yes/No/NA) and 'rationale' (one sentence)."
+        f"Please return the correct JSON object."
     )
     options = ollama.Options(temperature=0, num_predict=MAX_TOKENS)
     for attempt in range(1, REPAIR_LIMIT + 1):
@@ -333,13 +302,14 @@ def _repair_json(broken_raw, title):
     return None, ""
 
 
-# ── LLM call ─────────────────────────────────────────────────────────────────
+# ── LLM call ──────────────────────────────────────────────────────────────────
+
 def _call_model(fulltext, title):
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user",   "content": f"PAPER TITLE: {title}\n\nFULL TEXT:\n{fulltext}"},
     ]
-    options  = ollama.Options(temperature=TEMPERATURE, num_predict=MAX_TOKENS)
+    options = ollama.Options(temperature=TEMPERATURE, num_predict=MAX_TOKENS)
     last_raw = ""
 
     for attempt in range(1, RETRY_LIMIT + 1):
@@ -386,6 +356,7 @@ def _call_model(fulltext, title):
 
 
 # ── Main extraction loop ──────────────────────────────────────────────────────
+
 def extract_all(fulltext_dir, output_jsonl, resume=True):
     md_files = sorted(Path(fulltext_dir).glob("*.md"))
 
@@ -395,7 +366,7 @@ def extract_all(fulltext_dir, output_jsonl, resume=True):
 
     log.info(f"Found {len(md_files)} .md files in {fulltext_dir}")
 
-    # Resume: track by _md_file key (the .md filename)
+    # Resume: track by _md_file key (the .md filename) to correctly match f.name
     done_files = set()
     if resume and os.path.exists(output_jsonl):
         with open(output_jsonl, encoding="utf-8") as f:
@@ -410,29 +381,28 @@ def extract_all(fulltext_dir, output_jsonl, resume=True):
 
     pending = [f for f in md_files if f.name not in done_files]
     log.info(f"Pending: {len(pending)} files to process.")
-    log.info(f"Model: {MODEL}")
-
-    os.makedirs(os.path.dirname(output_jsonl) or ".", exist_ok=True)
+    log.info(f"Model Being Used: {MODEL}")
 
     with open(output_jsonl, "a", encoding="utf-8") as out_f:
-        with tqdm(
-            total=len(pending), desc="CLAIM 2024 extraction", unit="article",
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-        ) as pbar:
+        with tqdm(total=len(pending), desc="Extracting", unit="article",
+                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
 
             for md_path in pending:
                 pbar.set_postfix_str(md_path.stem[:60], refresh=True)
 
+                # Load text
                 text = md_path.read_text(encoding="utf-8", errors="replace")
                 if len(text) > MAX_FULLTEXT_CHARS:
                     log.warning(f"  {md_path.name}: truncated to {MAX_FULLTEXT_CHARS} chars.")
                     text = text[:MAX_FULLTEXT_CHARS]
 
-                header      = parse_md_header(text)
+                # Parse header fields directly — no LLM needed for these
+                header = parse_md_header(text)
                 title       = header["title"]       or md_path.stem
                 year        = header["year"]
                 source_file = header["source_file"] or md_path.name
 
+                # LLM extraction of the remaining schema fields
                 llm_result = _call_model(text, title)
 
                 if llm_result is None:
@@ -444,12 +414,14 @@ def extract_all(fulltext_dir, output_jsonl, resume=True):
                         "_error":       "Extraction failed after all retries",
                     }
                 else:
+                    # Merge: header fields take precedence over whatever the LLM returned
                     record = {
                         "title":        title,
                         "year":         year,
                         "_source_file": source_file,
                         "_md_file":     md_path.name,
                     }
+                    # Carry over all LLM-extracted fields except title/year (already set above)
                     for k, v in llm_result.items():
                         if k not in ("title", "year"):
                             record[k] = v
@@ -457,8 +429,8 @@ def extract_all(fulltext_dir, output_jsonl, resume=True):
                 out_f.write(json.dumps(record) + "\n")
                 out_f.flush()
 
-                status = "ERR" if "_error" in record else "OK"
-                pbar.set_postfix_str(f"{title[:40]}… → {status}", refresh=True)
+                status = "ERROR" if "_error" in record else title[:45]
+                pbar.set_postfix_str(f"{status}… → {'ERR' if '_error' in record else 'OK'}", refresh=True)
                 pbar.update(1)
 
     log.info(f"\nExtraction complete. JSONL written to: {output_jsonl}")
@@ -466,81 +438,125 @@ def extract_all(fulltext_dir, output_jsonl, resume=True):
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────
+
 def _write_summary(jsonl_path):
     records = []
     with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             try:
-                rec   = json.loads(line)
-                adh   = rec.get("claim2024_adherence", {})
-                row   = {
-                    "title":       rec.get("title"),
-                    "year":        rec.get("year"),
-                    "md_file":     rec.get("_md_file"),
-                    "error":       rec.get("_error"),
-                }
-                for c in CLAIM2024_CLUSTERS:
-                    cid  = c["cluster_id"]
-                    cell = adh.get(cid, {})
-                    row[f"{cid}_adherence"] = cell.get("adherence") if isinstance(cell, dict) else None
-                    row[f"{cid}_rationale"] = cell.get("rationale") if isinstance(cell, dict) else None
-                records.append(row)
+                rec = json.loads(line)
+                records.append({
+                    "title":               rec.get("title"),
+                    "year":                rec.get("year"),
+                    "source_file":         rec.get("_source_file"),
+                    "md_file":             rec.get("_md_file"),
+                    "journal":             rec.get("study_identity", {}).get("journal_or_venue"),
+                    "doi":                 rec.get("study_identity", {}).get("doi"),
+                    "publication_type":    rec.get("study_identity", {}).get("publication_type"),
+                    "modality":            rec.get("imaging", {}).get("modality"),
+                    "anatomy":             rec.get("imaging", {}).get("anatomy"),
+                    "primary_task":        rec.get("task", {}).get("primary_task"),
+                    "architecture_family": rec.get("method", {}).get("architecture_family"),
+                    "architecture_name":   rec.get("method", {}).get("architecture_name"),
+                    "temporal_modelling":  rec.get("method", {}).get("temporal_modelling"),
+                    "validation_design":   rec.get("evaluation", {}).get("validation_design"),
+                    "metrics":             json.dumps(rec.get("evaluation", {}).get("metrics", [])),
+                    "open_source_code":    rec.get("open_source_code"),
+                    "open_source_data":    rec.get("open_source_data"),
+                    "error":               rec.get("_error"),
+                })
             except Exception:
                 pass
 
-    df      = pd.DataFrame(records)
-    csv_out = jsonl_path.replace(".jsonl", "_summary.csv")
-    df.to_csv(csv_out, index=False)
-    log.info(f"Summary CSV written to: {csv_out}")
+    df = pd.DataFrame(records)
+    csv_path = jsonl_path.replace(".jsonl", "_summary.csv").replace(".json", "_summary.csv")
+    df.to_csv(csv_path, index=False)
+    log.info(f"Summary CSV written to: {csv_path}")
+
+    def _tbl(rows, headers):
+        print()
+        print(tabulate(rows, headers=headers, tablefmt="simple_outline"))
+        print()
 
     total   = len(df)
     success = int(df["error"].isna().sum())
     errors  = int(df["error"].notna().sum())
 
-    print("\n" + "=" * 60)
-    print("  CLAIM 2024 ADHERENCE EXTRACTION SUMMARY")
-    print("=" * 60)
-    print(tabulate(
-        [["Total processed", total], ["Extracted OK", success], ["Errors", errors]],
-        headers=["", "Count"], tablefmt="simple_outline",
-    ))
+    print("\n" + "=" * 55)
+    print("  STAGE 2 SUMMARY")
+    print("=" * 55)
 
-    print(f"\n{'─'*60}")
-    print("  CLUSTER ADHERENCE RATES")
-    rows = []
-    for c in CLAIM2024_CLUSTERS:
-        cid = c["cluster_id"]
-        col = f"{cid}_adherence"
-        if col not in df.columns:
+    _tbl(
+        [["Total processed", total], ["Extracted OK", success], ["Errors", errors]],
+        ["", "Count"]
+    )
+
+    for col, label in [
+        ("architecture_family", "ARCHITECTURE FAMILY"),
+        ("primary_task",        "PRIMARY TASK"),
+        ("modality",            "IMAGING MODALITY"),
+        ("anatomy",             "ANATOMY"),
+        ("temporal_modelling",  "TEMPORAL MODELLING"),
+        ("validation_design",   "VALIDATION DESIGN"),
+        ("publication_type",    "PUBLICATION TYPE"),
+    ]:
+        if col not in df.columns or df[col].isna().all():
             continue
-        yes = int((df[col] == "Yes").sum())
-        no  = int((df[col] == "No").sum())
-        na  = int((df[col] == "NA").sum())
-        denom = yes + no  # exclude NA from proportion
-        prop  = f"{100*yes/denom:.1f}%" if denom > 0 else "N/A"
-        rows.append([cid, c["cluster_label"][:42], yes, no, na, prop])
-    print(tabulate(rows, headers=["ID", "Cluster", "Yes", "No", "NA", "% Yes (excl. NA)"],
-                   tablefmt="simple_outline"))
-    print("=" * 60)
+        counts = df[col].value_counts(dropna=False)
+        print(f"{'─'*55}")
+        print(f"  {label}")
+        rows = [[str(k), v, f"{100*v/total:.1f}%"] for k, v in counts.items()]
+        _tbl(rows, ["Value", "Count", "%"])
+
+    # Year distribution
+    year_col = pd.to_numeric(df["year"], errors="coerce").dropna()
+    if not year_col.empty:
+        print(f"{'─'*55}")
+        print(f"  PUBLICATION YEAR RANGE")
+        _tbl(
+            [["Min", int(year_col.min())],
+             ["Max", int(year_col.max())],
+             ["Median", int(year_col.median())],
+             ["Total with year", len(year_col)]],
+            ["", ""]
+        )
+
+    print("=" * 55)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
+
 def main():
     global MODEL
 
     parser = argparse.ArgumentParser(
-        description="CLAIM 2024 adherence extraction from .md full-texts (ollama)"
+        description="Stage 2 — Full-Text Extraction from .md files (ollama / GPT-OSS:20b)"
     )
-    parser.add_argument("--fulltext_dir", default=DEFAULT_FULLTEXT_DIR,
-                        help=f"Directory containing .md files (default: {DEFAULT_FULLTEXT_DIR})")
-    parser.add_argument("--output",       default=DEFAULT_OUTPUT,
-                        help=f"Output JSONL path (default: {DEFAULT_OUTPUT})")
-    parser.add_argument("--model",        default=MODEL,
-                        help=f"Ollama model name (default: {MODEL})")
-    parser.add_argument("--no-resume",    action="store_true",
-                        help="Start fresh, ignore existing output")
-    parser.add_argument("--summary-only", action="store_true",
-                        help="Skip extraction, re-print summary from existing JSONL")
+    parser.add_argument(
+        "--fulltext_dir",
+        default=DEFAULT_FULLTEXT_DIR,
+        help=f"Directory containing .md files (default: {DEFAULT_FULLTEXT_DIR})"
+    )
+    parser.add_argument(
+        "--output",
+        default=DEFAULT_OUTPUT,
+        help=f"Output JSONL path (default: {DEFAULT_OUTPUT})"
+    )
+    parser.add_argument(
+        "--model",
+        default=MODEL,
+        help=f"Ollama model name (default: {MODEL})"
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Start fresh, ignore existing output"
+    )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Skip extraction, re-print summary from existing JSONL"
+    )
     args = parser.parse_args()
 
     MODEL = args.model

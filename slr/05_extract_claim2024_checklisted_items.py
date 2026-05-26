@@ -51,7 +51,7 @@ from tabulate import tabulate
 # ── Config ────────────────────────────────────────────────────────────────────
 MODEL              = "gpt-oss:20b"
 TEMPERATURE        = 0
-MAX_TOKENS         = 3000
+MAX_TOKENS         = 30000
 RETRY_LIMIT        = 3
 RETRY_DELAY        = 5
 REPAIR_LIMIT       = 2
