@@ -607,6 +607,187 @@ HTML_PAGE = r"""<!DOCTYPE html>
 }
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--sans)}
 
+/* ══════════════════════════════════════════════════
+   LOGIN OVERLAY
+══════════════════════════════════════════════════ */
+#loginOverlay{
+  position:fixed;inset:0;z-index:9999;
+  background:var(--bg);
+  display:flex;align-items:center;justify-content:center;
+  transition:opacity .4s ease, visibility .4s ease;
+}
+#loginOverlay.hidden{
+  opacity:0;visibility:hidden;pointer-events:none;
+}
+
+/* Subtle animated grid background */
+#loginOverlay::before{
+  content:'';
+  position:absolute;inset:0;
+  background-image:
+    linear-gradient(rgba(88,166,255,.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(88,166,255,.04) 1px, transparent 1px);
+  background-size:40px 40px;
+  animation:gridDrift 20s linear infinite;
+}
+@keyframes gridDrift{from{background-position:0 0}to{background-position:40px 40px}}
+
+/* Glow orb behind card */
+#loginOverlay::after{
+  content:'';
+  position:absolute;
+  width:500px;height:500px;
+  background:radial-gradient(circle, rgba(31,111,235,.15) 0%, transparent 70%);
+  border-radius:50%;
+  pointer-events:none;
+}
+
+.login-card{
+  position:relative;z-index:1;
+  width:380px;
+  background:var(--bg2);
+  border:1px solid var(--border2);
+  border-radius:16px;
+  padding:36px 32px 32px;
+  box-shadow:0 0 0 1px rgba(88,166,255,.08), 0 24px 60px rgba(0,0,0,.6);
+  animation:cardIn .5s cubic-bezier(.22,1,.36,1) both;
+}
+@keyframes cardIn{
+  from{opacity:0;transform:translateY(20px) scale(.97)}
+  to  {opacity:1;transform:translateY(0)   scale(1)}
+}
+
+/* Logo mark */
+.login-logo{
+  width:48px;height:48px;
+  background:linear-gradient(135deg,var(--accent2),#0a3d7a);
+  border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  margin:0 auto 20px;
+  box-shadow:0 0 20px rgba(31,111,235,.4);
+}
+.login-logo svg{width:22px;height:22px;stroke:#fff;fill:none;stroke-width:2}
+
+.login-title{
+  text-align:center;
+  font-size:19px;font-weight:800;letter-spacing:-.4px;
+  margin-bottom:4px;
+}
+.login-sub{
+  text-align:center;
+  font-size:11px;font-family:var(--mono);
+  color:var(--text3);letter-spacing:.4px;
+  margin-bottom:28px;
+}
+
+.login-field{margin-bottom:16px}
+.login-label{
+  display:block;font-size:10px;font-family:var(--mono);
+  color:var(--text3);text-transform:uppercase;letter-spacing:.6px;
+  margin-bottom:7px;
+}
+.login-input{
+  width:100%;
+  background:var(--bg3);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:10px 14px;
+  font-size:13px;font-family:var(--mono);
+  color:var(--text);outline:none;
+  transition:border-color .2s, box-shadow .2s;
+}
+.login-input:focus{
+  border-color:var(--accent2);
+  box-shadow:0 0 0 3px rgba(31,111,235,.18);
+}
+.login-input::placeholder{color:var(--text3)}
+
+/* Password wrapper with show/hide toggle */
+.pw-wrap{position:relative}
+.pw-wrap .login-input{padding-right:40px}
+.pw-toggle{
+  position:absolute;right:12px;top:50%;transform:translateY(-50%);
+  background:none;border:none;cursor:pointer;padding:2px;
+  color:var(--text3);transition:color .15s;line-height:0;
+}
+.pw-toggle:hover{color:var(--text2)}
+.pw-toggle svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2}
+
+/* Error message */
+.login-error{
+  display:none;
+  background:rgba(248,81,73,.1);
+  border:1px solid rgba(248,81,73,.3);
+  border-radius:7px;
+  padding:9px 12px;
+  font-size:11px;font-family:var(--mono);
+  color:#ffb3b3;
+  margin-bottom:14px;
+  text-align:center;
+}
+.login-error.visible{display:block;animation:errIn .2s ease}
+@keyframes errIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+
+/* Submit button */
+.login-btn{
+  width:100%;
+  padding:11px;
+  background:var(--accent2);
+  border:none;border-radius:8px;
+  font-size:13px;font-family:var(--sans);font-weight:700;
+  color:#fff;cursor:pointer;
+  transition:background .2s, transform .1s, box-shadow .2s;
+  letter-spacing:.2px;
+  margin-top:4px;
+}
+.login-btn:hover{background:var(--accent);box-shadow:0 4px 16px rgba(88,166,255,.25)}
+.login-btn:active{transform:scale(.98)}
+.login-btn:disabled{background:var(--bg4);color:var(--text3);cursor:not-allowed;box-shadow:none}
+
+/* Shake animation for wrong credentials */
+@keyframes shake{
+  0%,100%{transform:translateX(0)}
+  15%    {transform:translateX(-7px)}
+  30%    {transform:translateX( 7px)}
+  45%    {transform:translateX(-5px)}
+  60%    {transform:translateX( 5px)}
+  75%    {transform:translateX(-3px)}
+  90%    {transform:translateX( 3px)}
+}
+.login-card.shake{animation:shake .45s ease}
+
+/* Divider / footer */
+.login-footer{
+  margin-top:20px;padding-top:16px;
+  border-top:1px solid var(--border);
+  font-size:10px;font-family:var(--mono);
+  color:var(--text3);text-align:center;
+  line-height:1.6;
+}
+.login-footer span{color:var(--accent);font-weight:600}
+
+/* Attempt counter */
+.attempt-bar{
+  height:2px;background:var(--bg4);border-radius:1px;margin-top:10px;overflow:hidden;
+}
+.attempt-fill{
+  height:2px;background:var(--red);border-radius:1px;
+  width:0%;transition:width .3s ease;
+}
+
+/* ══════════════════════════════════════════════════
+   MAIN APP  (hidden until login)
+══════════════════════════════════════════════════ */
+#appWrapper{
+  height:100%;
+  opacity:0;
+  transition:opacity .4s ease .1s;
+  pointer-events:none;
+}
+#appWrapper.visible{
+  opacity:1;pointer-events:auto;
+}
+
 /* ── Layout ── */
 .layout{display:grid;grid-template-rows:56px 1fr;grid-template-columns:1fr 320px;height:100vh;grid-template-areas:"hdr hdr" "chat side"}
 @media(max-width:900px){.layout{grid-template-columns:1fr;grid-template-areas:"hdr" "chat"}.sidebar{display:none!important}}
@@ -623,6 +804,17 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .status-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 5px var(--green)}
 .model-select{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:11px;font-family:var(--mono);color:var(--accent);cursor:pointer;appearance:none;outline:none;transition:border-color .2s}
 .model-select:hover{border-color:var(--accent)}
+
+/* Logout button */
+.logout-btn{
+  background:none;border:1px solid var(--border);
+  border-radius:6px;padding:4px 10px;
+  font-size:10px;font-family:var(--mono);
+  color:var(--text3);cursor:pointer;
+  transition:all .15s;letter-spacing:.3px;
+  text-transform:uppercase;
+}
+.logout-btn:hover{border-color:var(--red);color:var(--red)}
 
 /* ── Chat column ── */
 .chat-col{grid-area:chat;display:flex;flex-direction:column;overflow:hidden;min-width:0}
@@ -746,6 +938,57 @@ textarea.nl-input::placeholder{color:var(--text3)}
 </style>
 </head>
 <body>
+
+<!-- ══════════════════════════════════════════════
+     LOGIN OVERLAY
+══════════════════════════════════════════════ -->
+<div id="loginOverlay">
+  <div class="login-card" id="loginCard">
+
+    <div class="login-logo">
+      <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+    </div>
+
+    <div class="login-title">AngioVision</div>
+    <div class="login-sub">QUERY ENGINE · RESTRICTED ACCESS</div>
+
+    <div id="loginError" class="login-error">Invalid username or password.</div>
+
+    <div class="login-field">
+      <label class="login-label" for="loginUser">Username</label>
+      <input class="login-input" id="loginUser" type="text"
+             placeholder="Enter username" autocomplete="username" spellcheck="false">
+    </div>
+
+    <div class="login-field">
+      <label class="login-label" for="loginPass">Password</label>
+      <div class="pw-wrap">
+        <input class="login-input" id="loginPass" type="password"
+               placeholder="Enter password" autocomplete="current-password">
+        <button class="pw-toggle" id="pwToggle" type="button" title="Show / hide password"
+                onclick="togglePwVisibility()">
+          <!-- Eye icon (shown when password is hidden) -->
+          <svg id="eyeOpen" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <!-- Eye-off icon (shown when password is visible) -->
+          <svg id="eyeOff" viewBox="0 0 24 24" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <button class="login-btn" id="loginBtn" onclick="handleLogin()">Sign In</button>
+
+    <div class="login-footer">
+      Authorised access only &nbsp;·&nbsp; Session: <span id="sessionUser">—</span>
+      <div class="attempt-bar"><div class="attempt-fill" id="attemptFill"></div></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════
+     MAIN APP
+══════════════════════════════════════════════ -->
+<div id="appWrapper">
 <div class="layout">
 
   <!-- Header -->
@@ -765,6 +1008,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
         <option>qwen3:35b</option>
         <option>llama3.2:latest</option>
       </select>
+      <button class="logout-btn" onclick="handleLogout()">Logout</button>
     </div>
   </header>
 
@@ -862,8 +1106,127 @@ textarea.nl-input::placeholder{color:var(--text3)}
   </aside>
 
 </div>
+</div><!-- /#appWrapper -->
 
 <script>
+// ════════════════════════════════════════════════
+// LOGIN LOGIC
+// ════════════════════════════════════════════════
+const CREDENTIALS = [
+  { user: 'goldman',  pass: 'xK9#mQ2$vL5@pN8!' },
+  { user: 'vfilkov',    pass: 'ChangeMe#001!'     },
+  // Add more entries here as needed:
+  // { user: 'username', pass: 'password' },
+];
+const MAX_ATTEMPTS = 5;
+let loginAttempts = 0;
+let lockoutTimer  = null;
+
+function togglePwVisibility(){
+  const inp  = document.getElementById('loginPass');
+  const open = document.getElementById('eyeOpen');
+  const off  = document.getElementById('eyeOff');
+  if(inp.type === 'password'){
+    inp.type = 'text';
+    open.style.display = 'none';
+    off.style.display  = 'block';
+  } else {
+    inp.type = 'password';
+    open.style.display = 'block';
+    off.style.display  = 'none';
+  }
+}
+
+function handleLogin(){
+  const u = document.getElementById('loginUser').value.trim();
+  const p = document.getElementById('loginPass').value;
+  const btn   = document.getElementById('loginBtn');
+  const err   = document.getElementById('loginError');
+  const card  = document.getElementById('loginCard');
+  const fill  = document.getElementById('attemptFill');
+
+  if(btn.disabled) return;
+
+  const match = CREDENTIALS.find(c => c.user === u && c.pass === p);
+  if(match){
+    // ── Success ──
+    err.classList.remove('visible');
+    document.getElementById('sessionUser').textContent = u;
+
+    // Fade out overlay, reveal app
+    document.getElementById('loginOverlay').classList.add('hidden');
+    const app = document.getElementById('appWrapper');
+    app.classList.add('visible');
+
+    // Start loading DB stats now that we're in
+    loadStats();
+    document.getElementById('nlInput').focus();
+
+  } else {
+    // ── Failure ──
+    loginAttempts++;
+    const pct = Math.min(100, (loginAttempts / MAX_ATTEMPTS) * 100);
+    fill.style.width = pct + '%';
+
+    err.classList.remove('visible');
+    void err.offsetWidth; // reflow to re-trigger animation
+    err.classList.add('visible');
+
+    card.classList.remove('shake');
+    void card.offsetWidth;
+    card.classList.add('shake');
+
+    document.getElementById('loginPass').value = '';
+    document.getElementById('loginPass').focus();
+
+    // Lockout after MAX_ATTEMPTS
+    if(loginAttempts >= MAX_ATTEMPTS){
+      btn.disabled = true;
+      let secs = 30;
+      err.textContent = `Too many attempts. Try again in ${secs}s.`;
+      lockoutTimer = setInterval(()=>{
+        secs--;
+        err.textContent = `Too many attempts. Try again in ${secs}s.`;
+        if(secs <= 0){
+          clearInterval(lockoutTimer);
+          loginAttempts = 0;
+          fill.style.width = '0%';
+          btn.disabled = false;
+          err.textContent = 'Invalid username or password.';
+          err.classList.remove('visible');
+          document.getElementById('loginUser').focus();
+        }
+      }, 1000);
+    }
+  }
+}
+
+function handleLogout(){
+  // Clear session and show login again
+  document.getElementById('appWrapper').classList.remove('visible');
+  const overlay = document.getElementById('loginOverlay');
+  overlay.classList.remove('hidden');
+  document.getElementById('loginUser').value = '';
+  document.getElementById('loginPass').value = '';
+  document.getElementById('loginError').classList.remove('visible');
+  document.getElementById('sessionUser').textContent = '—';
+  document.getElementById('loginUser').focus();
+}
+
+// Allow Enter key to submit login
+document.addEventListener('DOMContentLoaded', ()=>{
+  ['loginUser','loginPass'].forEach(id=>{
+    document.getElementById(id).addEventListener('keydown', e=>{
+      if(e.key === 'Enter') handleLogin();
+    });
+  });
+  // Focus username on load
+  document.getElementById('loginUser').focus();
+});
+
+// ════════════════════════════════════════════════
+// MAIN APP LOGIC
+// ════════════════════════════════════════════════
 const API = '';
 let history = [];
 let isLoading = false;
@@ -891,7 +1254,7 @@ function setStatus(state, label){
   txt.textContent = label||state;
 }
 
-// ── Fetch stats on load ──
+// ── Fetch stats (called after login) ──
 async function loadStats(){
   try{
     const r = await fetch(`${API}/api/stats`);
@@ -952,7 +1315,6 @@ function renderTable(rows){
     const v = r[c];
     if(v===null||v===undefined) return `<td><span class="v-null">null</span></td>`;
     const s = String(v);
-    // radrpt column: truncate and style distinctly
     if(c==='radrpt') return `<td><span class="v-report" title="${esc(s)}">${esc(s.length>80?s.slice(0,78)+'…':s)}</span></td>`;
     if(s.startsWith('/')) return `<td><span class="v-path" title="${esc(s)}">${esc(s.length>50?'…'+s.slice(-48):s)}</span></td>`;
     if(/^\d{8}$/.test(s)&&parseInt(s)>19000101) return `<td><span class="v-num">${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}</span></td>`;
@@ -988,7 +1350,6 @@ async function handleSend(){
 
   addMsg('msg-user', `<div class="bubble bubble-user">${esc(q)}</div>`);
 
-  // Thinking indicator
   const thinkEl = addMsg('msg-bot',
     `<div class="thinking"><div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div><span id="thinkTxt">Generating SQL…</span></div>`);
   const thinkTxt = thinkEl.querySelector('#thinkTxt');
@@ -1039,7 +1400,6 @@ async function handleSend(){
 
     thinkEl.remove();
 
-    // Build result card
     const id = 'rc'+Date.now();
     const elapsedSec = (elapsed/1000).toFixed(1);
     let tabs='', panes='';
@@ -1094,8 +1454,6 @@ function addHistory(q, rowCount, elapsed){
       <div class="hist-meta">${h.ts} &nbsp;·&nbsp; ${h.rowCount} row${h.rowCount!==1?'s':''} &nbsp;·&nbsp; ${(h.elapsed/1000).toFixed(1)}s</div>
     </div>`).join('');
 }
-
-loadStats();
 </script>
 </body>
 </html>
