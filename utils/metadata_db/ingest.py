@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DICOM → SQLite Ingestion Pipeline
+DICOM → SQLite Ingestion Pipeline  +  DICOM Images → ChromaDB
 
 Recursively walks a DICOM directory, parses metadata from every .dcm file
 in parallel (ProcessPoolExecutor), and stores everything in a flat SQLite
@@ -9,17 +9,29 @@ table keyed on SOPInstanceUID.
 Also ingests a radiology report CSV (Anon Acc #, radrpt) into a separate
 `radiology_reports` table, joinable to `dicom_files` via accession_number.
 
-Design principles:
-  • SOPInstanceUID is the only skip condition — every parseable file is stored
+NEW ── Image ingestion into ChromaDB:
+  • Reads labeled_DSA_2023_10_24.csv to identify labeled sequences
+  • Skips rows where angio_run contains the word 'other'
+  • Parses the DICOM file stem from the file_path column
+      e.g. ".../02_DSA 3 LD/2.16.840.1...dcm"  →  "2.16.840.1..."
+  • Locates the actual .dcm file under the DICOM root (index built from
+    SQLite first; falls back to a full filesystem walk)
+  • Extracts every frame via pydicom, normalises to uint8 RGB (HxWx3)
+  • Embeds frames with OpenCLIP (ViT-B-32, 512-dim) and upserts into a
+    persistent ChromaDB collection called "dicom_images"
+  • Tracks progress per sequence in SQLite (image_ingestion_status)
+    → safe to kill and restart at any point
+
+Design principles (unchanged from original):
+  • SOPInstanceUID is the only skip condition for DICOM metadata
   • Missing AccessionNumber → synthetic key MISSING_{sop_uid[:12]}
   • INSERT OR IGNORE — re-runs are safe and idempotent
   • Full audit trail: parse_error, sqlite_inserted_at columns
-  • Resume-friendly: re-run skips already-inserted UIDs via INSERT OR IGNORE
   • Chunked submission — tqdm starts immediately, no upfront blocking
-  • No external services required
 
 Requirements:
-    pip install pydicom tqdm
+    pip install pydicom tqdm chromadb open-clip-torch pillow numpy
+    (pillow is needed by pydicom for compressed JPEG/JP2 transfers)
 """
 
 import os
@@ -30,6 +42,7 @@ import logging
 import argparse
 import datetime
 import itertools
+import numpy as np
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -43,13 +56,26 @@ except ImportError:
     print("ERROR: pydicom not installed.  Run: pip install pydicom")
     sys.exit(1)
 
+try:
+    import chromadb
+    from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
+    CHROMA_AVAILABLE = True
+except ImportError:
+    CHROMA_AVAILABLE = False
+    chromadb = None  # type: ignore[assignment]
+
 # ── Constants ──────────────────────────────────────────────────────────────────
-DICOM_ROOT    = Path("/data/Deep_Angiography/DICOM")
-SQLITE_DB     = Path("/data/Deep_Angiography/AngioVision/dicom_staging.db")
-REPORTS_CSV   = Path("/data/Deep_Angiography/Reports/Report_List_v01_01_merged_raw.csv")
+DICOM_ROOT        = Path("/data/Deep_Angiography/DICOM")
+SQLITE_DB         = Path("/data/Deep_Angiography/AngioVision/dicom_staging.db")
+REPORTS_CSV       = Path("/data/Deep_Angiography/Reports/Report_List_v01_01_merged_raw.csv")
+LABELED_CSV       = Path("/data/Deep_Angiography/labeled_DSA_2023_10_24.csv")
+CHROMADB_PATH     = Path("/data/Deep_Angiography/AngioVision/chromadb")
+CHROMA_COLLECTION = "dicom_images"
+
 PARSE_WORKERS = max(1, os.cpu_count() - 1)
-SQL_FLUSH     = 1000   # rows buffered before each SQLite commit
-SUBMIT_CHUNK  = 2000   # futures submitted per chunk — keeps queue shallow
+SQL_FLUSH     = 1000   # DICOM rows buffered before each SQLite commit
+SUBMIT_CHUNK  = 2000   # futures submitted per chunk
+CHROMA_BATCH  = 32     # frames per ChromaDB add() call
 
 logging.basicConfig(
     level=logging.INFO,
@@ -178,17 +204,6 @@ CREATE INDEX IF NOT EXISTS idx_parse_error        ON dicom_files (parse_error)
     WHERE parse_error IS NOT NULL;
 
 -- ── Radiology reports ────────────────────────────────────────────────────────
--- One row per accession number; joins to dicom_files on accession_number.
--- Duplicate accession numbers in the CSV are collapsed: the first radrpt
--- encountered is kept (INSERT OR IGNORE), matching the idempotent design of
--- the DICOM ingestion path.
---
--- Join example:
---   SELECT d.accession_number, d.series_description, d.frame_count,
---          r.radrpt
---   FROM   dicom_files d
---   JOIN   radiology_reports r USING (accession_number)
---   WHERE  d.modality = 'XA';
 CREATE TABLE IF NOT EXISTS radiology_reports (
     accession_number   TEXT PRIMARY KEY,
     radrpt             TEXT,
@@ -197,6 +212,25 @@ CREATE TABLE IF NOT EXISTS radiology_reports (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rpt_accession ON radiology_reports (accession_number);
+
+-- ── Image ingestion tracking ─────────────────────────────────────────────────
+-- One row per DICOM sequence (one .dcm file = one sequence).
+-- sequence_id  = the DICOM file stem (guaranteed unique per file).
+-- ChromaDB frame IDs are "{sequence_id}_f{frame_idx:06d}", so partial
+-- ingestion from a crashed run can be cleaned up deterministically on retry.
+CREATE TABLE IF NOT EXISTS image_ingestion_status (
+    sequence_id      TEXT PRIMARY KEY,
+    accession_number TEXT,
+    series_uid       TEXT,
+    source_path      TEXT,
+    frames_ingested  INTEGER DEFAULT 0,
+    status           TEXT,      -- 'in_progress' | 'completed' | 'error'
+    error_msg        TEXT,
+    ingested_at      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_img_status    ON image_ingestion_status (status);
+CREATE INDEX IF NOT EXISTS idx_img_accession ON image_ingestion_status (accession_number);
 """
 
 ALL_COLUMNS = [
@@ -241,7 +275,10 @@ INSERT_RPT_SQL = """
 """
 
 
-# ── DICOM parsing (runs in subprocess) ────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# DICOM metadata parsing  (runs in subprocess — must be module-level)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def safe_str(ds, tag_name: str) -> str:
     try:
         val = getattr(ds, tag_name, None)
@@ -260,11 +297,6 @@ def parse_dicom_file(path_str: str) -> Optional[dict]:
     """
     Parse one .dcm file and return a flat metadata dict.
     Module-level function — required for ProcessPoolExecutor pickle compatibility.
-
-    Returns:
-        dict with parse_error=None  — good row
-        dict with parse_error set   — unreadable file stored as audit stub
-        None                        — not DICOM or no SOPInstanceUID; skip silently
     """
     path = Path(path_str)
     now  = datetime.datetime.utcnow().isoformat()
@@ -384,7 +416,10 @@ def parse_dicom_file(path_str: str) -> Optional[dict]:
     }
 
 
-# ── File discovery ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# File discovery & chunking utilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def iter_dicom_files(root: Path):
     """Yield absolute path strings for every .dcm file under root."""
     for dirpath, _, filenames in os.walk(str(root)):
@@ -393,7 +428,6 @@ def iter_dicom_files(root: Path):
                 yield str(Path(dirpath) / fname)
 
 
-# ── Chunked iterator ───────────────────────────────────────────────────────────
 def chunked(iterable, size: int):
     """Yield successive fixed-size chunks from any iterable."""
     it = iter(iterable)
@@ -404,7 +438,10 @@ def chunked(iterable, size: int):
         yield chunk
 
 
-# ── SQLite helpers ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# SQLite helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def open_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -431,46 +468,34 @@ def flush_batch(con: sqlite3.Connection, batch: list[dict]) -> tuple[int, int]:
     return new, ignored
 
 
-# ── Radiology report ingestion ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Radiology report ingestion
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def ingest_reports(con: sqlite3.Connection, csv_path: Path) -> tuple[int, int]:
     """
     Load Report_List_v01_01_merged_raw.csv into radiology_reports.
-
-    Expected columns (case-insensitive):
-        Anon Acc #   →  accession_number  (PRIMARY KEY)
-        radrpt       →  radrpt
-
-    Duplicate accession numbers in the CSV are silently ignored
-    (INSERT OR IGNORE keeps the first occurrence).
-
-    Returns:
-        (inserted, ignored) counts
+    Expected columns (case-insensitive): 'Anon Acc #', 'radrpt'.
+    Returns (inserted, ignored).
     """
     if not csv_path.exists():
         log.warning(f"Reports CSV not found — skipping: {csv_path}")
         return 0, 0
 
-    now        = datetime.datetime.utcnow().isoformat()
-    source     = str(csv_path)
-    inserted   = 0
-    ignored    = 0
-    bad_rows   = 0
+    now      = datetime.datetime.utcnow().isoformat()
+    source   = str(csv_path)
+    bad_rows = 0
 
     log.info(f"Ingesting radiology reports from: {csv_path}")
-
     before = con.execute("SELECT COUNT(*) FROM radiology_reports").fetchone()[0]
 
     with open(csv_path, newline="", encoding="utf-8-sig") as fh:
-        # utf-8-sig strips the BOM that Excel sometimes adds
         reader = csv.DictReader(fh)
-
-        # Normalise header names so column lookup is case-insensitive
-        # and strips surrounding whitespace.
         if reader.fieldnames is None:
             log.error("CSV appears to be empty — no headers found.")
             return 0, 0
 
-        norm = {h.strip().lower(): h for h in reader.fieldnames}
+        norm    = {h.strip().lower(): h for h in reader.fieldnames}
         acc_key = norm.get("anon acc #")
         rpt_key = norm.get("radrpt")
 
@@ -505,6 +530,460 @@ def ingest_reports(con: sqlite3.Connection, csv_path: Path) -> tuple[int, int]:
     return inserted, ignored
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Image ingestion helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_dicom_index(
+    dicom_root: Path,
+    con: Optional[sqlite3.Connection] = None,
+) -> dict[str, str]:
+    """
+    Build a {stem → full_path} index for all .dcm files.
+
+    Strategy (fastest first):
+      1. If the SQLite dicom_files table has entries, build from there — O(rows).
+      2. Otherwise fall back to an os.walk() of the filesystem.
+
+    The stem is the filename without its .dcm extension, which is also
+    what we parse out of the labeled CSV's file_path column.
+    """
+    if con is not None:
+        count = con.execute(
+            "SELECT COUNT(*) FROM dicom_files WHERE source_file IS NOT NULL"
+        ).fetchone()[0]
+        if count > 0:
+            log.info(f"Building DICOM index from SQLite ({count:,} rows) ...")
+            index: dict[str, str] = {}
+            for row in con.execute(
+                "SELECT source_file, source_path FROM dicom_files "
+                "WHERE source_file IS NOT NULL AND source_path IS NOT NULL"
+            ):
+                stem = Path(row[0]).stem
+                if stem and stem not in index:
+                    index[stem] = row[1]
+            log.info(f"Index ready: {len(index):,} unique stems")
+            return index
+
+    # Fallback: filesystem walk
+    log.info(f"Building DICOM index by scanning {dicom_root} (this may take a while) …")
+    index = {}
+    duplicates = 0
+    for dirpath, _, filenames in os.walk(str(dicom_root)):
+        for fname in filenames:
+            if fname.lower().endswith(".dcm"):
+                stem = Path(fname).stem
+                if stem in index:
+                    duplicates += 1
+                else:
+                    index[stem] = str(Path(dirpath) / fname)
+    log.info(
+        f"Index ready: {len(index):,} unique stems "
+        f"({duplicates} duplicate filenames ignored)"
+    )
+    return index
+
+
+def parse_dicom_stem_from_csv_path(file_path_str: str) -> Optional[str]:
+    """
+    Extract the DICOM file stem from a labeled CSV file_path value.
+
+    Example:
+      input : '/Deep_Angiography/.../02_DSA 3 LD/2.16.840.1...247242.dcm'
+      output: '2.16.840.1...247242'
+
+    Returns None if the string is empty or unparseable.
+    """
+    if not file_path_str or not file_path_str.strip():
+        return None
+    p = file_path_str.strip()
+    # Take everything after the last '/'
+    fname = p.rsplit("/", 1)[-1] if "/" in p else p
+    # Strip .dcm (case-insensitive)
+    if fname.lower().endswith(".dcm"):
+        return fname[:-4]
+    # Return as-is if no extension (unusual but safe)
+    return fname if fname else None
+
+
+def dicom_frame_to_uint8_rgb(frame: np.ndarray, photometric: str = "") -> np.ndarray:
+    """
+    Normalise a single 2-D DICOM frame (any numeric dtype) to uint8 RGB (HxWx3).
+
+    • Handles MONOCHROME1 (invert so high values appear bright)
+    • Handles MONOCHROME2 / default (no inversion)
+    • Min-max normalises to 0-255; blank frames become all-zeros
+    """
+    f = frame.astype(np.float32)
+    lo, hi = f.min(), f.max()
+    if hi > lo:
+        f = (f - lo) / (hi - lo) * 255.0
+    else:
+        f = np.zeros_like(f)
+    f = f.astype(np.uint8)
+
+    if "MONOCHROME1" in photometric.upper():
+        f = 255 - f          # invert: high value = dark in MONOCHROME1
+
+    return np.stack([f, f, f], axis=-1)   # HxWx3
+
+
+def extract_frames(path_str: str) -> tuple[list[np.ndarray], dict]:
+    """
+    Open a multi-frame DICOM file and return:
+      (list_of_uint8_rgb_frames, metadata_dict)
+
+    Each frame is a HxWx3 uint8 numpy array ready for ChromaDB / CLIP.
+    metadata_dict contains Python primitive types only (safe for ChromaDB).
+    """
+    ds = pydicom.dcmread(path_str, force=False)   # loads pixel data
+    photometric = str(getattr(ds, "PhotometricInterpretation", "")).upper()
+    pixels      = ds.pixel_array                   # numpy array
+
+    # Normalise shape → (n_frames, H, W[, C])
+    if pixels.ndim == 2:
+        # Single grayscale frame
+        pixels = pixels[np.newaxis, ...]
+    elif pixels.ndim == 3:
+        # Either (frames, H, W) grayscale  OR  (H, W, C) single RGB
+        if pixels.shape[2] in (3, 4):
+            pixels = pixels[np.newaxis, ...]   # treat as single RGB frame
+        # else: (frames, H, W) — leave as-is
+
+    frames: list[np.ndarray] = []
+    for i in range(pixels.shape[0]):
+        raw = pixels[i]
+        if raw.ndim == 3:
+            # Already (H, W, C)
+            f = raw.astype(np.float32)
+            lo, hi = f.min(), f.max()
+            if hi > lo:
+                f = (f - lo) / (hi - lo) * 255.0
+            f = f.astype(np.uint8)
+            if f.shape[2] == 4:
+                f = f[:, :, :3]               # drop alpha channel
+        else:
+            f = dicom_frame_to_uint8_rgb(raw, photometric)
+        frames.append(f)
+
+    sop_uid   = str(getattr(ds, "SOPInstanceUID",   "") or "")
+    acc       = str(getattr(ds, "AccessionNumber",   "") or "").strip()
+    if not acc:
+        acc = f"MISSING_{sop_uid[:12]}"
+
+    meta = {
+        "accession_number": acc,
+        "series_uid":       str(getattr(ds, "SeriesInstanceUID", "") or ""),
+        "sop_uid":          sop_uid,
+        "total_frames":     int(len(frames)),
+        "rows":             int(getattr(ds, "Rows",    0) or 0),
+        "columns":          int(getattr(ds, "Columns", 0) or 0),
+        "modality":         str(getattr(ds, "Modality", "") or ""),
+        "photometric":      photometric,
+    }
+    return frames, meta
+
+
+def setup_chromadb(chroma_path: Path):
+    """
+    Initialise a persistent ChromaDB client and return (client, collection).
+    Collection uses OpenCLIP ViT-B-32 (512-dim cosine) for image embeddings.
+    """
+    if not CHROMA_AVAILABLE:
+        raise ImportError(
+            "chromadb not installed. "
+            "Run: pip install chromadb open-clip-torch"
+        )
+    chroma_path.mkdir(parents=True, exist_ok=True)
+    client     = chromadb.PersistentClient(path=str(chroma_path))
+    ef         = OpenCLIPEmbeddingFunction()      # ViT-B-32 by default
+    collection = client.get_or_create_collection(
+        name=CHROMA_COLLECTION,
+        embedding_function=ef,
+        metadata={"hnsw:space": "cosine"},
+    )
+    log.info(
+        f"ChromaDB '{CHROMA_COLLECTION}' at {chroma_path} — "
+        f"existing items: {collection.count():,}"
+    )
+    return client, collection
+
+
+def load_labeled_csv(csv_path: Path) -> list[dict]:
+    """
+    Load labeled_DSA_2023_10_24.csv, returning one dict per unique file_path.
+
+    Filtering rules:
+      • Rows where angio_run contains 'other' (case-insensitive) → skipped
+      • Rows with an empty file_path                              → skipped
+      • Duplicate file_path values                                → first kept
+    """
+    if not csv_path.exists():
+        log.error(f"Labeled CSV not found: {csv_path}")
+        return []
+
+    rows: list[dict] = []
+    seen_paths: set[str]  = set()
+    skipped_other = skipped_dup = skipped_nopath = 0
+
+    with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            log.error("Labeled CSV appears to be empty.")
+            return []
+
+        # Case-insensitive column lookup
+        norm = {h.strip().lower(): h for h in reader.fieldnames}
+
+        angio_key = norm.get("angio_run")
+        path_key  = norm.get("file_path")
+        acc_key   = norm.get("accession")
+        ser_key   = norm.get("seriesuid")
+        run_key   = norm.get("run_type")
+
+        if path_key is None:
+            log.error(f"'file_path' column not found. Available: {list(reader.fieldnames)}")
+            return []
+
+        for row in reader:
+            fp        = (row.get(path_key) or "").strip()
+            angio_val = (row.get(angio_key) or "").strip().lower() if angio_key else ""
+
+            if not fp:
+                skipped_nopath += 1
+                continue
+            if "other" in angio_val:
+                skipped_other += 1
+                continue
+            if fp in seen_paths:
+                skipped_dup += 1
+                continue
+            seen_paths.add(fp)
+
+            rows.append({
+                "accession":  (row.get(acc_key)  or "").strip() if acc_key  else "",
+                "series_uid": (row.get(ser_key)  or "").strip() if ser_key  else "",
+                "run_type":   (row.get(run_key)  or "").strip() if run_key  else "",
+                "angio_run":  angio_val,
+                "file_path":  fp,
+            })
+
+    log.info(
+        f"Labeled CSV — kept: {len(rows):,} | "
+        f"skipped (other): {skipped_other:,} | "
+        f"skipped (dup file_path): {skipped_dup:,} | "
+        f"skipped (no path): {skipped_nopath:,}"
+    )
+    return rows
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main image ingestion pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def ingest_images_to_chromadb(
+    con: sqlite3.Connection,
+    labeled_csv: Path,
+    dicom_root: Path,
+    chroma_path: Path,
+    limit_sequences: int = 0,
+    chroma_batch_size: int = CHROMA_BATCH,
+) -> None:
+    """
+    End-to-end image ingestion:
+      1. Load and filter the labeled CSV
+      2. Build a DICOM stem→path index (SQLite-backed, filesystem fallback)
+      3. Connect to ChromaDB
+      4. Iterate sequences: extract frames → embed with CLIP → store
+      5. Record status in image_ingestion_status for safe resume
+
+    Resume behaviour:
+      • Sequences with status='completed' in SQLite are skipped.
+      • Sequences with status='error' or 'in_progress' (crash mid-run) are
+        retried: any previously written ChromaDB frames are deleted first
+        so the sequence is always stored atomically.
+    """
+    if not CHROMA_AVAILABLE:
+        log.error(
+            "chromadb or open-clip-torch not installed. "
+            "Run: pip install chromadb open-clip-torch"
+        )
+        return
+
+    # ── 1. Load CSV ──────────────────────────────────────────────────────────
+    sequences = load_labeled_csv(labeled_csv)
+    if not sequences:
+        log.warning("No sequences to ingest after filtering.")
+        return
+
+    # ── 2. Build DICOM index ─────────────────────────────────────────────────
+    dicom_index = build_dicom_index(dicom_root, con=con)
+
+    # ── 3. Connect to ChromaDB ───────────────────────────────────────────────
+    _, collection = setup_chromadb(chroma_path)
+
+    # ── 4. Determine already-completed sequences ─────────────────────────────
+    completed: set[str] = {
+        row[0]
+        for row in con.execute(
+            "SELECT sequence_id FROM image_ingestion_status WHERE status = 'completed'"
+        ).fetchall()
+    }
+    log.info(f"Already completed sequences (will be skipped): {len(completed):,}")
+
+    # ── 5. Build work list ───────────────────────────────────────────────────
+    todo: list[dict] = []
+    not_found = 0
+
+    for seq in sequences:
+        stem = parse_dicom_stem_from_csv_path(seq["file_path"])
+        if not stem:
+            continue
+
+        actual_path = dicom_index.get(stem)
+        if actual_path is None:
+            log.debug(f"Not found on disk: {stem}")
+            not_found += 1
+            continue
+
+        seq_id              = stem        # unique & deterministic per file
+        seq["dicom_path"]   = actual_path
+        seq["stem"]         = stem
+        seq["sequence_id"]  = seq_id
+
+        if seq_id in completed:
+            continue
+
+        todo.append(seq)
+
+    log.info(f"Files not found on disk : {not_found:,}")
+    log.info(f"Sequences queued        : {len(todo):,}  (after resume filter)")
+
+    if limit_sequences > 0:
+        todo = todo[:limit_sequences]
+        log.info(f"Capped to {limit_sequences:,} sequences via --limit-sequences")
+
+    if not todo:
+        log.info("Nothing to ingest — all sequences are already completed.")
+        return
+
+    # ── 6. Ingest loop ───────────────────────────────────────────────────────
+    succeeded         = 0
+    failed            = 0
+    total_frames_done = 0
+
+    with tqdm(total=len(todo), unit="seq", desc="Ingesting images → ChromaDB") as pbar:
+        for seq in todo:
+            seq_id     = seq["sequence_id"]
+            path_str   = seq["dicom_path"]
+            accession  = seq["accession"]
+            series_uid = seq["series_uid"]
+            now        = datetime.datetime.utcnow().isoformat()
+
+            # ── Mark as in_progress ──────────────────────────────────────────
+            con.execute(
+                """
+                INSERT OR REPLACE INTO image_ingestion_status
+                    (sequence_id, accession_number, series_uid, source_path,
+                     frames_ingested, status, error_msg, ingested_at)
+                VALUES (?, ?, ?, ?, 0, 'in_progress', NULL, ?)
+                """,
+                (seq_id, accession, series_uid, path_str, now),
+            )
+            con.commit()
+
+            try:
+                # ── Extract frames ───────────────────────────────────────────
+                frames, meta = extract_frames(path_str)
+                n_frames     = len(frames)
+
+                if n_frames == 0:
+                    raise ValueError("No frames extracted from DICOM file")
+
+                # ── Clean up any frames from a previous partial run ──────────
+                prev_row = con.execute(
+                    "SELECT frames_ingested FROM image_ingestion_status "
+                    "WHERE sequence_id = ?",
+                    (seq_id,),
+                ).fetchone()
+                prev_n = int(prev_row[0]) if prev_row and prev_row[0] else 0
+                if prev_n > 0:
+                    stale_ids = [f"{seq_id}_f{i:06d}" for i in range(prev_n)]
+                    try:
+                        collection.delete(ids=stale_ids)
+                    except Exception:
+                        pass   # IDs might not exist; safe to ignore
+
+                # ── Add frames in batches to ChromaDB ────────────────────────
+                frames_added = 0
+                for batch_start in range(0, n_frames, chroma_batch_size):
+                    batch = frames[batch_start: batch_start + chroma_batch_size]
+                    ids   = [
+                        f"{seq_id}_f{(batch_start + j):06d}"
+                        for j in range(len(batch))
+                    ]
+                    metas = [
+                        {
+                            # All values must be Python primitives for ChromaDB
+                            "accession_number": str(accession or meta["accession_number"]),
+                            "series_uid":       str(series_uid or meta["series_uid"]),
+                            "sop_uid":          str(meta["sop_uid"]),
+                            "frame_index":      int(batch_start + j),
+                            "total_frames":     int(n_frames),
+                            "source_path":      str(path_str),
+                            "angio_run":        str(seq.get("angio_run", "")),
+                            "run_type":         str(seq.get("run_type", "")),
+                            "modality":         str(meta.get("modality", "")),
+                        }
+                        for j in range(len(batch))
+                    ]
+                    collection.add(images=batch, ids=ids, metadatas=metas)
+                    frames_added += len(batch)
+
+                # ── Mark as completed ────────────────────────────────────────
+                con.execute(
+                    """
+                    UPDATE image_ingestion_status
+                    SET frames_ingested = ?, status = 'completed', ingested_at = ?
+                    WHERE sequence_id = ?
+                    """,
+                    (frames_added, datetime.datetime.utcnow().isoformat(), seq_id),
+                )
+                con.commit()
+
+                succeeded         += 1
+                total_frames_done += frames_added
+
+            except Exception as exc:
+                err_msg = str(exc)[:500]
+                log.warning(f"Failed [{seq_id}]: {err_msg}")
+                con.execute(
+                    """
+                    UPDATE image_ingestion_status
+                    SET status = 'error', error_msg = ?, ingested_at = ?
+                    WHERE sequence_id = ?
+                    """,
+                    (err_msg, datetime.datetime.utcnow().isoformat(), seq_id),
+                )
+                con.commit()
+                failed += 1
+
+            pbar.update(1)
+            pbar.set_postfix(ok=succeeded, fail=failed, frames=total_frames_done)
+
+    log.info("─" * 60)
+    log.info(f"Image ingestion complete")
+    log.info(f"  Sequences succeeded : {succeeded:>8,}")
+    log.info(f"  Sequences failed    : {failed:>8,}")
+    log.info(f"  Total frames stored : {total_frames_done:>8,}")
+    log.info(f"  ChromaDB total      : {collection.count():>8,}  items")
+    log.info("─" * 60)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DB summary
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def db_summary(con: sqlite3.Connection):
     total       = con.execute("SELECT COUNT(*) FROM dicom_files").fetchone()[0]
     with_error  = con.execute("SELECT COUNT(*) FROM dicom_files WHERE parse_error IS NOT NULL").fetchone()[0]
@@ -516,6 +995,18 @@ def db_summary(con: sqlite3.Connection):
         "JOIN radiology_reports r USING (accession_number)"
     ).fetchone()[0]
 
+    # Image ingestion summary
+    img_completed = con.execute(
+        "SELECT COUNT(*) FROM image_ingestion_status WHERE status = 'completed'"
+    ).fetchone()[0]
+    img_error = con.execute(
+        "SELECT COUNT(*) FROM image_ingestion_status WHERE status = 'error'"
+    ).fetchone()[0]
+    img_frames = con.execute(
+        "SELECT COALESCE(SUM(frames_ingested), 0) FROM image_ingestion_status "
+        "WHERE status = 'completed'"
+    ).fetchone()[0]
+
     log.info("─" * 60)
     log.info(f"Total DICOM rows    : {total:>10,}")
     log.info(f"Parse errors        : {with_error:>10,}")
@@ -523,6 +1014,10 @@ def db_summary(con: sqlite3.Connection):
     log.info("─" * 60)
     log.info(f"Radiology reports   : {rpt_total:>10,}")
     log.info(f"Accessions linked   : {linked:>10,}  (DICOM ∩ reports)")
+    log.info("─" * 60)
+    log.info(f"Image seqs done     : {img_completed:>10,}")
+    log.info(f"Image seqs errored  : {img_error:>10,}")
+    log.info(f"Frames in ChromaDB  : {img_frames:>10,}  (completed seqs)")
     log.info("─" * 60)
     log.info("Modality breakdown:")
     for r in con.execute(
@@ -533,71 +1028,138 @@ def db_summary(con: sqlite3.Connection):
     log.info("─" * 60)
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Entry point
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Ingest DICOM metadata + radiology reports into SQLite (parallel, resumable).",
+        description=(
+            "Ingest DICOM metadata + radiology reports into SQLite "
+            "AND/OR ingest labeled DICOM sequences into ChromaDB (parallel, resumable)."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Full pipeline (metadata + reports + images)
   python dicom_ingest_sqlite.py
-  python dicom_ingest_sqlite.py --workers 26
-  python dicom_ingest_sqlite.py --root /data/DICOM --db /data/meta.db
-  python dicom_ingest_sqlite.py --dry-run
-  python dicom_ingest_sqlite.py --limit 5000
-  python dicom_ingest_sqlite.py --summary-only
-  python dicom_ingest_sqlite.py --reports-only
-  python dicom_ingest_sqlite.py --reports /path/to/custom_reports.csv
 
-Useful join query after ingestion:
+  # Metadata + reports only (no images)
+  python dicom_ingest_sqlite.py --skip-images
+
+  # Image ingestion only (metadata already loaded)
+  python dicom_ingest_sqlite.py --images-only
+
+  # Image ingestion — process at most 50 sequences then stop
+  python dicom_ingest_sqlite.py --images-only --limit-sequences 50
+
+  # Dry-run the DICOM metadata walk (nothing written)
+  python dicom_ingest_sqlite.py --dry-run --skip-images
+
+  # Custom paths
+  python dicom_ingest_sqlite.py \\
+      --root /data/DICOM \\
+      --db   /data/meta.db \\
+      --labeled-csv /data/labels.csv \\
+      --chromadb    /data/chroma
+
+  # Just print DB + ChromaDB statistics
+  python dicom_ingest_sqlite.py --summary-only
+
+Useful join query after full ingestion:
   SELECT d.accession_number, d.series_description, d.frame_count,
          d.modality, d.study_date, r.radrpt
   FROM   dicom_files d
   JOIN   radiology_reports r USING (accession_number)
   WHERE  d.modality = 'XA'
   LIMIT  20;
+
+Query ChromaDB for visually similar frames:
+  results = collection.query(
+      query_images=[query_frame_array],   # HxWx3 uint8 numpy array
+      n_results=10,
+      where={"modality": "XA"},
+  )
         """,
     )
-    parser.add_argument("--root",         default=str(DICOM_ROOT))
-    parser.add_argument("--db",           default=str(SQLITE_DB))
-    parser.add_argument("--reports",      default=str(REPORTS_CSV),
-                        help="Path to the radiology reports CSV (default: %(default)s)")
-    parser.add_argument("--workers",      type=int, default=PARSE_WORKERS)
-    parser.add_argument("--flush",        type=int, default=SQL_FLUSH)
-    parser.add_argument("--chunk",        type=int, default=SUBMIT_CHUNK,
-                        help="Futures submitted per chunk (default: 2000)")
-    parser.add_argument("--limit",        type=int, default=0)
-    parser.add_argument("--dry-run",      action="store_true",
-                        help="Parse DICOM files but write nothing to SQLite")
-    parser.add_argument("--summary-only", action="store_true",
-                        help="Print DB summary and exit (no ingestion)")
-    parser.add_argument("--reports-only", action="store_true",
-                        help="Skip DICOM ingestion; only load the reports CSV")
-    parser.add_argument("--skip-reports", action="store_true",
-                        help="Skip reports CSV ingestion entirely")
+
+    # ── Path arguments ───────────────────────────────────────────────────────
+    parser.add_argument("--root",            default=str(DICOM_ROOT),
+                        help="DICOM root directory (default: %(default)s)")
+    parser.add_argument("--db",              default=str(SQLITE_DB),
+                        help="SQLite database path (default: %(default)s)")
+    parser.add_argument("--reports",         default=str(REPORTS_CSV),
+                        help="Radiology reports CSV (default: %(default)s)")
+    parser.add_argument("--labeled-csv",     default=str(LABELED_CSV),
+                        help="Labeled sequence CSV for image ingestion (default: %(default)s)")
+    parser.add_argument("--chromadb",        default=str(CHROMADB_PATH),
+                        help="ChromaDB persistence directory (default: %(default)s)")
+
+    # ── Performance ──────────────────────────────────────────────────────────
+    parser.add_argument("--workers",         type=int, default=PARSE_WORKERS,
+                        help="Parallel workers for DICOM metadata parse (default: %(default)s)")
+    parser.add_argument("--flush",           type=int, default=SQL_FLUSH,
+                        help="SQLite row buffer size (default: %(default)s)")
+    parser.add_argument("--chunk",           type=int, default=SUBMIT_CHUNK,
+                        help="Futures submitted per chunk (default: %(default)s)")
+    parser.add_argument("--chroma-batch",    type=int, default=CHROMA_BATCH,
+                        help="Frames per ChromaDB add() call (default: %(default)s)")
+
+    # ── Scope / limits ───────────────────────────────────────────────────────
+    parser.add_argument("--limit",           type=int, default=0,
+                        help="Limit number of DICOM metadata files processed (0 = all)")
+    parser.add_argument("--limit-sequences", type=int, default=0,
+                        help="Limit number of sequences ingested into ChromaDB (0 = all)")
+
+    # ── Mode flags ───────────────────────────────────────────────────────────
+    parser.add_argument("--dry-run",         action="store_true",
+                        help="Parse DICOM metadata but write nothing to SQLite")
+    parser.add_argument("--summary-only",    action="store_true",
+                        help="Print DB + ChromaDB summary and exit")
+    parser.add_argument("--reports-only",    action="store_true",
+                        help="Skip DICOM metadata; only load the reports CSV")
+    parser.add_argument("--images-only",     action="store_true",
+                        help="Skip DICOM metadata + reports; only ingest images into ChromaDB")
+    parser.add_argument("--skip-reports",    action="store_true",
+                        help="Skip reports CSV ingestion")
+    parser.add_argument("--skip-images",     action="store_true",
+                        help="Skip image ingestion into ChromaDB")
+
     args = parser.parse_args()
 
-    dicom_root  = Path(args.root)
-    db_path     = Path(args.db)
-    reports_csv = Path(args.reports)
+    dicom_root   = Path(args.root)
+    db_path      = Path(args.db)
+    reports_csv  = Path(args.reports)
+    labeled_csv  = Path(args.labeled_csv)
+    chroma_path  = Path(args.chromadb)
 
-    log.info(f"DICOM root  : {dicom_root}")
-    log.info(f"SQLite DB   : {db_path}")
-    log.info(f"Reports CSV : {reports_csv}")
-    log.info(f"Workers     : {args.workers}")
-    log.info(f"Flush size  : {args.flush}")
-    log.info(f"Chunk size  : {args.chunk}")
-    log.info(f"Limit       : {args.limit or 'none'}")
-    log.info(f"Dry run     : {args.dry_run}")
+    log.info(f"DICOM root     : {dicom_root}")
+    log.info(f"SQLite DB      : {db_path}")
+    log.info(f"Reports CSV    : {reports_csv}")
+    log.info(f"Labeled CSV    : {labeled_csv}")
+    log.info(f"ChromaDB path  : {chroma_path}")
+    log.info(f"Workers        : {args.workers}")
+    log.info(f"Flush size     : {args.flush}")
+    log.info(f"Chunk size     : {args.chunk}")
+    log.info(f"Chroma batch   : {args.chroma_batch}")
+    log.info(f"Limit (meta)   : {args.limit or 'none'}")
+    log.info(f"Limit (seqs)   : {args.limit_sequences or 'none'}")
+    log.info(f"Dry run        : {args.dry_run}")
 
+    # ── Summary-only mode ────────────────────────────────────────────────────
     if args.summary_only:
         db_summary(open_db(db_path))
         return
 
     con = open_db(db_path) if not args.dry_run else None
 
-    # ── Reports CSV ingestion (fast — runs first) ──────────────────────
-    if not args.skip_reports and not args.dry_run:
+    # ── Decide which stages to run ───────────────────────────────────────────
+    run_metadata = not args.images_only and not args.reports_only
+    run_reports  = not args.images_only and not args.skip_reports
+    run_images   = not args.skip_images
+
+    # ── Reports CSV ──────────────────────────────────────────────────────────
+    if run_reports and con is not None:
         ingest_reports(con, reports_csv)
 
     if args.reports_only:
@@ -606,87 +1168,93 @@ Useful join query after ingestion:
             con.close()
         return
 
-    # ── DICOM ingestion ────────────────────────────────────────────────
-    if not dicom_root.exists():
-        log.error(f"DICOM root does not exist: {dicom_root}")
-        raise SystemExit(1)
+    # ── DICOM metadata ───────────────────────────────────────────────────────
+    if run_metadata:
+        if not dicom_root.exists():
+            log.error(f"DICOM root does not exist: {dicom_root}")
+            raise SystemExit(1)
 
-    log.info("Collecting .dcm file paths...")
-    all_paths = list(iter_dicom_files(dicom_root))
-    if args.limit:
-        all_paths = all_paths[: args.limit]
-    total = len(all_paths)
-    log.info(f"Found {total:,} .dcm files")
+        log.info("Collecting .dcm file paths …")
+        all_paths = list(iter_dicom_files(dicom_root))
+        if args.limit:
+            all_paths = all_paths[: args.limit]
+        total = len(all_paths)
+        log.info(f"Found {total:,} .dcm files")
 
-    if total == 0:
-        log.warning("No .dcm files found — nothing to do.")
-        if con:
-            db_summary(con)
-            con.close()
-        return
+        if total == 0:
+            log.warning("No .dcm files found — skipping metadata ingestion.")
+        else:
+            inserted  = 0
+            duplicate = 0
+            skipped   = 0
+            errored   = 0
+            buffer: list[dict] = []
 
-    inserted  = 0
-    duplicate = 0
-    skipped   = 0
-    errored   = 0
-    buffer: list[dict] = []
+            with ProcessPoolExecutor(max_workers=args.workers) as pool:
+                with tqdm(total=total, unit="file", desc="Ingesting DICOM metadata",
+                          dynamic_ncols=True) as pbar:
 
-    # ── Key fix: submit in chunks so tqdm starts immediately ───────────
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        with tqdm(total=total, unit="file", desc="Ingesting DICOM",
-                  dynamic_ncols=True) as pbar:
+                    for path_chunk in chunked(all_paths, args.chunk):
+                        futures = {
+                            pool.submit(parse_dicom_file, p): p
+                            for p in path_chunk
+                        }
 
-            for path_chunk in chunked(all_paths, args.chunk):
+                        for fut in as_completed(futures):
+                            try:
+                                result = fut.result()
+                            except Exception as exc:
+                                log.warning(f"Worker crashed: {exc}")
+                                skipped += 1
+                                pbar.update(1)
+                                continue
 
-                futures = {pool.submit(parse_dicom_file, p): p
-                           for p in path_chunk}
+                            if result is None:
+                                skipped += 1
+                            else:
+                                if result.get("parse_error"):
+                                    errored += 1
+                                if not args.dry_run:
+                                    buffer.append(result)
 
-                for fut in as_completed(futures):
-                    try:
-                        result = fut.result()
-                    except Exception as exc:
-                        log.warning(f"Worker crashed: {exc}")
-                        skipped += 1
-                        pbar.update(1)
-                        continue
+                            if con and len(buffer) >= args.flush:
+                                new, ign = flush_batch(con, buffer)
+                                inserted  += new
+                                duplicate += ign
+                                buffer = []
 
-                    if result is None:
-                        skipped += 1
-                    else:
-                        if result.get("parse_error"):
-                            errored += 1
-                        if not args.dry_run:
-                            buffer.append(result)
+                            pbar.update(1)
+                            pbar.set_postfix(
+                                ins=inserted, dup=duplicate,
+                                skip=skipped, err=errored,
+                            )
 
-                    if con and len(buffer) >= args.flush:
-                        new, ign = flush_batch(con, buffer)
-                        inserted  += new
-                        duplicate += ign
-                        buffer = []
+            if con and buffer:
+                new, ign = flush_batch(con, buffer)
+                inserted  += new
+                duplicate += ign
 
-                    pbar.update(1)
-                    pbar.set_postfix(
-                        ins=inserted,
-                        dup=duplicate,
-                        skip=skipped,
-                        err=errored,
-                    )
+            log.info("─" * 60)
+            log.info(f"Files found         : {total:>10,}")
+            log.info(f"Rows inserted       : {inserted:>10,}")
+            log.info(f"Duplicates skipped  : {duplicate:>10,}  (INSERT OR IGNORE)")
+            log.info(f"No-UID skipped      : {skipped:>10,}  (not DICOM or no SOPInstanceUID)")
+            log.info(f"Parse errors stored : {errored:>10,}  (stub rows with parse_error set)")
+            if args.dry_run:
+                log.info("(dry run — nothing written to SQLite)")
 
-    # ── Final flush ────────────────────────────────────────────────────
-    if con and buffer:
-        new, ign = flush_batch(con, buffer)
-        inserted  += new
-        duplicate += ign
+    # ── Image ingestion into ChromaDB ────────────────────────────────────────
+    if run_images and con is not None:
+        ingest_images_to_chromadb(
+            con          = con,
+            labeled_csv  = labeled_csv,
+            dicom_root   = dicom_root,
+            chroma_path  = chroma_path,
+            limit_sequences  = args.limit_sequences,
+            chroma_batch_size= args.chroma_batch,
+        )
 
-    log.info("─" * 60)
-    log.info(f"Files found         : {total:>10,}")
-    log.info(f"Rows inserted       : {inserted:>10,}")
-    log.info(f"Duplicates skipped  : {duplicate:>10,}  (INSERT OR IGNORE)")
-    log.info(f"No-UID skipped      : {skipped:>10,}  (not DICOM or no SOPInstanceUID)")
-    log.info(f"Parse errors stored : {errored:>10,}  (stub rows with parse_error set)")
-    if args.dry_run:
-        log.info("(dry run — nothing written to SQLite)")
-    elif con:
+    if con:
         db_summary(con)
         con.close()
 

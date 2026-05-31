@@ -46,3 +46,4 @@ utils/output
 /utils/to_transfer
 dicom_staging.db-shm
 dicom_staging.db-wal
+/chromadb
