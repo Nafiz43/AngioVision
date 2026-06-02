@@ -17,12 +17,25 @@ NEW ── Image ingestion into ChromaDB:
   • Locates the actual .dcm file under the DICOM root (index built from
     SQLite first; falls back to a full filesystem walk)
   • Extracts every frame via pydicom, normalises to uint8 RGB (HxWx3)
-  • Embeds frames with OpenCLIP (ViT-B-32, 512-dim) — model loaded ONCE
-    at startup and reused across all batches (no per-batch reload)
+  • Embeds frames with microsoft/rad-dino (ViT-B/14 DINOv2, 768-dim)
+    — model loaded ONCE at startup, reused across all batches
   • Upserts into a persistent ChromaDB collection called "dicom_images"
-    using pre-computed embeddings (embeddings= kwarg, not images=)
+    using pre-computed embeddings (embeddings= kwarg)
   • Tracks progress per sequence in SQLite (image_ingestion_status)
     → safe to kill and restart at any point
+
+Embedding model — microsoft/rad-dino:
+  • Domain-specific ViT-B/14 (DINOv2) pre-trained on chest X-rays,
+    CTs, MRIs, and fluoroscopy — better than generic CLIP for DSA.
+  • Produces 768-dim CLS-token embeddings, L2-normalised before storage.
+  • HuggingFace model ID: "microsoft/rad-dino"
+  • Loaded via AutoModel + AutoImageProcessor from `transformers`.
+
+NOTE — ChromaDB collection dimension:
+  If you previously used OpenCLIP (512-dim) and are switching to
+  RAD-DINO (768-dim), you must delete or rename the existing ChromaDB
+  collection before the first run, otherwise ChromaDB will raise a
+  dimension mismatch error.
 
 CHANGES vs previous version:
   1. SOPInstanceUID-based skip for DICOM metadata re-runs
@@ -36,15 +49,13 @@ CHANGES vs previous version:
          skipping the full 80-field header parse entirely.
        • Files that are genuinely new proceed to the full parse as before.
 
-  2. OpenCLIP model loaded exactly once per ingestion run
-       • OpenCLIPEmbeddingFunction (ChromaDB wrapper) reloaded the model
-         on every collection.add(images=…) call — visible in the logs as
-         repeated "Model ViT-B-32 creation process complete" lines.
-       • Fix: import open_clip directly, call load_clip_model() once in
-         ingest_images_to_chromadb(), and embed frames with
-         embed_frames_clip() before handing batches to ChromaDB.
-       • ChromaDB receives pre-computed embeddings via
-         collection.add(embeddings=…) — the wrapper is never invoked.
+  2. RAD-DINO replaces OpenCLIP for image embedding
+       • microsoft/rad-dino loaded once via load_rad_dino_model().
+       • Frames embedded in batches via embed_frames_rad_dino() which
+         uses AutoImageProcessor + AutoModel from transformers.
+       • CLS token from last_hidden_state[:,0,:] is the frame embedding.
+       • Vectors are L2-normalised; ChromaDB collection uses cosine space.
+       • ChromaDB receives embeddings= directly — no wrapper ever called.
 
 Design principles (unchanged from original):
   • SOPInstanceUID is the primary key / deduplification key
@@ -54,7 +65,7 @@ Design principles (unchanged from original):
   • Chunked submission — tqdm starts immediately, no upfront blocking
 
 Requirements:
-    pip install pydicom tqdm chromadb open-clip-torch pillow numpy torch
+    pip install pydicom tqdm chromadb transformers torch pillow numpy
     (pillow is needed by pydicom for compressed JPEG/JP2 transfers)
 """
 
@@ -87,19 +98,22 @@ except ImportError:
     CHROMA_AVAILABLE = False
     chromadb = None  # type: ignore[assignment]
 
-# OpenCLIP + torch imported only when image ingestion is needed.
-# Keeping them at module level so type checkers see them; actual
-# availability is checked at runtime via OPENCLIP_AVAILABLE.
+# RAD-DINO (microsoft/rad-dino) via HuggingFace transformers.
+# Imported only when image ingestion is needed; availability checked
+# at runtime via RAD_DINO_AVAILABLE.
 try:
     import torch
-    import open_clip
     from PIL import Image as PILImage
-    OPENCLIP_AVAILABLE = True
+    from transformers import AutoImageProcessor, AutoModel
+    RAD_DINO_AVAILABLE = True
 except ImportError:
-    OPENCLIP_AVAILABLE = False
-    torch       = None  # type: ignore[assignment]
-    open_clip   = None  # type: ignore[assignment]
-    PILImage    = None  # type: ignore[assignment]
+    RAD_DINO_AVAILABLE = False
+    torch              = None  # type: ignore[assignment]
+    PILImage           = None  # type: ignore[assignment]
+    AutoImageProcessor = None  # type: ignore[assignment]
+    AutoModel          = None  # type: ignore[assignment]
+
+RAD_DINO_MODEL_ID = "microsoft/rad-dino"
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 DICOM_ROOT        = Path("/data/Deep_Angiography/DICOM")
@@ -757,63 +771,73 @@ def extract_frames(path_str: str) -> tuple[list[np.ndarray], dict]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# OpenCLIP — loaded ONCE per ingestion run
+# RAD-DINO (microsoft/rad-dino) — loaded ONCE per ingestion run
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def load_clip_model(device: Optional[str] = None):
+def load_rad_dino_model(device: Optional[str] = None):
     """
-    Load OpenCLIP ViT-B-32 exactly once and return (model, preprocess, device).
+    Load microsoft/rad-dino exactly once and return (model, processor, device).
 
-    Previously ChromaDB's OpenCLIPEmbeddingFunction was used, which
-    re-instantiated the model on every collection.add(images=…) call,
-    causing the repeated log lines:
-        "Model ViT-B-32 creation process complete"
-        "Loading full pretrained weights from …"
+    RAD-DINO is a ViT-B/14 DINOv2 model pre-trained on a large collection
+    of radiology images (chest X-ray, CT, MRI, fluoroscopy/DSA).  It
+    produces 768-dim CLS-token embeddings that are substantially more
+    discriminative for angiographic sequences than generic CLIP features.
 
-    By loading via open_clip directly here, the model weights are read
-    from disk exactly once regardless of how many batches are processed.
+    The model and its AutoImageProcessor are both fetched from HuggingFace
+    on the first call (cached locally thereafter).  Subsequent runs load
+    entirely from the local cache with no network traffic.
     """
-    if not OPENCLIP_AVAILABLE:
+    if not RAD_DINO_AVAILABLE:
         raise ImportError(
-            "open_clip_torch or torch not installed. "
-            "Run: pip install open-clip-torch torch"
+            "transformers or torch not installed. "
+            "Run: pip install transformers torch pillow"
         )
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    log.info(f"Loading OpenCLIP ViT-B-32 on {device} (once) …")
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        "ViT-B-32",
-        pretrained="laion2b_s34b_b79k",
-    )
+    log.info(f"Loading {RAD_DINO_MODEL_ID} on {device} (once) …")
+    processor = AutoImageProcessor.from_pretrained(RAD_DINO_MODEL_ID)
+    model     = AutoModel.from_pretrained(RAD_DINO_MODEL_ID)
     model.eval()
     model = model.to(device)
-    log.info("OpenCLIP model ready.")
-    return model, preprocess, device
+    log.info("RAD-DINO model ready  (embedding dim: 768).")
+    return model, processor, device
 
 
-def embed_frames_clip(
+def embed_frames_rad_dino(
     frames: list[np.ndarray],
     model,
-    preprocess,
+    processor,
     device: str,
 ) -> list[list[float]]:
     """
-    Embed a list of uint8 RGB numpy frames with CLIP.
+    Embed a list of uint8 RGB numpy frames with RAD-DINO.
 
-    Returns a list of float32 vectors (one per frame, length 512).
-    Vectors are L2-normalised so cosine similarity == dot product.
+    Steps:
+      1. Convert each HxWx3 uint8 array to a PIL Image (processor expects PIL).
+      2. Run AutoImageProcessor — handles resize, normalisation, tensor stack.
+      3. Forward through the ViT encoder; take the CLS token from the last
+         hidden state (index 0 along the sequence dimension).
+      4. L2-normalise so ChromaDB cosine similarity == dot product.
 
-    ChromaDB receives these via collection.add(embeddings=…) — the
-    OpenCLIPEmbeddingFunction wrapper is never invoked.
+    Returns a list of float32 vectors, one per frame, each of length 768.
+    ChromaDB receives these via collection.add(embeddings=…) so the model
+    is never re-loaded or re-initialised by ChromaDB internals.
     """
-    images  = [PILImage.fromarray(f) for f in frames]
-    tensors = torch.stack([preprocess(img) for img in images]).to(device)
+    pil_images = [PILImage.fromarray(f) for f in frames]
+
+    inputs = processor(images=pil_images, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
     with torch.no_grad():
-        embs = model.encode_image(tensors)
-        embs = embs / embs.norm(dim=-1, keepdim=True)   # L2 normalise
-    return embs.cpu().float().numpy().tolist()
+        outputs = model(**inputs)
+        # CLS token: shape (batch, 768)
+        cls_emb = outputs.last_hidden_state[:, 0, :]
+        # L2 normalise → cosine similarity == dot product in ChromaDB
+        cls_emb = cls_emb / cls_emb.norm(dim=-1, keepdim=True)
+
+    return cls_emb.cpu().float().numpy().tolist()
 
 
 def setup_chromadb(chroma_path: Path):
@@ -821,7 +845,7 @@ def setup_chromadb(chroma_path: Path):
     Initialise a persistent ChromaDB client and return (client, collection).
 
     No embedding function is attached to the collection — embeddings are
-    pre-computed by embed_frames_clip() and passed via the embeddings=
+    pre-computed by embed_frames_rad_dino() and passed via the embeddings=
     kwarg in collection.add().  This prevents ChromaDB from ever invoking
     its internal model-loading code paths.
     """
@@ -923,7 +947,7 @@ def ingest_images_to_chromadb(
     End-to-end image ingestion:
       1. Load and filter the labeled CSV
       2. Build a DICOM stem→path index (SQLite-backed, filesystem fallback)
-      3. Load OpenCLIP model ONCE
+      3. Load microsoft/rad-dino ONCE
       4. Connect to ChromaDB (no embedding function — we supply embeddings)
       5. Iterate sequences: extract frames → embed → store
       6. Record status in image_ingestion_status for safe resume
@@ -936,8 +960,8 @@ def ingest_images_to_chromadb(
     if not CHROMA_AVAILABLE:
         log.error("chromadb not installed. Run: pip install chromadb")
         return
-    if not OPENCLIP_AVAILABLE:
-        log.error("open_clip_torch or torch not installed. Run: pip install open-clip-torch torch")
+    if not RAD_DINO_AVAILABLE:
+        log.error("transformers or torch not installed. Run: pip install transformers torch pillow")
         return
 
     # ── 1. Load CSV ──────────────────────────────────────────────────────────
@@ -949,8 +973,8 @@ def ingest_images_to_chromadb(
     # ── 2. Build DICOM index ─────────────────────────────────────────────────
     dicom_index = build_dicom_index(dicom_root, con=con)
 
-    # ── 3. Load OpenCLIP model once ──────────────────────────────────────────
-    clip_model, clip_preprocess, clip_device = load_clip_model()
+    # ── 3. Load RAD-DINO once — model stays in memory for all batches ───────
+    rad_dino_model, rad_dino_processor, rad_dino_device = load_rad_dino_model()
 
     # ── 4. Connect to ChromaDB ───────────────────────────────────────────────
     _, collection = setup_chromadb(chroma_path)
@@ -1051,8 +1075,8 @@ def ingest_images_to_chromadb(
                     batch = frames[batch_start: batch_start + chroma_batch_size]
 
                     # ── embed with the already-loaded model ──────────────────
-                    embeddings = embed_frames_clip(
-                        batch, clip_model, clip_preprocess, clip_device
+                    embeddings = embed_frames_rad_dino(
+                        batch, rad_dino_model, rad_dino_processor, rad_dino_device
                     )
 
                     ids = [
@@ -1212,7 +1236,7 @@ Useful join query after full ingestion:
 
 Query ChromaDB for visually similar frames:
   results = collection.query(
-      query_embeddings=[embed_frames_clip([query_frame], model, preprocess, device)[0]],
+      query_embeddings=[embed_frames_rad_dino([query_frame], model, processor, device)[0]],
       n_results=10,
       where={"modality": "XA"},
   )

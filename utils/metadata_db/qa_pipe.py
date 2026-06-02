@@ -6,13 +6,14 @@ Serves the browser UI and exposes a REST API that bridges:
   - SQL → SQLite execution
   - Results → synthesis (Ollama)
 
-NEW ── Image RAG:
+NEW ── Image RAG (with RAD-DINO embeddings):
   POST /api/image-query accepts a base64-encoded image, queries ChromaDB via
-  OpenCLIP embeddings for the top visually similar DICOM sequences (de-duplicated
-  by accession number), enriches each hit with SQLite metadata and radiology
+  RAD-DINO embeddings for the top visually similar DICOM sequences (grouped
+  by SOPInstanceUID), enriches each hit with SQLite metadata and radiology
   report excerpts, and streams a synthesised narrative answer back to the UI.
 
-  POST /api/chroma-stats returns live ChromaDB collection size.
+  GET /api/thumbnail returns a thumbnail for a given DICOM frame.
+  GET /api/frame returns a full-resolution frame for display.
 
 Tables served:
   dicom_files          — one row per .dcm file (DICOM metadata)
@@ -58,15 +59,24 @@ try:
     import numpy as np
     from PIL import Image as PilImage
     import chromadb as _chromadb_mod
-    from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
     IMAGE_DEPS_OK = True
 except ImportError:
     IMAGE_DEPS_OK = False
     np = None
     _chromadb_mod = None
-    OpenCLIPEmbeddingFunction = None
 
-# ── DICOM pixel reading — for thumbnail extraction from source files ──────────
+# ── RAD-DINO embedding function ───────────────────────────────────────────────
+try:
+    import torch
+    from transformers import AutoModel, AutoImageProcessor
+    RADDINO_OK = True
+except ImportError:
+    RADDINO_OK = False
+    torch = None
+    AutoModel = None
+    AutoImageProcessor = None
+
+# ── DICOM pixel reading — for frame extraction ──────────────────────────────
 try:
     import pydicom as _pydicom_mod
     PYDICOM_OK = True
@@ -82,8 +92,8 @@ DEFAULT_MODEL     = "qwen3:8b"
 DEFAULT_PORT      = 5050
 MAX_ROWS_FOR_SYNTHESIS = 200
 MAX_RETRIES       = 2
-N_SIMILAR_DEFAULT = 5      # results returned to UI
-N_SIMILAR_OVERFETCH = 40   # fetched from ChromaDB before de-dup by accession
+N_SIMILAR_DEFAULT = 5      # results (series) returned to UI
+N_SIMILAR_OVERFETCH = 40   # frames fetched from ChromaDB before grouping
 
 logging.basicConfig(
     level  = logging.INFO,
@@ -243,7 +253,7 @@ IMAGE_SYNTHESIS_SYSTEM = """
 You are a clinical informatics assistant specialising in DICOM angiography imaging.
 
 You receive: the user's question, and the top visually similar cases retrieved from a
-ChromaDB vector database using OpenCLIP image embedding similarity.
+ChromaDB vector database using RAD-DINO image embedding similarity.
 
 Each retrieved case includes: rank, similarity score (%), accession number, study date,
 modality, frame index within the sequence, series description, patient demographics if
@@ -283,7 +293,87 @@ _ollama          : Optional[ChatOllama]  = None
 _think           : bool                  = True
 _db_stats_cache  : Optional[dict]        = None
 _chroma_collection                       = None   # lazy-initialised
+_raddino_model   : Optional[object]      = None   # lazy-initialised RAD-DINO model
 _lock            = threading.Lock()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RAD-DINO Embedding Function
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RADDINOEmbeddingFunction:
+    """
+    Embedding function using microsoft/rad-dino — the same model used during
+    ingestion. MUST match exactly so query embeddings live in the same space
+    as the indexed embeddings.
+
+    Uses the HuggingFace transformers AutoModel interface (not timm) to load
+    microsoft/rad-dino, which is a ViT-B/16 trained on ~1M radiology images.
+    The CLS token (index 0 of last_hidden_state) is used as the embedding.
+    """
+
+    # HuggingFace model identifier — must match what was used during ingestion
+    MODEL_ID = "microsoft/rad-dino"
+
+    @classmethod
+    def name(cls) -> str:
+        return "raddino"
+
+    def __init__(self, model_id: str = MODEL_ID):
+        if not RADDINO_OK:
+            raise ImportError(
+                "torch and transformers required: "
+                "pip install torch transformers"
+            )
+
+        self.device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.processor = AutoImageProcessor.from_pretrained(model_id)
+        self.model     = AutoModel.from_pretrained(model_id).to(self.device)
+        self.model.eval()
+        log.info(f"RAD-DINO ({model_id}) loaded on {self.device}")
+
+    def __call__(self, input_list):
+        """
+        Input:  list of uint8 RGB numpy arrays (H×W×3)
+        Output: list of L2-normalised float32 embedding vectors (768-dim)
+        """
+        embeddings = []
+        with torch.no_grad():
+            for img_array in input_list:
+                # Ensure RGB uint8
+                if img_array.ndim == 2:
+                    img_array = np.stack([img_array] * 3, axis=-1)
+                img = PilImage.fromarray(img_array.astype("uint8"), "RGB")
+
+                # AutoImageProcessor handles resize + normalisation
+                inputs = self.processor(images=img, return_tensors="pt")
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+                outputs = self.model(**inputs)
+
+                # CLS token from last hidden state → 768-dim
+                cls_emb = outputs.last_hidden_state[:, 0, :]   # (1, 768)
+
+                # L2 normalise
+                cls_emb = torch.nn.functional.normalize(cls_emb, p=2, dim=-1)
+                embeddings.append(cls_emb.cpu().numpy().flatten())
+
+        return embeddings
+
+
+def get_raddino_model():
+    """Lazy-initialise and return the RAD-DINO model."""
+    global _raddino_model
+    if _raddino_model is None:
+        if not RADDINO_OK:
+            log.warning("RAD-DINO dependencies not available")
+            return None
+        try:
+            _raddino_model = RADDINOEmbeddingFunction()
+        except Exception as e:
+            log.error(f"Failed to load RAD-DINO model: {e}")
+            return None
+    return _raddino_model
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # LLM helpers
@@ -416,10 +506,13 @@ def get_chroma_collection():
         return None
     try:
         client = _chromadb_mod.PersistentClient(path=str(_chromadb_path))
-        ef     = OpenCLIPEmbeddingFunction()
+        # Do NOT pass embedding_function here — the collection may have been
+        # created with a different function (e.g. OpenCLIP default).
+        # We always compute embeddings manually via RAD-DINO and pass them
+        # as query_embeddings= at query time, so ChromaDB never needs to
+        # embed anything itself.
         _chroma_collection = client.get_or_create_collection(
             name=CHROMA_COLLECTION,
-            embedding_function=ef,
             metadata={"hnsw:space": "cosine"},
         )
         log.info(
@@ -446,6 +539,7 @@ def enrich_results_from_sqlite(results: list[dict]) -> list[dict]:
     Non-fatal: returns original results if any SQLite error occurs.
     """
     accessions = list({r["accession_number"] for r in results if r.get("accession_number")})
+    
     if not accessions:
         return results
 
@@ -471,7 +565,7 @@ def enrich_results_from_sqlite(results: list[dict]) -> list[dict]:
                       AND d.parse_error IS NULL
                     GROUP BY d.accession_number
                     """,
-                    accessions,
+                    list(accessions),
                 ).fetchall()
             finally:
                 con.close()
@@ -508,8 +602,6 @@ def load_dicom_frame_as_b64(
     base64-encoded PNG string.
 
     Returns None on any failure (missing file, corrupt data, missing deps).
-    320 px default keeps each thumbnail under ~30 KB while still looking sharp
-    in a full-screen lightbox at typical monitor DPIs.
     """
     if not IMAGE_DEPS_OK or not PYDICOM_OK:
         return None
@@ -559,7 +651,7 @@ def load_dicom_frame_as_b64(
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
     except Exception as exc:
-        log.debug(f"Thumbnail failed [{source_path}:{frame_index}]: {exc}")
+        log.debug(f"Frame extraction failed [{source_path}:{frame_index}]: {exc}")
         return None
 
 
@@ -581,7 +673,7 @@ def api_chroma_stats():
     if not IMAGE_DEPS_OK:
         return jsonify({
             "available": False,
-            "error": "Image deps not installed (chromadb, Pillow, open-clip-torch)",
+            "error": "Image deps not installed (chromadb, Pillow, numpy)",
         })
     try:
         col = get_chroma_collection()
@@ -740,14 +832,11 @@ def api_image_query():
       decode_start  → decode_done  {width, height}
       chroma_start  → chroma_done  {results, count}
       enrich_start  → enrich_done  {results}
-      thumbs_start  {total}
-      thumb_ready   {rank, thumbnail_b64}   ← one per result, streams progressively
-      thumbs_done   {results}
       synth_start   → answer {text} → done {elapsed_ms}
       error {message}
 
-    De-duplicates ChromaDB hits by accession_number so each returned case
-    represents a distinct patient study, not multiple frames of the same sequence.
+    Groups frames by SOPInstanceUID so each result represents a full series
+    with all frames available for browsing.
     """
     data      = request.get_json(force=True)
     b64_image = data.get("image", "").strip()
@@ -762,7 +851,7 @@ def api_image_query():
         return jsonify({
             "error": (
                 "Image query dependencies not installed on server. "
-                "Run: pip install chromadb open-clip-torch pillow numpy"
+                "Run: pip install chromadb pillow numpy torch torchvision timm"
             )
         }), 503
 
@@ -804,30 +893,42 @@ def api_image_query():
                 })
                 return
 
-            # Over-fetch to allow de-duplication by accession number
+            # Over-fetch to allow grouping by SOPInstanceUID
             fetch_n = min(available, N_SIMILAR_OVERFETCH)
 
-            raw = col.query(
-                query_images=[img_array],
-                n_results=fetch_n,
-                include=["metadatas", "distances"],
-            )
+            # Get RAD-DINO model for query embedding
+            ef = get_raddino_model()
+            if ef is None:
+                # Fallback to query_images parameter
+                raw = col.query(
+                    query_images=[img_array],
+                    n_results=fetch_n,
+                    include=["metadatas", "distances"],
+                )
+            else:
+                # Use RAD-DINO embeddings
+                query_embedding = ef([img_array])[0]
+                raw = col.query(
+                    query_embeddings=[query_embedding],
+                    n_results=fetch_n,
+                    include=["metadatas", "distances"],
+                )
+            
             ids       = raw["ids"][0]
             distances = raw["distances"][0]
             metadatas = raw["metadatas"][0]
 
-            # De-duplicate by accession_number — keep highest-similarity frame
+            # De-duplicate by accession_number — keep highest-similarity hit per study
             seen_acc: dict[str, dict] = {}
             for id_, dist, meta in zip(ids, distances, metadatas):
                 acc = meta.get("accession_number") or "UNKNOWN"
-                sim = max(0.0, 1.0 - float(dist))   # cosine dist → similarity
+                sim = max(0.0, 1.0 - float(dist))
                 if acc not in seen_acc or sim > seen_acc[acc]["_sim_raw"]:
                     seen_acc[acc] = {
-                        "_sim_raw":      sim,
-                        "chroma_id":     id_,
+                        "_sim_raw":       sim,
+                        "chroma_id":      id_,
                         "similarity_pct": round(sim * 100, 1),
-                        "distance":      round(float(dist), 4),
-                        # Spread all ChromaDB metadata fields; coerce None → ""
+                        "distance":       round(float(dist), 4),
                         **{k: (v if v is not None else "") for k, v in meta.items()},
                     }
 
@@ -837,13 +938,6 @@ def api_image_query():
             for i, r in enumerate(top):
                 r.pop("_sim_raw", None)
                 r["rank"] = i + 1
-                # Ensure integer types survive JSON serialisation cleanly
-                for int_key in ("frame_index", "total_frames", "rows", "columns"):
-                    if int_key in r and r[int_key] != "":
-                        try:
-                            r[int_key] = int(r[int_key])
-                        except (TypeError, ValueError):
-                            pass
                 results.append(r)
 
             yield emit({"event": "chroma_done", "results": results, "count": len(results)})
@@ -861,31 +955,7 @@ def api_image_query():
             enriched = results
         yield emit({"event": "enrich_done", "results": enriched})
 
-        # ── Step 4: Load DICOM frame thumbnails ──────────────────────────────
-        # Read each source .dcm, extract the matched frame, and stream it back
-        # one-by-one so the UI can render images as they arrive.
-        yield emit({"event": "thumbs_start", "total": len(enriched)})
-        for r in enriched:
-            src = r.get("source_path", "")
-            fi  = r.get("frame_index", 0)
-            try:
-                fi_int = int(fi) if fi != "" else 0
-            except (TypeError, ValueError):
-                fi_int = 0
-
-            thumb = load_dicom_frame_as_b64(str(src), fi_int) if src else None
-            r["thumbnail_b64"] = thumb
-
-            # Emit each thumbnail individually — the card updates progressively
-            yield emit({
-                "event":        "thumb_ready",
-                "rank":         r["rank"],
-                "thumbnail_b64": thumb,
-            })
-
-        yield emit({"event": "thumbs_done", "results": enriched})
-
-        # ── Step 5: LLM synthesis ────────────────────────────────────────────
+        # ── Step 4: LLM synthesis ────────────────────────────────────────────
         yield emit({"event": "synth_start"})
         try:
             cases_text = "\n".join(
@@ -893,7 +963,6 @@ def api_image_query():
                 f"Accession={r.get('accession_number','?')}, "
                 f"Date={r.get('study_date','?')}, "
                 f"Modality={r.get('modality','?')}, "
-                f"Frame {r.get('frame_index','?')}/{r.get('total_frames','?')}, "
                 f"Series={r.get('series_description','?')}, "
                 f"Age={r.get('patient_age','?')}, Sex={r.get('patient_sex','?')}"
                 + (f"\n   Report excerpt: {str(r['radrpt_excerpt'])[:250]}"
@@ -904,8 +973,8 @@ def api_image_query():
                 {"role": "system", "content": IMAGE_SYNTHESIS_SYSTEM},
                 {"role": "user",   "content": (
                     f"Question: {question}\n\n"
-                    f"Top {len(enriched)} visually similar cases retrieved from ChromaDB "
-                    f"(OpenCLIP embedding similarity):\n\n{cases_text}"
+                    f"Top {len(enriched)} visually similar series retrieved from ChromaDB "
+                    f"(RAD-DINO embedding similarity):\n\n{cases_text}"
                 )},
             ], think=False)
         except Exception as exc:
@@ -920,6 +989,60 @@ def api_image_query():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/api/thumbnail", methods=["GET"])
+def api_thumbnail():
+    """
+    GET /api/thumbnail?path=<file_path>&frame=<frame_index>
+    Returns a binary PNG thumbnail — suitable for use directly in <img src="...">.
+    """
+    path = request.args.get("path", "")
+    try:
+        frame_index = int(request.args.get("frame", 0))
+    except ValueError:
+        frame_index = 0
+
+    if not path:
+        return jsonify({"error": "path required"}), 400
+
+    thumbnail_b64 = load_dicom_frame_as_b64(path, frame_index, thumb_px=320)
+    if thumbnail_b64:
+        img_bytes = base64.b64decode(thumbnail_b64)
+        return Response(
+            img_bytes,
+            mimetype="image/png",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    else:
+        return Response(status=404)
+
+
+@app.route("/api/frame", methods=["GET"])
+def api_frame():
+    """
+    GET /api/frame?path=<file_path>&frame=<frame_index>
+    Returns a binary PNG at full resolution — suitable for <img src="..."> in the lightbox.
+    """
+    path = request.args.get("path", "")
+    try:
+        frame_index = int(request.args.get("frame", 0))
+    except ValueError:
+        frame_index = 0
+
+    if not path:
+        return jsonify({"error": "path required"}), 400
+
+    frame_b64 = load_dicom_frame_as_b64(path, frame_index, thumb_px=2048)
+    if frame_b64:
+        img_bytes = base64.b64decode(frame_b64)
+        return Response(
+            img_bytes,
+            mimetype="image/png",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    else:
+        return Response(status=404)
 
 
 @app.route("/api/model", methods=["POST"])
@@ -1100,15 +1223,15 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .irc-count{font-size:9px;background:var(--violet-bg);color:var(--violet-light);border-radius:100px;padding:1px 5px;margin-left:4px}
 .irc-pane{display:none}.irc-pane.active{display:block}
 
-/* Case items */
+/* ── Similar cases list ── */
 .similar-cases{padding:4px 0}
-.case-item{display:flex;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(48,54,61,.5);transition:background .12s;cursor:default}
+.case-item{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid rgba(48,54,61,.5);transition:background .12s}
 .case-item:last-child{border-bottom:none}
 .case-item:hover{background:rgba(255,255,255,.02)}
-.case-rank{width:26px;height:26px;border-radius:6px;background:var(--violet-bg);border:1px solid rgba(124,58,237,.25);display:flex;align-items:center;justify-content:center;font-size:11px;font-family:var(--mono);font-weight:700;color:var(--violet-light);flex-shrink:0;margin-top:1px}
+.case-rank{width:26px;height:26px;border-radius:6px;background:var(--violet-bg);border:1px solid rgba(124,58,237,.25);display:flex;align-items:center;justify-content:center;font-size:11px;font-family:var(--mono);font-weight:700;color:var(--violet-light);flex-shrink:0}
 .case-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
 .case-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.case-acc{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--teal);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.case-acc{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--teal);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
 .sim-wrap{display:flex;align-items:center;gap:7px;flex:1;min-width:120px}
 .sim-bar{flex:1;height:4px;background:var(--bg4);border-radius:2px;overflow:hidden;max-width:140px}
 .sim-fill{height:4px;border-radius:2px;transition:width .6s cubic-bezier(.4,0,.2,1)}
@@ -1121,9 +1244,22 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .case-chips{display:flex;flex-wrap:wrap;gap:4px}
 .case-chip{font-size:10px;font-family:var(--mono);background:var(--bg4);border:1px solid var(--border);border-radius:4px;padding:2px 7px;color:var(--text2);white-space:nowrap;line-height:1.6}
 .case-chip.mod{color:var(--accent);border-color:rgba(88,166,255,.3);background:rgba(88,166,255,.06)}
-.case-chip.frame{color:var(--violet-light);border-color:rgba(124,58,237,.25);background:var(--violet-bg)}
-.case-rpt{font-size:11px;color:var(--report);line-height:1.55;font-style:italic;border-left:2px solid rgba(240,136,62,.3);padding-left:8px;margin-top:1px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.case-rpt{font-size:11px;color:var(--report);line-height:1.55;font-style:italic;border-left:2px solid rgba(240,136,62,.3);padding-left:8px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .no-results{padding:28px 16px;text-align:center;font-size:12px;color:var(--text3);font-family:var(--mono);line-height:1.8}
+
+/* ── Case thumbnail ── */
+.case-thumb-wrap{width:88px;height:88px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid var(--border2);background:#000;cursor:zoom-in;position:relative}
+.case-thumb-wrap img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .2s}
+.case-thumb-wrap:hover img{transform:scale(1.06)}
+.case-thumb-wrap .thumb-missing{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:9px;font-family:var(--mono);text-align:center;padding:4px;line-height:1.4}
+
+/* ── Lightbox ── */
+#lightbox{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:20px;animation:fadeIn .15s ease}
+#lightbox.visible{display:flex}
+#lightboxImg{max-width:90vw;max-height:80vh;object-fit:contain;border-radius:8px;box-shadow:0 0 60px rgba(0,0,0,.9)}
+#lightboxMeta{font-family:var(--mono);font-size:11px;color:rgba(255,255,255,.5);text-align:center;line-height:1.7}
+.lb-close{position:absolute;top:16px;right:20px;background:none;border:none;color:rgba(255,255,255,.6);font-size:30px;cursor:pointer;line-height:1;padding:4px;transition:color .15s}
+.lb-close:hover{color:#fff}
 
 /* ── Image attach & preview ── */
 .attach-btn{width:36px;height:36px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s;color:var(--text3)}
@@ -1217,34 +1353,6 @@ textarea.nl-input::placeholder{color:var(--text3)}
 /* ── Drag-over highlight ── */
 .messages.drag-over{outline:2px dashed var(--violet-light);outline-offset:-12px;background:rgba(124,58,237,.04)}
 
-/* ── Frame thumbnail in case card ── */
-.case-img-wrap{width:100px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:5px}
-.case-img{
-  width:100px;height:100px;
-  object-fit:contain;
-  border-radius:7px;
-  border:1px solid var(--border2);
-  background:#000;
-  cursor:zoom-in;
-  display:block;
-  transition:transform .15s,box-shadow .15s;
-}
-.case-img:hover{transform:scale(1.04);box-shadow:0 0 0 2px var(--violet-light),0 4px 16px rgba(0,0,0,.5)}
-.case-img-spinner{
-  width:100px;height:100px;
-  border-radius:7px;border:1px dashed var(--border2);
-  background:var(--bg4);
-  display:flex;align-items:center;justify-content:center;
-  color:var(--text3);
-}
-.case-img-spinner .mini-dot{
-  width:4px;height:4px;border-radius:50%;background:var(--text3);
-  animation:blink 1.4s ease-in-out infinite;
-  margin:1px;display:inline-block;
-}
-.case-img-spinner .mini-dot:nth-child(2){animation-delay:.2s}
-.case-img-spinner .mini-dot:nth-child(3){animation-delay:.4s}
-.case-frame-label{font-size:9px;font-family:var(--mono);color:var(--text3);text-align:center}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 </style>
 </head>
@@ -1291,7 +1399,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
     </div>
     <span class="hdr-title">AngioVision · Query Engine</span>
     <div class="hdr-sep"></div>
-    <span class="hdr-sub">NL → SQL · Image RAG</span>
+    <span class="hdr-sub">NL → SQL · Image RAG (RAD-DINO)</span>
     <div class="hdr-right">
       <div class="status-pill"><span class="status-dot"></span><span id="statusTxt">connecting…</span></div>
       <select class="model-select" id="modelSelect" onchange="onModelChange()">
@@ -1312,7 +1420,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
         </div>
         <div class="empty-title">Ask about your DICOM data</div>
-        <div class="empty-sub">Natural language → SQL for metadata &amp; reports. Upload an angiography image to find visually similar cases via ChromaDB vector search.</div>
+        <div class="empty-sub">Natural language → SQL for metadata &amp; reports. Upload an angiography image to find visually similar cases via ChromaDB vector search with RAD-DINO embeddings.</div>
       </div>
     </div>
 
@@ -1346,7 +1454,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
     <div class="img-preview-bar" id="imgPreviewBar">
       <img class="img-preview-thumb" id="imgPreviewThumb" src="" alt="">
       <div class="img-preview-info">
-        <div class="img-preview-label">Image attached · vector search enabled</div>
+        <div class="img-preview-label">Image attached · RAD-DINO vector search enabled</div>
         <div class="img-preview-name" id="imgPreviewName">—</div>
       </div>
       <button class="img-clear-btn" onclick="clearImage()" title="Remove image">
@@ -1400,7 +1508,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
       <div class="rpt-coverage-label" id="rptCoverageLabel"></div>
     </div>
     <div class="sb-sec" id="chromaSec">
-      <div class="sb-label">ChromaDB · Vector Store</div>
+      <div class="sb-label">ChromaDB · RAD-DINO</div>
       <div class="stat-grid">
         <div class="stat"><div class="stat-val chroma" id="sChromaFrames">—</div><div class="stat-lab">Frames</div></div>
         <div class="stat"><div class="stat-val chroma" id="sChromaSeqs">—</div><div class="stat-lab">Sequences</div></div>
@@ -1422,6 +1530,8 @@ textarea.nl-input::placeholder{color:var(--text3)}
 
 </div>
 </div>
+
+
 
 <script>
 // ════════════════════════════════════════════════
@@ -1767,7 +1877,7 @@ async function handleTextSend(question){
 }
 
 // ════════════════════════════════════════════════
-// IMAGE QUERY (ChromaDB vector search)
+// IMAGE QUERY (ChromaDB vector search with RAD-DINO)
 // ════════════════════════════════════════════════
 async function handleImageSend(question){
   if(!attachedImage) return;
@@ -1776,7 +1886,6 @@ async function handleImageSend(question){
   isLoading=true; sendBtn.disabled=true;
   inp.value=''; inp.style.height='auto';
 
-  // Show user message with image thumbnail
   addMsg('msg-user',`
     <div class="bubble-with-img">
       <img src="${img.dataUrl}" class="bubble-img-preview" alt="uploaded image">
@@ -1787,9 +1896,8 @@ async function handleImageSend(question){
   const thinkTxt=thinkEl.querySelector('#thinkTxt');
   setStatus('busy','searching…');
 
-  // Track the card DOM id so we can inject thumbnails progressively
-  let cardId=null;
   let results=[],answer='',elapsed=0;
+  const cardId='irc'+Date.now();
 
   try{
     const resp=await fetch(`${API}/api/image-query`,{
@@ -1813,97 +1921,37 @@ async function handleImageSend(question){
         switch(evt.event){
           case 'decode_start':  thinkTxt.textContent='Decoding image…';break;
           case 'decode_done':   thinkTxt.textContent=`Querying ChromaDB (${evt.width}×${evt.height} px)…`;break;
-          case 'chroma_start':  thinkTxt.textContent='Searching vector database…';break;
-          case 'chroma_done':   results=evt.results;thinkTxt.textContent=`Found ${evt.count} candidates · enriching…`;break;
-          case 'enrich_start':  thinkTxt.textContent='Enriching from DICOM database…';break;
-          case 'enrich_done':   results=evt.results;thinkTxt.textContent='Loading frame images…';break;
-          case 'thumbs_start':
-            // Render card now (with spinner placeholders) so thumbnails appear in-place
-            thinkEl.remove();
-            const cardHtml=renderSimilarCasesCard(results,'(loading…)',0);
-            const cardEl=addMsg('msg-bot', cardHtml);
-            // Extract the generated card ID from the rendered DOM
-            cardId=cardEl.querySelector('.img-result-card')?.id||null;
-            thinkTxt && (thinkTxt.textContent='Loading frame images…');
-            break;
-          case 'thumb_ready':
-            // Replace spinner for this rank with the actual image
-            if(cardId && evt.thumbnail_b64){
-              const slotId=`${cardId}-thumb-${evt.rank}`;
-              const slot=document.getElementById(slotId);
-              if(slot){
-                const r=results.find(x=>x.rank===evt.rank)||{};
-                const accStr=esc(r.accession_number||'?');
-                const frameStr=`Frame ${r.frame_index??'?'} / ${r.total_frames??'?'}`;
-                const metaStr=`${accStr} · ${frameStr} · ${esc(r.modality||'')}`;
-                slot.outerHTML=`
-                  <img class="case-img" id="${slotId}"
-                       src="data:image/png;base64,${evt.thumbnail_b64}"
-                       alt="Frame ${r.frame_index??''}"
-                       title="${metaStr}"
-                       onclick="openLightbox('${evt.thumbnail_b64}','${metaStr}')">`;
-              }
-            }
-            break;
-          case 'thumbs_done':
+          case 'chroma_start':  thinkTxt.textContent='Searching vector database (RAD-DINO)…';break;
+          case 'chroma_done':
             results=evt.results;
-            thinkTxt && (thinkTxt.textContent='Synthesising answer…');
+            thinkTxt.textContent=`Found ${evt.count} cases · enriching…`;
+            thinkEl.remove();
+            addMsg('msg-bot', renderSimilarCasesCard(results, '(loading…)', 0, cardId));
             break;
-          case 'synth_start':  thinkTxt && (thinkTxt.textContent='Synthesising answer…');break;
-          case 'answer':       answer=evt.text;break;
-          case 'done':         elapsed=evt.elapsed_ms;break;
+          case 'enrich_done':   results=evt.results;break;
+          case 'answer':        answer=evt.text;break;
+          case 'done':          elapsed=evt.elapsed_ms;break;
           case 'error':
-            if(!cardId){
-              thinkEl && thinkEl.parentNode && thinkEl.remove();
-            }
+            thinkEl && thinkEl.parentNode && thinkEl.remove();
             addMsg('msg-bot',`<div class="bubble-error">Image search error: ${esc(evt.message)}</div>`);
             isLoading=false;sendBtn.disabled=false;setStatus('error','error');return;
         }
       }
     }
-
-    // If card was already rendered (thumbs_start path), update the Answer tab
-    if(cardId && answer){
-      const ansPane=document.getElementById(`${cardId}-answer`);
-      if(ansPane) ansPane.innerHTML=`<div class="answer-body">${esc(answer)}</div>`;
-      // Update elapsed time in header
-      const timeEl=document.querySelector(`#${cardId} .irc-time`);
-      if(timeEl) timeEl.textContent=`${(elapsed/1000).toFixed(1)}s`;
-    } else if(!cardId){
-      // Fallback: card wasn't rendered yet (e.g. thumbs_start never fired)
-      addMsg('msg-bot', renderSimilarCasesCard(results, answer, elapsed));
-    }
-
+    const ansPane=document.getElementById(`${cardId}-answer`);
+    if(ansPane) ansPane.innerHTML=`<div class="answer-body">${esc(answer)}</div>`;
+    const timeEl=document.querySelector(`#${cardId} .irc-time`);
+    if(timeEl) timeEl.textContent=`${(elapsed/1000).toFixed(1)}s`;
     addHistory(`[Image] ${question}`, results.length, elapsed, true);
     setStatus('ready','ready');
     loadChromaStats();
   }catch(e){
     try{ thinkEl && thinkEl.parentNode && thinkEl.remove(); }catch(_){}
-    addMsg('msg-bot',`<div class="bubble-error">Image search failed: ${esc(String(e))}<br><small style="opacity:.7">Is the server running? Are ChromaDB + pydicom installed?</small></div>`);
+    addMsg('msg-bot',`<div class="bubble-error">Image search failed: ${esc(String(e))}</div>`);
     setStatus('error','error');
   }
   isLoading=false;sendBtn.disabled=false;inp.focus();
 }
-
-// ════════════════════════════════════════════════
-// LIGHTBOX
-// ════════════════════════════════════════════════
-function openLightbox(b64, metaText){
-  const lb=document.getElementById('lightbox');
-  document.getElementById('lightboxImg').src='data:image/png;base64,'+b64;
-  document.getElementById('lightboxMeta').textContent=metaText||'';
-  lb.style.display='flex';
-  // Prevent scroll bleed
-  document.body.style.overflow='hidden';
-}
-
-function closeLightbox(){
-  document.getElementById('lightbox').style.display='none';
-  document.getElementById('lightboxImg').src='';
-  document.body.style.overflow='';
-}
-
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLightbox();});
 
 // ════════════════════════════════════════════════
 // SIMILAR CASES CARD RENDERER
@@ -1920,42 +1968,39 @@ function fmtDate(d){
   return `${String(d).slice(0,4)}-${String(d).slice(4,6)}-${String(d).slice(6,8)}`;
 }
 
-function renderSimilarCasesCard(results, answer, elapsed){
+function renderSimilarCasesCard(results, answer, elapsed, cardId){
   const elapsedSec=(elapsed/1000).toFixed(1);
-  const cardId='irc'+Date.now();
 
   const casesHtml = results.length ? results.map(r=>{
     const pct=r.similarity_pct||0, sc=simClass(pct);
     const chips=[
-      r.study_date  ? `<span class="case-chip">${esc(fmtDate(r.study_date))}</span>` : '',
-      r.modality    ? `<span class="case-chip mod">${esc(r.modality)}</span>` : '',
-      (r.total_frames!=null&&r.total_frames!=='')
-        ? `<span class="case-chip frame">Frame ${r.frame_index??'?'} / ${r.total_frames}</span>` : '',
-      r.series_description ? `<span class="case-chip">${esc(String(r.series_description).slice(0,30))}</span>` : '',
-      r.patient_sex ? `<span class="case-chip">${esc(r.patient_sex)}</span>` : '',
-      r.patient_age ? `<span class="case-chip">${esc(r.patient_age)}</span>` : '',
+      r.study_date        ? `<span class="case-chip">${esc(fmtDate(r.study_date))}</span>` : '',
+      r.modality          ? `<span class="case-chip mod">${esc(r.modality)}</span>` : '',
+      r.series_description? `<span class="case-chip">${esc(String(r.series_description).slice(0,30))}</span>` : '',
+      r.patient_sex       ? `<span class="case-chip">${esc(r.patient_sex)}</span>` : '',
+      r.patient_age       ? `<span class="case-chip">${esc(r.patient_age)}</span>` : '',
     ].filter(Boolean).join('');
-
     const rptHtml=r.radrpt_excerpt
-      ? `<div class="case-rpt">${esc(String(r.radrpt_excerpt).slice(0,220))}</div>`:'';
+      ?`<div class="case-rpt">${esc(String(r.radrpt_excerpt).slice(0,220))}</div>`:'';
 
-    // Spinner placeholder — JS will replace with real image via thumb_ready
-    const imgSlotId=`${cardId}-thumb-${r.rank}`;
-    const spinnerHtml=`
-      <div class="case-img-wrap">
-        <div class="case-img-spinner" id="${imgSlotId}">
-          <span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span>
-        </div>
-        <div class="case-frame-label">frame ${r.frame_index??'?'}</div>
-      </div>`;
+    // Thumbnail — best matching frame for this case
+    const hasPath = r.source_path && r.source_path !== '';
+    const fi = (r.frame_index !== undefined && r.frame_index !== '') ? parseInt(r.frame_index) : 0;
+    const thumbUrl  = hasPath ? `/api/thumbnail?path=${encodeURIComponent(r.source_path)}&frame=${fi}` : '';
+    const frameUrl  = hasPath ? `/api/frame?path=${encodeURIComponent(r.source_path)}&frame=${fi}` : '';
+    const lbMeta    = `${esc(r.accession_number||'?')} · ${esc(r.modality||'?')} · ${esc(fmtDate(r.study_date||''))} · sim ${pct}%`;
+    const thumbHtml = hasPath
+      ? `<div class="case-thumb-wrap" onclick="openLightbox('${frameUrl}','${lbMeta}')">
+           <img src="${thumbUrl}" loading="lazy" alt="Frame ${fi}">
+         </div>`
+      : `<div class="case-thumb-wrap"><div class="thumb-missing">no<br>image</div></div>`;
 
     return `
       <div class="case-item">
-        <div class="case-rank">${r.rank}</div>
-        ${spinnerHtml}
+        ${thumbHtml}
         <div class="case-body">
           <div class="case-top">
-            <span class="case-acc" title="${esc(r.accession_number||'')}">${esc(String(r.accession_number||'—').slice(0,28))}</span>
+            <span class="case-acc" title="${esc(r.accession_number||'')}">${esc(String(r.accession_number||'—').slice(0,32))}</span>
             <div class="sim-wrap">
               <div class="sim-bar"><div class="sim-fill ${sc}" style="width:${pct}%"></div></div>
               <span class="case-sim-pct ${sc}">${pct}%</span>
@@ -1966,7 +2011,7 @@ function renderSimilarCasesCard(results, answer, elapsed){
         </div>
       </div>`;
   }).join('')
-  : '<div class="no-results">No similar cases found in ChromaDB.<br>Run image ingestion first:<br>python dicom_ingest_sqlite.py --images-only</div>';
+  : '<div class="no-results">No similar cases found in ChromaDB.</div>';
 
   return `
     <div class="img-result-card" id="${cardId}">
@@ -1975,7 +2020,7 @@ function renderSimilarCasesCard(results, answer, elapsed){
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         </div>
         <span class="irc-title">Similar Cases</span>
-        <span class="irc-badge">ChromaDB · OpenCLIP</span>
+        <span class="irc-badge">RAD-DINO · ChromaDB</span>
         <span class="irc-time">${elapsedSec}s</span>
       </div>
       <div class="irc-tabs">
@@ -1992,6 +2037,29 @@ function renderSimilarCasesCard(results, answer, elapsed){
       </div>
     </div>`;
 }
+
+// ════════════════════════════════════════════════
+// LIGHTBOX
+// ════════════════════════════════════════════════
+function openLightbox(frameUrl, metaText){
+  const lb = document.getElementById('lightbox');
+  const img = document.getElementById('lightboxImg');
+  img.src = '';              // clear first so loading spinner fires
+  img.src = frameUrl;
+  document.getElementById('lightboxMeta').textContent = metaText || '';
+  lb.classList.add('visible');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox(){
+  document.getElementById('lightbox').classList.remove('visible');
+  document.getElementById('lightboxImg').src = '';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape') closeLightbox();
+});
 
 // ════════════════════════════════════════════════
 // TAB SWITCHERS
@@ -2021,13 +2089,12 @@ function copySQL(id){
   });
 }
 </script>
-<!-- LIGHTBOX MODAL -->
-<div id="lightbox" style="display:none;position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.88);display:none;align-items:center;justify-content:center;cursor:zoom-out;animation:fadeIn .15s ease" onclick="closeLightbox()">
-  <button style="position:absolute;top:18px;right:22px;background:none;border:none;color:rgba(255,255,255,.7);font-size:28px;cursor:pointer;line-height:1;padding:4px" onclick="closeLightbox()">×</button>
-  <div style="display:flex;flex-direction:column;align-items:center;gap:12px" onclick="event.stopPropagation()">
-    <img id="lightboxImg" src="" alt="" style="max-width:90vw;max-height:80vh;object-fit:contain;border-radius:8px;box-shadow:0 0 60px rgba(0,0,0,.9)">
-    <div id="lightboxMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(255,255,255,.5);text-align:center;line-height:1.7"></div>
-  </div>
+
+<!-- LIGHTBOX -->
+<div id="lightbox">
+  <button class="lb-close" onclick="closeLightbox()">×</button>
+  <img id="lightboxImg" src="" alt="">
+  <div id="lightboxMeta"></div>
 </div>
 
 </body>
@@ -2042,7 +2109,7 @@ def main():
     global _db_path, _chromadb_path, _think
 
     parser = argparse.ArgumentParser(
-        description="DICOM Query Web Server (NL→SQL + Image RAG)",
+        description="DICOM Query Web Server (NL→SQL + Image RAG with RAD-DINO)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2073,10 +2140,16 @@ Examples:
     if not _db_path.exists():
         log.warning(f"DB not found at {_db_path} — stats will error until DB is reachable")
 
+    if not RADDINO_OK:
+        log.warning(
+            "RAD-DINO dependencies not installed (torch, timm, torchvision). "
+            "Install with: pip install torch torchvision timm"
+        )
+
     if not IMAGE_DEPS_OK:
         log.warning(
             "Image RAG dependencies not installed — /api/image-query will return 503. "
-            "Install with: pip install chromadb open-clip-torch pillow numpy"
+            "Install with: pip install chromadb pillow numpy"
         )
     else:
         log.info(f"ChromaDB path  : {_chromadb_path}")
@@ -2087,6 +2160,7 @@ Examples:
     log.info(f"  Database : {_db_path}")
     log.info(f"  Model    : {args.model}")
     log.info(f"  Thinking : {'ON' if _think else 'OFF'}")
+    log.info(f"  Embeddings: RAD-DINO (if available)")
     log.info(f"  Open     : http://localhost:{args.port}")
 
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
