@@ -17,20 +17,44 @@ NEW ── Image ingestion into ChromaDB:
   • Locates the actual .dcm file under the DICOM root (index built from
     SQLite first; falls back to a full filesystem walk)
   • Extracts every frame via pydicom, normalises to uint8 RGB (HxWx3)
-  • Embeds frames with OpenCLIP (ViT-B-32, 512-dim) and upserts into a
-    persistent ChromaDB collection called "dicom_images"
+  • Embeds frames with OpenCLIP (ViT-B-32, 512-dim) — model loaded ONCE
+    at startup and reused across all batches (no per-batch reload)
+  • Upserts into a persistent ChromaDB collection called "dicom_images"
+    using pre-computed embeddings (embeddings= kwarg, not images=)
   • Tracks progress per sequence in SQLite (image_ingestion_status)
     → safe to kill and restart at any point
 
+CHANGES vs previous version:
+  1. SOPInstanceUID-based skip for DICOM metadata re-runs
+       • Existing SOPInstanceUIDs are loaded from SQLite into a frozenset
+         before the parallel parse loop starts.
+       • Each worker receives this frozenset via a pool initializer
+         (_init_worker) — shipped once per process, not once per file.
+       • At the top of parse_dicom_file() a minimal pydicom.dcmread()
+         with specific_tags=['SOPInstanceUID'] reads only that one tag.
+         If the UID is already in the frozenset → return None immediately,
+         skipping the full 80-field header parse entirely.
+       • Files that are genuinely new proceed to the full parse as before.
+
+  2. OpenCLIP model loaded exactly once per ingestion run
+       • OpenCLIPEmbeddingFunction (ChromaDB wrapper) reloaded the model
+         on every collection.add(images=…) call — visible in the logs as
+         repeated "Model ViT-B-32 creation process complete" lines.
+       • Fix: import open_clip directly, call load_clip_model() once in
+         ingest_images_to_chromadb(), and embed frames with
+         embed_frames_clip() before handing batches to ChromaDB.
+       • ChromaDB receives pre-computed embeddings via
+         collection.add(embeddings=…) — the wrapper is never invoked.
+
 Design principles (unchanged from original):
-  • SOPInstanceUID is the only skip condition for DICOM metadata
+  • SOPInstanceUID is the primary key / deduplification key
   • Missing AccessionNumber → synthetic key MISSING_{sop_uid[:12]}
   • INSERT OR IGNORE — re-runs are safe and idempotent
   • Full audit trail: parse_error, sqlite_inserted_at columns
   • Chunked submission — tqdm starts immediately, no upfront blocking
 
 Requirements:
-    pip install pydicom tqdm chromadb open-clip-torch pillow numpy
+    pip install pydicom tqdm chromadb open-clip-torch pillow numpy torch
     (pillow is needed by pydicom for compressed JPEG/JP2 transfers)
 """
 
@@ -58,11 +82,24 @@ except ImportError:
 
 try:
     import chromadb
-    from chromadb.utils.embedding_functions import OpenCLIPEmbeddingFunction
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False
     chromadb = None  # type: ignore[assignment]
+
+# OpenCLIP + torch imported only when image ingestion is needed.
+# Keeping them at module level so type checkers see them; actual
+# availability is checked at runtime via OPENCLIP_AVAILABLE.
+try:
+    import torch
+    import open_clip
+    from PIL import Image as PILImage
+    OPENCLIP_AVAILABLE = True
+except ImportError:
+    OPENCLIP_AVAILABLE = False
+    torch       = None  # type: ignore[assignment]
+    open_clip   = None  # type: ignore[assignment]
+    PILImage    = None  # type: ignore[assignment]
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 DICOM_ROOT        = Path("/data/Deep_Angiography/DICOM")
@@ -276,6 +313,27 @@ INSERT_RPT_SQL = """
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Worker-process globals — set once per process via _init_worker()
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Populated by _init_worker(); never written to after that.
+_existing_sop_uids: frozenset = frozenset()
+
+
+def _init_worker(existing_uids: frozenset) -> None:
+    """
+    ProcessPoolExecutor initializer.
+
+    Runs exactly ONCE per worker process at startup.  Stores the frozenset
+    of already-ingested SOPInstanceUIDs in a module-level global so every
+    subsequent call to parse_dicom_file() can do an O(1) membership check
+    without any IPC overhead.
+    """
+    global _existing_sop_uids
+    _existing_sop_uids = existing_uids
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DICOM metadata parsing  (runs in subprocess — must be module-level)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -296,11 +354,45 @@ def safe_str(ds, tag_name: str) -> str:
 def parse_dicom_file(path_str: str) -> Optional[dict]:
     """
     Parse one .dcm file and return a flat metadata dict.
-    Module-level function — required for ProcessPoolExecutor pickle compatibility.
+
+    SOPInstanceUID-based skip (Option 2)
+    ─────────────────────────────────────
+    Before the full 80-field header parse we do a minimal read that asks
+    pydicom to load ONLY the SOPInstanceUID tag.  This is cheap: pydicom
+    stops scanning the binary stream as soon as the tag is found.
+
+    If the returned UID is already in _existing_sop_uids (populated by
+    _init_worker once per worker process from SQLite) we return None
+    immediately — same sentinel value as "not a DICOM file" — so the
+    caller's INSERT OR IGNORE path is never reached and the full 80-field
+    parse is skipped entirely.
+
+    Files with a UID not yet in the DB proceed to the normal full parse.
+    Files that fail the quick read (corrupt, not DICOM, etc.) fall through
+    to the full parse which records a proper error stub row.
     """
     path = Path(path_str)
     now  = datetime.datetime.utcnow().isoformat()
 
+    # ── Quick SOPInstanceUID check ────────────────────────────────────────────
+    # specific_tags instructs pydicom to stop reading as soon as the
+    # requested tag is consumed — dramatically less I/O than a full header
+    # parse.  Any exception here is silently ignored; the full parse below
+    # will surface a proper error if the file is genuinely unreadable.
+    try:
+        ds_quick  = pydicom.dcmread(
+            path_str,
+            specific_tags=["SOPInstanceUID"],
+            stop_before_pixels=True,
+            force=False,
+        )
+        quick_uid = str(getattr(ds_quick, "SOPInstanceUID", "") or "").strip()
+        if quick_uid and quick_uid in _existing_sop_uids:
+            return None   # already in SQLite — skip full parse
+    except Exception:
+        pass   # fall through; full parse will handle the error properly
+
+    # ── Full parse ────────────────────────────────────────────────────────────
     try:
         ds = pydicom.dcmread(path_str, stop_before_pixels=True, force=False)
     except InvalidDicomError:
@@ -544,9 +636,6 @@ def build_dicom_index(
     Strategy (fastest first):
       1. If the SQLite dicom_files table has entries, build from there — O(rows).
       2. Otherwise fall back to an os.walk() of the filesystem.
-
-    The stem is the filename without its .dcm extension, which is also
-    what we parse out of the labeled CSV's file_path column.
     """
     if con is not None:
         count = con.execute(
@@ -565,7 +654,6 @@ def build_dicom_index(
             log.info(f"Index ready: {len(index):,} unique stems")
             return index
 
-    # Fallback: filesystem walk
     log.info(f"Building DICOM index by scanning {dicom_root} (this may take a while) …")
     index = {}
     duplicates = 0
@@ -591,28 +679,20 @@ def parse_dicom_stem_from_csv_path(file_path_str: str) -> Optional[str]:
     Example:
       input : '/Deep_Angiography/.../02_DSA 3 LD/2.16.840.1...247242.dcm'
       output: '2.16.840.1...247242'
-
-    Returns None if the string is empty or unparseable.
     """
     if not file_path_str or not file_path_str.strip():
         return None
-    p = file_path_str.strip()
-    # Take everything after the last '/'
+    p    = file_path_str.strip()
     fname = p.rsplit("/", 1)[-1] if "/" in p else p
-    # Strip .dcm (case-insensitive)
     if fname.lower().endswith(".dcm"):
         return fname[:-4]
-    # Return as-is if no extension (unusual but safe)
     return fname if fname else None
 
 
 def dicom_frame_to_uint8_rgb(frame: np.ndarray, photometric: str = "") -> np.ndarray:
     """
     Normalise a single 2-D DICOM frame (any numeric dtype) to uint8 RGB (HxWx3).
-
-    • Handles MONOCHROME1 (invert so high values appear bright)
-    • Handles MONOCHROME2 / default (no inversion)
-    • Min-max normalises to 0-255; blank frames become all-zeros
+    Handles MONOCHROME1 (inverts so high values appear bright).
     """
     f = frame.astype(np.float32)
     lo, hi = f.min(), f.max()
@@ -623,7 +703,7 @@ def dicom_frame_to_uint8_rgb(frame: np.ndarray, photometric: str = "") -> np.nda
     f = f.astype(np.uint8)
 
     if "MONOCHROME1" in photometric.upper():
-        f = 255 - f          # invert: high value = dark in MONOCHROME1
+        f = 255 - f
 
     return np.stack([f, f, f], axis=-1)   # HxWx3
 
@@ -632,42 +712,34 @@ def extract_frames(path_str: str) -> tuple[list[np.ndarray], dict]:
     """
     Open a multi-frame DICOM file and return:
       (list_of_uint8_rgb_frames, metadata_dict)
-
-    Each frame is a HxWx3 uint8 numpy array ready for ChromaDB / CLIP.
-    metadata_dict contains Python primitive types only (safe for ChromaDB).
     """
-    ds = pydicom.dcmread(path_str, force=False)   # loads pixel data
+    ds          = pydicom.dcmread(path_str, force=False)
     photometric = str(getattr(ds, "PhotometricInterpretation", "")).upper()
-    pixels      = ds.pixel_array                   # numpy array
+    pixels      = ds.pixel_array
 
-    # Normalise shape → (n_frames, H, W[, C])
     if pixels.ndim == 2:
-        # Single grayscale frame
         pixels = pixels[np.newaxis, ...]
     elif pixels.ndim == 3:
-        # Either (frames, H, W) grayscale  OR  (H, W, C) single RGB
         if pixels.shape[2] in (3, 4):
-            pixels = pixels[np.newaxis, ...]   # treat as single RGB frame
-        # else: (frames, H, W) — leave as-is
+            pixels = pixels[np.newaxis, ...]
 
     frames: list[np.ndarray] = []
     for i in range(pixels.shape[0]):
         raw = pixels[i]
         if raw.ndim == 3:
-            # Already (H, W, C)
             f = raw.astype(np.float32)
             lo, hi = f.min(), f.max()
             if hi > lo:
                 f = (f - lo) / (hi - lo) * 255.0
             f = f.astype(np.uint8)
             if f.shape[2] == 4:
-                f = f[:, :, :3]               # drop alpha channel
+                f = f[:, :, :3]
         else:
             f = dicom_frame_to_uint8_rgb(raw, photometric)
         frames.append(f)
 
-    sop_uid   = str(getattr(ds, "SOPInstanceUID",   "") or "")
-    acc       = str(getattr(ds, "AccessionNumber",   "") or "").strip()
+    sop_uid = str(getattr(ds, "SOPInstanceUID",   "") or "")
+    acc     = str(getattr(ds, "AccessionNumber",   "") or "").strip()
     if not acc:
         acc = f"MISSING_{sop_uid[:12]}"
 
@@ -684,22 +756,81 @@ def extract_frames(path_str: str) -> tuple[list[np.ndarray], dict]:
     return frames, meta
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# OpenCLIP — loaded ONCE per ingestion run
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def load_clip_model(device: Optional[str] = None):
+    """
+    Load OpenCLIP ViT-B-32 exactly once and return (model, preprocess, device).
+
+    Previously ChromaDB's OpenCLIPEmbeddingFunction was used, which
+    re-instantiated the model on every collection.add(images=…) call,
+    causing the repeated log lines:
+        "Model ViT-B-32 creation process complete"
+        "Loading full pretrained weights from …"
+
+    By loading via open_clip directly here, the model weights are read
+    from disk exactly once regardless of how many batches are processed.
+    """
+    if not OPENCLIP_AVAILABLE:
+        raise ImportError(
+            "open_clip_torch or torch not installed. "
+            "Run: pip install open-clip-torch torch"
+        )
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    log.info(f"Loading OpenCLIP ViT-B-32 on {device} (once) …")
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32",
+        pretrained="laion2b_s34b_b79k",
+    )
+    model.eval()
+    model = model.to(device)
+    log.info("OpenCLIP model ready.")
+    return model, preprocess, device
+
+
+def embed_frames_clip(
+    frames: list[np.ndarray],
+    model,
+    preprocess,
+    device: str,
+) -> list[list[float]]:
+    """
+    Embed a list of uint8 RGB numpy frames with CLIP.
+
+    Returns a list of float32 vectors (one per frame, length 512).
+    Vectors are L2-normalised so cosine similarity == dot product.
+
+    ChromaDB receives these via collection.add(embeddings=…) — the
+    OpenCLIPEmbeddingFunction wrapper is never invoked.
+    """
+    images  = [PILImage.fromarray(f) for f in frames]
+    tensors = torch.stack([preprocess(img) for img in images]).to(device)
+    with torch.no_grad():
+        embs = model.encode_image(tensors)
+        embs = embs / embs.norm(dim=-1, keepdim=True)   # L2 normalise
+    return embs.cpu().float().numpy().tolist()
+
+
 def setup_chromadb(chroma_path: Path):
     """
     Initialise a persistent ChromaDB client and return (client, collection).
-    Collection uses OpenCLIP ViT-B-32 (512-dim cosine) for image embeddings.
+
+    No embedding function is attached to the collection — embeddings are
+    pre-computed by embed_frames_clip() and passed via the embeddings=
+    kwarg in collection.add().  This prevents ChromaDB from ever invoking
+    its internal model-loading code paths.
     """
     if not CHROMA_AVAILABLE:
-        raise ImportError(
-            "chromadb not installed. "
-            "Run: pip install chromadb open-clip-torch"
-        )
+        raise ImportError("chromadb not installed. Run: pip install chromadb")
     chroma_path.mkdir(parents=True, exist_ok=True)
     client     = chromadb.PersistentClient(path=str(chroma_path))
-    ef         = OpenCLIPEmbeddingFunction()      # ViT-B-32 by default
     collection = client.get_or_create_collection(
         name=CHROMA_COLLECTION,
-        embedding_function=ef,
         metadata={"hnsw:space": "cosine"},
     )
     log.info(
@@ -722,7 +853,7 @@ def load_labeled_csv(csv_path: Path) -> list[dict]:
         log.error(f"Labeled CSV not found: {csv_path}")
         return []
 
-    rows: list[dict] = []
+    rows: list[dict]      = []
     seen_paths: set[str]  = set()
     skipped_other = skipped_dup = skipped_nopath = 0
 
@@ -732,7 +863,6 @@ def load_labeled_csv(csv_path: Path) -> list[dict]:
             log.error("Labeled CSV appears to be empty.")
             return []
 
-        # Case-insensitive column lookup
         norm = {h.strip().lower(): h for h in reader.fieldnames}
 
         angio_key = norm.get("angio_run")
@@ -793,21 +923,21 @@ def ingest_images_to_chromadb(
     End-to-end image ingestion:
       1. Load and filter the labeled CSV
       2. Build a DICOM stem→path index (SQLite-backed, filesystem fallback)
-      3. Connect to ChromaDB
-      4. Iterate sequences: extract frames → embed with CLIP → store
-      5. Record status in image_ingestion_status for safe resume
+      3. Load OpenCLIP model ONCE
+      4. Connect to ChromaDB (no embedding function — we supply embeddings)
+      5. Iterate sequences: extract frames → embed → store
+      6. Record status in image_ingestion_status for safe resume
 
     Resume behaviour:
       • Sequences with status='completed' in SQLite are skipped.
-      • Sequences with status='error' or 'in_progress' (crash mid-run) are
-        retried: any previously written ChromaDB frames are deleted first
-        so the sequence is always stored atomically.
+      • Sequences with status='error' or 'in_progress' are retried;
+        any previously written ChromaDB frames are deleted first.
     """
     if not CHROMA_AVAILABLE:
-        log.error(
-            "chromadb or open-clip-torch not installed. "
-            "Run: pip install chromadb open-clip-torch"
-        )
+        log.error("chromadb not installed. Run: pip install chromadb")
+        return
+    if not OPENCLIP_AVAILABLE:
+        log.error("open_clip_torch or torch not installed. Run: pip install open-clip-torch torch")
         return
 
     # ── 1. Load CSV ──────────────────────────────────────────────────────────
@@ -819,10 +949,13 @@ def ingest_images_to_chromadb(
     # ── 2. Build DICOM index ─────────────────────────────────────────────────
     dicom_index = build_dicom_index(dicom_root, con=con)
 
-    # ── 3. Connect to ChromaDB ───────────────────────────────────────────────
+    # ── 3. Load OpenCLIP model once ──────────────────────────────────────────
+    clip_model, clip_preprocess, clip_device = load_clip_model()
+
+    # ── 4. Connect to ChromaDB ───────────────────────────────────────────────
     _, collection = setup_chromadb(chroma_path)
 
-    # ── 4. Determine already-completed sequences ─────────────────────────────
+    # ── 5. Determine already-completed sequences ─────────────────────────────
     completed: set[str] = {
         row[0]
         for row in con.execute(
@@ -831,7 +964,7 @@ def ingest_images_to_chromadb(
     }
     log.info(f"Already completed sequences (will be skipped): {len(completed):,}")
 
-    # ── 5. Build work list ───────────────────────────────────────────────────
+    # ── 6. Build work list ───────────────────────────────────────────────────
     todo: list[dict] = []
     not_found = 0
 
@@ -846,10 +979,10 @@ def ingest_images_to_chromadb(
             not_found += 1
             continue
 
-        seq_id              = stem        # unique & deterministic per file
-        seq["dicom_path"]   = actual_path
-        seq["stem"]         = stem
-        seq["sequence_id"]  = seq_id
+        seq_id             = stem
+        seq["dicom_path"]  = actual_path
+        seq["stem"]        = stem
+        seq["sequence_id"] = seq_id
 
         if seq_id in completed:
             continue
@@ -867,7 +1000,7 @@ def ingest_images_to_chromadb(
         log.info("Nothing to ingest — all sequences are already completed.")
         return
 
-    # ── 6. Ingest loop ───────────────────────────────────────────────────────
+    # ── 7. Ingest loop ───────────────────────────────────────────────────────
     succeeded         = 0
     failed            = 0
     total_frames_done = 0
@@ -880,7 +1013,6 @@ def ingest_images_to_chromadb(
             series_uid = seq["series_uid"]
             now        = datetime.datetime.utcnow().isoformat()
 
-            # ── Mark as in_progress ──────────────────────────────────────────
             con.execute(
                 """
                 INSERT OR REPLACE INTO image_ingestion_status
@@ -893,14 +1025,13 @@ def ingest_images_to_chromadb(
             con.commit()
 
             try:
-                # ── Extract frames ───────────────────────────────────────────
                 frames, meta = extract_frames(path_str)
                 n_frames     = len(frames)
 
                 if n_frames == 0:
                     raise ValueError("No frames extracted from DICOM file")
 
-                # ── Clean up any frames from a previous partial run ──────────
+                # Clean up any frames from a previous partial run
                 prev_row = con.execute(
                     "SELECT frames_ingested FROM image_ingestion_status "
                     "WHERE sequence_id = ?",
@@ -912,19 +1043,24 @@ def ingest_images_to_chromadb(
                     try:
                         collection.delete(ids=stale_ids)
                     except Exception:
-                        pass   # IDs might not exist; safe to ignore
+                        pass
 
-                # ── Add frames in batches to ChromaDB ────────────────────────
+                # Embed and add in batches — model already loaded, no reload
                 frames_added = 0
                 for batch_start in range(0, n_frames, chroma_batch_size):
                     batch = frames[batch_start: batch_start + chroma_batch_size]
-                    ids   = [
+
+                    # ── embed with the already-loaded model ──────────────────
+                    embeddings = embed_frames_clip(
+                        batch, clip_model, clip_preprocess, clip_device
+                    )
+
+                    ids = [
                         f"{seq_id}_f{(batch_start + j):06d}"
                         for j in range(len(batch))
                     ]
                     metas = [
                         {
-                            # All values must be Python primitives for ChromaDB
                             "accession_number": str(accession or meta["accession_number"]),
                             "series_uid":       str(series_uid or meta["series_uid"]),
                             "sop_uid":          str(meta["sop_uid"]),
@@ -937,10 +1073,11 @@ def ingest_images_to_chromadb(
                         }
                         for j in range(len(batch))
                     ]
-                    collection.add(images=batch, ids=ids, metadatas=metas)
+
+                    # Pass pre-computed embeddings — wrapper never called
+                    collection.add(embeddings=embeddings, ids=ids, metadatas=metas)
                     frames_added += len(batch)
 
-                # ── Mark as completed ────────────────────────────────────────
                 con.execute(
                     """
                     UPDATE image_ingestion_status
@@ -972,7 +1109,7 @@ def ingest_images_to_chromadb(
             pbar.set_postfix(ok=succeeded, fail=failed, frames=total_frames_done)
 
     log.info("─" * 60)
-    log.info(f"Image ingestion complete")
+    log.info("Image ingestion complete")
     log.info(f"  Sequences succeeded : {succeeded:>8,}")
     log.info(f"  Sequences failed    : {failed:>8,}")
     log.info(f"  Total frames stored : {total_frames_done:>8,}")
@@ -995,7 +1132,6 @@ def db_summary(con: sqlite3.Connection):
         "JOIN radiology_reports r USING (accession_number)"
     ).fetchone()[0]
 
-    # Image ingestion summary
     img_completed = con.execute(
         "SELECT COUNT(*) FROM image_ingestion_status WHERE status = 'completed'"
     ).fetchone()[0]
@@ -1076,62 +1212,38 @@ Useful join query after full ingestion:
 
 Query ChromaDB for visually similar frames:
   results = collection.query(
-      query_images=[query_frame_array],   # HxWx3 uint8 numpy array
+      query_embeddings=[embed_frames_clip([query_frame], model, preprocess, device)[0]],
       n_results=10,
       where={"modality": "XA"},
   )
         """,
     )
 
-    # ── Path arguments ───────────────────────────────────────────────────────
-    parser.add_argument("--root",            default=str(DICOM_ROOT),
-                        help="DICOM root directory (default: %(default)s)")
-    parser.add_argument("--db",              default=str(SQLITE_DB),
-                        help="SQLite database path (default: %(default)s)")
-    parser.add_argument("--reports",         default=str(REPORTS_CSV),
-                        help="Radiology reports CSV (default: %(default)s)")
-    parser.add_argument("--labeled-csv",     default=str(LABELED_CSV),
-                        help="Labeled sequence CSV for image ingestion (default: %(default)s)")
-    parser.add_argument("--chromadb",        default=str(CHROMADB_PATH),
-                        help="ChromaDB persistence directory (default: %(default)s)")
-
-    # ── Performance ──────────────────────────────────────────────────────────
-    parser.add_argument("--workers",         type=int, default=PARSE_WORKERS,
-                        help="Parallel workers for DICOM metadata parse (default: %(default)s)")
-    parser.add_argument("--flush",           type=int, default=SQL_FLUSH,
-                        help="SQLite row buffer size (default: %(default)s)")
-    parser.add_argument("--chunk",           type=int, default=SUBMIT_CHUNK,
-                        help="Futures submitted per chunk (default: %(default)s)")
-    parser.add_argument("--chroma-batch",    type=int, default=CHROMA_BATCH,
-                        help="Frames per ChromaDB add() call (default: %(default)s)")
-
-    # ── Scope / limits ───────────────────────────────────────────────────────
-    parser.add_argument("--limit",           type=int, default=0,
-                        help="Limit number of DICOM metadata files processed (0 = all)")
-    parser.add_argument("--limit-sequences", type=int, default=0,
-                        help="Limit number of sequences ingested into ChromaDB (0 = all)")
-
-    # ── Mode flags ───────────────────────────────────────────────────────────
-    parser.add_argument("--dry-run",         action="store_true",
-                        help="Parse DICOM metadata but write nothing to SQLite")
-    parser.add_argument("--summary-only",    action="store_true",
-                        help="Print DB + ChromaDB summary and exit")
-    parser.add_argument("--reports-only",    action="store_true",
-                        help="Skip DICOM metadata; only load the reports CSV")
-    parser.add_argument("--images-only",     action="store_true",
-                        help="Skip DICOM metadata + reports; only ingest images into ChromaDB")
-    parser.add_argument("--skip-reports",    action="store_true",
-                        help="Skip reports CSV ingestion")
-    parser.add_argument("--skip-images",     action="store_true",
-                        help="Skip image ingestion into ChromaDB")
+    parser.add_argument("--root",            default=str(DICOM_ROOT))
+    parser.add_argument("--db",              default=str(SQLITE_DB))
+    parser.add_argument("--reports",         default=str(REPORTS_CSV))
+    parser.add_argument("--labeled-csv",     default=str(LABELED_CSV))
+    parser.add_argument("--chromadb",        default=str(CHROMADB_PATH))
+    parser.add_argument("--workers",         type=int, default=PARSE_WORKERS)
+    parser.add_argument("--flush",           type=int, default=SQL_FLUSH)
+    parser.add_argument("--chunk",           type=int, default=SUBMIT_CHUNK)
+    parser.add_argument("--chroma-batch",    type=int, default=CHROMA_BATCH)
+    parser.add_argument("--limit",           type=int, default=0)
+    parser.add_argument("--limit-sequences", type=int, default=0)
+    parser.add_argument("--dry-run",         action="store_true")
+    parser.add_argument("--summary-only",    action="store_true")
+    parser.add_argument("--reports-only",    action="store_true")
+    parser.add_argument("--images-only",     action="store_true")
+    parser.add_argument("--skip-reports",    action="store_true")
+    parser.add_argument("--skip-images",     action="store_true")
 
     args = parser.parse_args()
 
-    dicom_root   = Path(args.root)
-    db_path      = Path(args.db)
-    reports_csv  = Path(args.reports)
-    labeled_csv  = Path(args.labeled_csv)
-    chroma_path  = Path(args.chromadb)
+    dicom_root  = Path(args.root)
+    db_path     = Path(args.db)
+    reports_csv = Path(args.reports)
+    labeled_csv = Path(args.labeled_csv)
+    chroma_path = Path(args.chromadb)
 
     log.info(f"DICOM root     : {dicom_root}")
     log.info(f"SQLite DB      : {db_path}")
@@ -1146,19 +1258,16 @@ Query ChromaDB for visually similar frames:
     log.info(f"Limit (seqs)   : {args.limit_sequences or 'none'}")
     log.info(f"Dry run        : {args.dry_run}")
 
-    # ── Summary-only mode ────────────────────────────────────────────────────
     if args.summary_only:
         db_summary(open_db(db_path))
         return
 
     con = open_db(db_path) if not args.dry_run else None
 
-    # ── Decide which stages to run ───────────────────────────────────────────
     run_metadata = not args.images_only and not args.reports_only
     run_reports  = not args.images_only and not args.skip_reports
     run_images   = not args.skip_images
 
-    # ── Reports CSV ──────────────────────────────────────────────────────────
     if run_reports and con is not None:
         ingest_reports(con, reports_csv)
 
@@ -1173,6 +1282,25 @@ Query ChromaDB for visually similar frames:
         if not dicom_root.exists():
             log.error(f"DICOM root does not exist: {dicom_root}")
             raise SystemExit(1)
+
+        # ── Load existing SOPInstanceUIDs for skip check ─────────────────────
+        # Shipped to every worker process once via _init_worker.
+        # Workers do a minimal single-tag pydicom read; if the UID is in
+        # this frozenset the full 80-field parse is skipped entirely.
+        existing_uids: frozenset = frozenset()
+        if con is not None:
+            log.info("Loading existing SOPInstanceUIDs from SQLite …")
+            existing_uids = frozenset(
+                row[0]
+                for row in con.execute(
+                    "SELECT sop_instance_uid FROM dicom_files "
+                    "WHERE sop_instance_uid IS NOT NULL"
+                ).fetchall()
+            )
+            log.info(
+                f"  {len(existing_uids):,} UIDs loaded — "
+                "matching files will skip full parse"
+            )
 
         log.info("Collecting .dcm file paths …")
         all_paths = list(iter_dicom_files(dicom_root))
@@ -1190,9 +1318,16 @@ Query ChromaDB for visually similar frames:
             errored   = 0
             buffer: list[dict] = []
 
-            with ProcessPoolExecutor(max_workers=args.workers) as pool:
-                with tqdm(total=total, unit="file", desc="Ingesting DICOM metadata",
-                          dynamic_ncols=True) as pbar:
+            with ProcessPoolExecutor(
+                max_workers=args.workers,
+                initializer=_init_worker,    # runs once per worker process
+                initargs=(existing_uids,),   # frozenset shipped here
+            ) as pool:
+                with tqdm(
+                    total=total, unit="file",
+                    desc="Ingesting DICOM metadata",
+                    dynamic_ncols=True,
+                ) as pbar:
 
                     for path_chunk in chunked(all_paths, args.chunk):
                         futures = {
@@ -1210,6 +1345,8 @@ Query ChromaDB for visually similar frames:
                                 continue
 
                             if result is None:
+                                # Either not DICOM, no SOPInstanceUID,
+                                # or UID already in DB (quick skip)
                                 skipped += 1
                             else:
                                 if result.get("parse_error"):
@@ -1238,7 +1375,7 @@ Query ChromaDB for visually similar frames:
             log.info(f"Files found         : {total:>10,}")
             log.info(f"Rows inserted       : {inserted:>10,}")
             log.info(f"Duplicates skipped  : {duplicate:>10,}  (INSERT OR IGNORE)")
-            log.info(f"No-UID skipped      : {skipped:>10,}  (not DICOM or no SOPInstanceUID)")
+            log.info(f"No-UID / pre-exist  : {skipped:>10,}  (not DICOM, no UID, or already in DB)")
             log.info(f"Parse errors stored : {errored:>10,}  (stub rows with parse_error set)")
             if args.dry_run:
                 log.info("(dry run — nothing written to SQLite)")
@@ -1246,12 +1383,12 @@ Query ChromaDB for visually similar frames:
     # ── Image ingestion into ChromaDB ────────────────────────────────────────
     if run_images and con is not None:
         ingest_images_to_chromadb(
-            con          = con,
-            labeled_csv  = labeled_csv,
-            dicom_root   = dicom_root,
-            chroma_path  = chroma_path,
-            limit_sequences  = args.limit_sequences,
-            chroma_batch_size= args.chroma_batch,
+            con               = con,
+            labeled_csv       = labeled_csv,
+            dicom_root        = dicom_root,
+            chroma_path       = chroma_path,
+            limit_sequences   = args.limit_sequences,
+            chroma_batch_size = args.chroma_batch,
         )
 
     if con:

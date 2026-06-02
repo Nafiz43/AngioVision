@@ -47,3 +47,5 @@ utils/output
 dicom_staging.db-shm
 dicom_staging.db-wal
 /chromadb
+/utils/metadata_db/angio_run_coded.png
+
