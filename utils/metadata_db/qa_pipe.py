@@ -918,25 +918,54 @@ def api_image_query():
             distances = raw["distances"][0]
             metadatas = raw["metadatas"][0]
 
-            # De-duplicate by accession_number — keep highest-similarity hit per study
-            seen_acc: dict[str, dict] = {}
+            # Group by accession_number → then by sop_uid within each accession
+            acc_groups: dict[str, dict] = {}
             for id_, dist, meta in zip(ids, distances, metadatas):
                 acc = meta.get("accession_number") or "UNKNOWN"
+                sop = meta.get("sop_uid", "") or "UNKNOWN"
                 sim = max(0.0, 1.0 - float(dist))
-                if acc not in seen_acc or sim > seen_acc[acc]["_sim_raw"]:
-                    seen_acc[acc] = {
-                        "_sim_raw":       sim,
-                        "chroma_id":      id_,
-                        "similarity_pct": round(sim * 100, 1),
-                        "distance":       round(float(dist), 4),
+                frame_entry = {
+                    "chroma_id":      id_,
+                    "similarity_pct": round(sim * 100, 1),
+                    "distance":       round(float(dist), 4),
+                    "source_path":    meta.get("source_path", ""),
+                    "frame_index":    meta.get("frame_index", 0),
+                    "sop_uid":        sop,
+                }
+                if acc not in acc_groups:
+                    acc_groups[acc] = {
+                        "accession_number": acc,
+                        "_top_sim":         sim,
+                        "sop_groups":       {},   # { sop_uid: {frames, _top_sim} }
                         **{k: (v if v is not None else "") for k, v in meta.items()},
                     }
+                if sim > acc_groups[acc]["_top_sim"]:
+                    acc_groups[acc]["_top_sim"] = sim
 
-            # Sort by descending similarity, keep top n_results
-            top = sorted(seen_acc.values(), key=lambda x: x["_sim_raw"], reverse=True)[:n_results]
+                # Inner group: one entry per sop_uid
+                sop_dict = acc_groups[acc]["sop_groups"]
+                if sop not in sop_dict:
+                    sop_dict[sop] = {"sop_uid": sop, "_top_sim": sim, "frames": []}
+                if sim > sop_dict[sop]["_top_sim"]:
+                    sop_dict[sop]["_top_sim"] = sim
+                sop_dict[sop]["frames"].append(frame_entry)
+
+            # Finalise: sort frames within each SOP, sort SOPs within each accession
+            for grp in acc_groups.values():
+                sop_list = []
+                for sg in grp["sop_groups"].values():
+                    sg["frames"].sort(key=lambda f: f["similarity_pct"], reverse=True)
+                    sg["similarity_pct"] = round(sg.pop("_top_sim") * 100, 1)
+                    sop_list.append(sg)
+                sop_list.sort(key=lambda s: s["similarity_pct"], reverse=True)
+                grp["sop_groups"] = sop_list
+                grp["similarity_pct"] = round(grp["_top_sim"] * 100, 1)
+
+            # Sort accessions by top similarity, keep top n_results
+            top = sorted(acc_groups.values(), key=lambda x: x["_top_sim"], reverse=True)[:n_results]
             results = []
             for i, r in enumerate(top):
-                r.pop("_sim_raw", None)
+                r.pop("_top_sim", None)
                 r["rank"] = i + 1
                 results.append(r)
 
@@ -959,7 +988,7 @@ def api_image_query():
         yield emit({"event": "synth_start"})
         try:
             cases_text = "\n".join(
-                f"#{r['rank']} (similarity {r['similarity_pct']}%): "
+                f"#{r['rank']} ({len(r.get('sop_groups', []))} SOP(s), top similarity {r['similarity_pct']}%): "
                 f"Accession={r.get('accession_number','?')}, "
                 f"Date={r.get('study_date','?')}, "
                 f"Modality={r.get('modality','?')}, "
@@ -1103,6 +1132,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
   --mono:'JetBrains Mono',monospace;
   --sans:'Syne',sans-serif;
 }
+[data-theme="light"]{
+  --bg:#f0f2f5;--bg2:#ffffff;--bg3:#f5f7fa;--bg4:#eaecf0;--bg5:#dde1e7;
+  --border:#d0d5dd;--border2:#c4c9d4;
+  --text:#111827;--text2:#4b5563;--text3:#9ca3af;
+  --accent:#1d6fdb;--accent2:#1558b0;--accent-bg:rgba(29,111,219,.08);
+  --green:#16a34a;--amber:#b45309;--red:#dc2626;--purple:#7c3aed;--teal:#0891b2;
+  --report:#c2410c;--report-bg:rgba(194,65,12,.08);
+  --violet:#6d28d9;--violet-light:#7c3aed;--violet-bg:rgba(109,40,217,.08);
+}
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--sans)}
 
 /* ══ LOGIN OVERLAY ══ */
@@ -1163,6 +1201,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .model-select:hover{border-color:var(--accent)}
 .logout-btn{background:none;border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-size:10px;font-family:var(--mono);color:var(--text3);cursor:pointer;transition:all .15s;letter-spacing:.3px;text-transform:uppercase}
 .logout-btn:hover{border-color:var(--red);color:var(--red)}
+.theme-toggle{width:32px;height:32px;border-radius:7px;border:1px solid var(--border);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .2s;color:var(--text2)}
+.theme-toggle:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.theme-toggle svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;transition:opacity .2s}
 
 /* ── Chat column ── */
 .chat-col{grid-area:chat;display:flex;flex-direction:column;overflow:hidden;min-width:0}
@@ -1246,6 +1287,35 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .case-chip.mod{color:var(--accent);border-color:rgba(88,166,255,.3);background:rgba(88,166,255,.06)}
 .case-rpt{font-size:11px;color:var(--report);line-height:1.55;font-style:italic;border-left:2px solid rgba(240,136,62,.3);padding-left:8px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .no-results{padding:28px 16px;text-align:center;font-size:12px;color:var(--text3);font-family:var(--mono);line-height:1.8}
+
+/* ── Frame strip (inside each accession group) ── */
+.frame-strip{display:flex;gap:6px;overflow-x:auto;padding:6px 4px 4px;background:var(--bg4);border-radius:8px;margin-top:8px}
+.frame-strip::-webkit-scrollbar{height:4px}
+.frame-strip::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+.frame-thumb{
+  width:72px;height:72px;object-fit:cover;border-radius:6px;
+  border:1px solid var(--border2);cursor:pointer;flex-shrink:0;
+  transition:transform .15s,border-color .15s,box-shadow .15s;
+  background:#000;display:block;
+}
+.frame-thumb:hover{
+  transform:scale(1.1);
+  border-color:var(--violet-light);
+  box-shadow:0 0 10px rgba(124,58,237,.5);
+  z-index:1;position:relative;
+}
+.frame-count-badge{
+  font-size:9px;font-family:var(--mono);color:var(--text3);
+  background:var(--bg4);padding:2px 7px;border-radius:4px;
+}
+/* ── SOP group within an accession ── */
+.sop-group{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.sop-header{display:flex;align-items:center;gap:8px}
+.sop-uid{font-size:10px;font-family:var(--mono);color:var(--violet-light);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px;
+  background:var(--violet-bg);border:1px solid rgba(124,58,237,.25);
+  border-radius:4px;padding:2px 8px;cursor:default;flex:1;}
+.sop-sim{font-size:9px;font-family:var(--mono);font-weight:600;flex-shrink:0}
 
 /* ── Case thumbnail ── */
 .case-thumb-wrap{width:88px;height:88px;flex-shrink:0;border-radius:8px;overflow:hidden;border:1px solid var(--border2);background:#000;cursor:zoom-in;position:relative}
@@ -1409,6 +1479,12 @@ textarea.nl-input::placeholder{color:var(--text3)}
         <option>qwen3:35b</option>
         <option>llama3.2:latest</option>
       </select>
+      <button class="theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle light / dark mode">
+        <!-- moon icon (shown in dark mode) -->
+        <svg id="iconMoon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <!-- sun icon (shown in light mode) -->
+        <svg id="iconSun" viewBox="0 0 24 24" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
       <button class="logout-btn" onclick="handleLogout()">Logout</button>
     </div>
   </header>
@@ -1670,6 +1746,37 @@ function setupDragDrop(){
       onImageSelected(fakeEvt);
     }
   });
+}
+
+// ════════════════════════════════════════════════
+// THEME TOGGLE
+// ════════════════════════════════════════════════
+(function(){
+  // Restore preference on load
+  const saved = localStorage.getItem('av-theme');
+  if(saved === 'light'){
+    document.documentElement.setAttribute('data-theme','light');
+    document.getElementById('iconMoon').style.display='none';
+    document.getElementById('iconSun').style.display='block';
+  }
+})();
+
+function toggleTheme(){
+  const root   = document.documentElement;
+  const isLight = root.getAttribute('data-theme') === 'light';
+  const moon   = document.getElementById('iconMoon');
+  const sun    = document.getElementById('iconSun');
+  if(isLight){
+    root.removeAttribute('data-theme');
+    moon.style.display='block';
+    sun.style.display='none';
+    localStorage.setItem('av-theme','dark');
+  } else {
+    root.setAttribute('data-theme','light');
+    moon.style.display='none';
+    sun.style.display='block';
+    localStorage.setItem('av-theme','light');
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -1972,43 +2079,68 @@ function renderSimilarCasesCard(results, answer, elapsed, cardId){
   const elapsedSec=(elapsed/1000).toFixed(1);
 
   const casesHtml = results.length ? results.map(r=>{
-    const pct=r.similarity_pct||0, sc=simClass(pct);
+    const pct     = r.similarity_pct||0, sc=simClass(pct);
+    const sopGroups = r.sop_groups||[];
+    const totalFrames = sopGroups.reduce((n,sg)=>n+sg.frames.length, 0);
+
     const chips=[
       r.study_date        ? `<span class="case-chip">${esc(fmtDate(r.study_date))}</span>` : '',
       r.modality          ? `<span class="case-chip mod">${esc(r.modality)}</span>` : '',
       r.series_description? `<span class="case-chip">${esc(String(r.series_description).slice(0,30))}</span>` : '',
       r.patient_sex       ? `<span class="case-chip">${esc(r.patient_sex)}</span>` : '',
       r.patient_age       ? `<span class="case-chip">${esc(r.patient_age)}</span>` : '',
+      `<span class="frame-count-badge">${sopGroups.length} SOP · ${totalFrames} frame${totalFrames!==1?'s':''}</span>`,
     ].filter(Boolean).join('');
-    const rptHtml=r.radrpt_excerpt
-      ?`<div class="case-rpt">${esc(String(r.radrpt_excerpt).slice(0,220))}</div>`:'';
 
-    // Thumbnail — best matching frame for this case
-    const hasPath = r.source_path && r.source_path !== '';
-    const fi = (r.frame_index !== undefined && r.frame_index !== '') ? parseInt(r.frame_index) : 0;
-    const thumbUrl  = hasPath ? `/api/thumbnail?path=${encodeURIComponent(r.source_path)}&frame=${fi}` : '';
-    const frameUrl  = hasPath ? `/api/frame?path=${encodeURIComponent(r.source_path)}&frame=${fi}` : '';
-    const lbMeta    = `${esc(r.accession_number||'?')} · ${esc(r.modality||'?')} · ${esc(fmtDate(r.study_date||''))} · sim ${pct}%`;
-    const thumbHtml = hasPath
-      ? `<div class="case-thumb-wrap" onclick="openLightbox('${frameUrl}','${lbMeta}')">
-           <img src="${thumbUrl}" loading="lazy" alt="Frame ${fi}">
-         </div>`
-      : `<div class="case-thumb-wrap"><div class="thumb-missing">no<br>image</div></div>`;
+    const rptHtml = r.radrpt_excerpt
+      ? `<div class="case-rpt">${esc(String(r.radrpt_excerpt).slice(0,220))}</div>` : '';
+
+    // One block per SOP UID, each with its own frame strip
+    const sopBlocksHtml = sopGroups.map(sg=>{
+      const sopSim   = sg.similarity_pct||0;
+      const sopSc    = simClass(sopSim);
+      const frameStripHtml = sg.frames.map(f=>{
+        const hasPath  = f.source_path && f.source_path !== '';
+        const fi       = parseInt(f.frame_index)||0;
+        const sim      = f.similarity_pct||0;
+        const tip      = `SOP: ${sg.sop_uid}\nFrame: ${fi}  Sim: ${sim}%`;
+        const lbMeta   = `${esc(r.accession_number||'?')} · Frame ${fi} · ${sim}%`;
+        const thumbUrl = hasPath ? `/api/thumbnail?path=${encodeURIComponent(f.source_path)}&frame=${fi}` : '';
+        const frameUrl = hasPath ? `/api/frame?path=${encodeURIComponent(f.source_path)}&frame=${fi}` : '';
+        return hasPath
+          ? `<img class="frame-thumb" src="${thumbUrl}" loading="lazy"
+                  title="${tip}" alt="Frame ${fi}"
+                  onclick="openLightbox('${frameUrl}','${lbMeta}')">`
+          : `<div class="frame-thumb" style="display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--text3)">?</div>`;
+      }).join('');
+
+      return `
+        <div class="sop-group">
+          <div class="sop-header">
+            <span class="sop-uid" title="${esc(sg.sop_uid)}">${esc(sg.sop_uid||'—')}</span>
+            <span class="sop-sim ${sopSc}">${sopSim}%</span>
+          </div>
+          <div class="frame-strip">${frameStripHtml}</div>
+        </div>`;
+    }).join('');
 
     return `
-      <div class="case-item">
-        ${thumbHtml}
-        <div class="case-body">
-          <div class="case-top">
-            <span class="case-acc" title="${esc(r.accession_number||'')}">${esc(String(r.accession_number||'—').slice(0,32))}</span>
-            <div class="sim-wrap">
-              <div class="sim-bar"><div class="sim-fill ${sc}" style="width:${pct}%"></div></div>
-              <span class="case-sim-pct ${sc}">${pct}%</span>
+      <div class="case-item" style="flex-direction:column;align-items:stretch;gap:6px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div class="case-rank">${r.rank}</div>
+          <div class="case-body">
+            <div class="case-top">
+              <span class="case-acc" title="${esc(r.accession_number||'')}">${esc(String(r.accession_number||'—').slice(0,32))}</span>
+              <div class="sim-wrap">
+                <div class="sim-bar"><div class="sim-fill ${sc}" style="width:${pct}%"></div></div>
+                <span class="case-sim-pct ${sc}">${pct}%</span>
+              </div>
             </div>
+            ${chips?`<div class="case-chips">${chips}</div>`:''}
+            ${rptHtml}
           </div>
-          ${chips?`<div class="case-chips">${chips}</div>`:''}
-          ${rptHtml}
         </div>
+        ${sopBlocksHtml}
       </div>`;
   }).join('')
   : '<div class="no-results">No similar cases found in ChromaDB.</div>';
