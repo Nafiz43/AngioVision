@@ -74,7 +74,8 @@ CALIBRATION_ROOTS = [
     Path("/data/Deep_Angiography/DICOM_Sequence_Processed/6kpsDZBHAH"),
     Path("/data/Deep_Angiography/DICOM_Sequence_Processed/1cZA9m5qti"),
     Path("/data/Deep_Angiography/DICOM_Sequence_Processed/P2ykm7rSF8"),
-    Path("/data/Deep_Angiography/DICOM_Sequence_Processed/1MPUcLN3XP/2.16.840.1.113883.3.16.245346042915223951797304877264329724942")
+    Path("/data/Deep_Angiography/DICOM_Sequence_Processed/1MPUcLN3XP/2.16.840.1.113883.3.16.245346042915223951797304877264329724942"),
+    Path("/data/Deep_Angiography/Deep_Angio_DB_v02/example_dsa_cases/"),
 ]
 
 # ── Phase 1b: validation negatives (calibration-set sanity check) ─────────

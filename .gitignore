@@ -49,3 +49,15 @@ dicom_staging.db-wal
 /chromadb
 /utils/metadata_db/angio_run_coded.png
 
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.webp
+*.svg
+
+# Documents
+*.pdf

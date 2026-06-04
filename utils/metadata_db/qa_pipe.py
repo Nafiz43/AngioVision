@@ -1383,6 +1383,9 @@ textarea.nl-input::placeholder{color:var(--text3)}
 .send-btn.img-mode{background:linear-gradient(135deg,var(--violet),#4338ca)}
 .send-btn.img-mode:hover:not(:disabled){background:linear-gradient(135deg,#8b5cf6,#6366f1)}
 .send-btn svg{width:17px;height:17px;stroke:#fff;fill:none;stroke-width:2.2}
+.stop-btn{width:40px;height:40px;border-radius:9px;border:none;background:var(--red);cursor:pointer;display:none;align-items:center;justify-content:center;flex-shrink:0;transition:background .2s}
+.stop-btn:hover{background:#c0392b}
+.stop-btn svg{width:13px;height:13px;fill:#fff;stroke:none}
 
 /* ── Sidebar ── */
 .sidebar{grid-area:side;background:var(--bg2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
@@ -1550,6 +1553,10 @@ textarea.nl-input::placeholder{color:var(--text3)}
               title="Attach angiography image for visual similarity search">
         <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
       </button>
+      <!-- Stop button (visible only while loading) -->
+      <button class="stop-btn" id="stopBtn" onclick="stopQuery()" title="Stop">
+        <svg viewBox="0 0 10 10"><rect x="0" y="0" width="10" height="10" rx="1.5"/></svg>
+      </button>
       <!-- Send button -->
       <button class="send-btn" id="sendBtn" onclick="handleSend()" title="Send (Enter)">
         <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -1681,9 +1688,22 @@ document.addEventListener('DOMContentLoaded',()=>{
 const API='';
 let chatHistory=[], isLoading=false;
 let attachedImage=null;  // { dataUrl, base64, filename }
+let _abortController = null;
 
 const inp     = document.getElementById('nlInput');
 const sendBtn = document.getElementById('sendBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+function setLoading(on){
+  isLoading = on;
+  sendBtn.disabled = on;
+  sendBtn.style.display = on ? 'none'  : 'flex';
+  stopBtn.style.display = on ? 'flex'  : 'none';
+}
+
+function stopQuery(){
+  if(_abortController) _abortController.abort();
+}
 
 // Auto-resize textarea
 inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,130)+'px';});
@@ -1928,7 +1948,8 @@ async function handleSend(){
 // TEXT QUERY (NL → SQL → synthesis)
 // ════════════════════════════════════════════════
 async function handleTextSend(question){
-  isLoading=true; sendBtn.disabled=true;
+  _abortController = new AbortController();
+  setLoading(true);
   inp.value=''; inp.style.height='auto';
   addMsg('msg-user',`<div class="bubble bubble-user">${esc(question)}</div>`);
   const thinkEl=addMsg('msg-bot',`<div class="thinking"><div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div><span id="thinkTxt">Generating SQL…</span></div>`);
@@ -1938,7 +1959,7 @@ async function handleTextSend(question){
   const model=document.getElementById('modelSelect').value;
   let sql='',rows=[],rowCount=0,answer='',elapsed=0;
   try{
-    const resp=await fetch(`${API}/api/query`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,think,model})});
+    const resp=await fetch(`${API}/api/query`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,think,model}),signal:_abortController.signal});
     const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
     while(true){
       const{done,value}=await reader.read();if(done)break;
@@ -1959,7 +1980,7 @@ async function handleTextSend(question){
           case 'error':
             thinkEl.remove();
             addMsg('msg-bot',`<div class="bubble-error">Error: ${esc(evt.message)}</div>`);
-            isLoading=false;sendBtn.disabled=false;setStatus('error','error');return;
+            setLoading(false);setStatus('error','error');return;
         }
       }
     }
@@ -1976,11 +1997,16 @@ async function handleTextSend(question){
     addHistory(question,rowCount,elapsed,false);
     setStatus('ready','ready');
   }catch(e){
-    thinkEl.remove();
-    addMsg('msg-bot',`<div class="bubble-error">Request failed: ${esc(String(e))}</div>`);
-    setStatus('error','error');
+    if(e.name==='AbortError'){
+      addMsg('msg-bot','<div class="bubble-error">Query stopped.</div>');
+      setStatus('ready','ready');
+    } else {
+      thinkEl.remove();
+      addMsg('msg-bot',`<div class="bubble-error">Request failed: ${esc(String(e))}</div>`);
+      setStatus('error','error');
+    }
   }
-  isLoading=false;sendBtn.disabled=false;inp.focus();
+  setLoading(false);inp.focus();
 }
 
 // ════════════════════════════════════════════════
@@ -1990,7 +2016,8 @@ async function handleImageSend(question){
   if(!attachedImage) return;
   const img=attachedImage;
   clearImage();
-  isLoading=true; sendBtn.disabled=true;
+  _abortController = new AbortController();
+  setLoading(true);
   inp.value=''; inp.style.height='auto';
 
   addMsg('msg-user',`
@@ -2010,6 +2037,7 @@ async function handleImageSend(question){
     const resp=await fetch(`${API}/api/image-query`,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
+      signal:_abortController.signal,
       body:JSON.stringify({
         image:    img.base64,
         question: question,
@@ -2041,7 +2069,7 @@ async function handleImageSend(question){
           case 'error':
             thinkEl && thinkEl.parentNode && thinkEl.remove();
             addMsg('msg-bot',`<div class="bubble-error">Image search error: ${esc(evt.message)}</div>`);
-            isLoading=false;sendBtn.disabled=false;setStatus('error','error');return;
+            setLoading(false);setStatus('error','error');return;
         }
       }
     }
@@ -2054,10 +2082,15 @@ async function handleImageSend(question){
     loadChromaStats();
   }catch(e){
     try{ thinkEl && thinkEl.parentNode && thinkEl.remove(); }catch(_){}
-    addMsg('msg-bot',`<div class="bubble-error">Image search failed: ${esc(String(e))}</div>`);
-    setStatus('error','error');
+    if(e.name==='AbortError'){
+      addMsg('msg-bot','<div class="bubble-error">Query stopped.</div>');
+      setStatus('ready','ready');
+    } else {
+      addMsg('msg-bot',`<div class="bubble-error">Image search failed: ${esc(String(e))}</div>`);
+      setStatus('error','error');
+    }
   }
-  isLoading=false;sendBtn.disabled=false;inp.focus();
+  setLoading(false);inp.focus();
 }
 
 // ════════════════════════════════════════════════
