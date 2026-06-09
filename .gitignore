@@ -58,6 +58,9 @@ dicom_staging.db-wal
 *.tiff
 *.webp
 *.svg
+*.md
+*.docx
 
 # Documents
 *.pdf
+utils/metadata_db/results-md-files

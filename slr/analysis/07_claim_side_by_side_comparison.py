@@ -31,18 +31,16 @@ import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 
-# ── Font sizes (all bumped up) ────────────────────────────────────────────────
-FS_PANEL_TITLE   = 17   # "Studies ≤ 2024" / "Studies ≥ 2025"
-FS_SUPTITLE      = 18
-FS_CLUSTER_LABEL = 13   # Y-axis cluster names
-FS_ITEMS_BADGE   = 12   # "Items 1–2" right axis
-FS_PCT_LABEL     = 13   # "72%" annotations
-FS_SECTION_BAND  = 13   # italic section labels inside bands
-FS_X_TICK        = 12
-FS_X_LABEL       = 13
-FS_REF_LINE      = 11
-FS_LEGEND_TITLE  = 12
-FS_LEGEND_BODY   = 11
+# ── Font sizes ────────────────────────────────────────────────────────────────
+FS_CLUSTER_LABEL = 19   # Y-axis cluster names
+FS_ITEMS_BADGE   = 17   # "Items 1–2" right axis
+FS_PCT_LABEL     = 18   # "72%" annotations
+FS_SECTION_BAND  = 17   # italic section labels inside bands
+FS_X_TICK        = 16
+FS_X_LABEL       = 17
+FS_REF_LINE      = 15
+FS_LEGEND_TITLE  = 16
+FS_LEGEND_BODY   = 15
 
 # ── Cluster definitions ───────────────────────────────────────────────────────
 CLAIM2024_CLUSTERS = [
@@ -70,7 +68,7 @@ SECTION_COLORS = {
 }
 
 DEFAULT_INPUT   = "../results/claim2024_results.jsonl"
-DEFAULT_OUT_DIR = "analysis-results"
+DEFAULT_OUT_DIR = "../analysis-results"
 DEFAULT_SPLIT   = 2024
 
 
@@ -169,18 +167,12 @@ def _draw_section_bands(ax, rows_reversed, show_labels=True):
 
 
 # ── Single panel ──────────────────────────────────────────────────────────────
-def _draw_panel(ax, prop_rows, n_studies, title, show_ylabels, show_right_axis, show_section_labels=True):
+def _draw_panel(ax, prop_rows, n_studies, show_ylabels, show_right_axis, show_section_labels=True):
     rows = list(reversed(prop_rows))   # C01 at top
     n    = len(rows)
     y    = list(range(n))
 
     _draw_section_bands(ax, rows, show_labels=show_section_labels)
-
-    # Panel title box at the top of the axes
-    ax.set_title(title, fontsize=FS_PANEL_TITLE, fontweight="bold",
-                 pad=14, color="#111111",
-                 bbox=dict(boxstyle="round,pad=0.35", facecolor="#f0f0f0",
-                           edgecolor="#bbbbbb", linewidth=1.0))
 
     # Reference lines
     ax.axvline(0.50, color="#aaaaaa", linestyle="--", linewidth=1.0, alpha=0.7, zorder=1)
@@ -262,11 +254,9 @@ def draw_comparison_plot(pre_rows, post_rows, n_pre, n_post, split_year, out_dir
     )
 
     _draw_panel(ax_l, pre_rows,  n_studies=n_pre,
-                title=f"Studies  \u2264 {split_year}  (N\u202f=\u202f{n_pre})",
                 show_ylabels=True, show_right_axis=False)
 
     _draw_panel(ax_r, post_rows, n_studies=n_post,
-                title=f"Studies  \u2265 {split_year+1}  (N\u202f=\u202f{n_post})",
                 show_ylabels=False, show_right_axis=True, show_section_labels=False)
 
     # Vertical divider
@@ -276,12 +266,6 @@ def draw_comparison_plot(pre_rows, post_rows, n_pre, n_post, split_year, out_dir
             transform=fig.transFigure,
             color="#cccccc", linewidth=1.2, linestyle="--",
         )
-    )
-
-    # Super-title
-    fig.suptitle(
-        "CLAIM 2024 Adherence by Thematic Cluster  —  Temporal Comparison",
-        fontsize=FS_SUPTITLE, fontweight="bold", y=1.01,
     )
 
     # Legend
@@ -382,7 +366,6 @@ def save_latex_table(pre_rows, post_rows, split_year, out_dir, n_pre, n_post):
       - Pre / Post columns with CI
       - Delta column with upward/downward arrows
     """
-    # Map section → xcolor-friendly colour name
     SEC_TEX_COLOR = {
         "Title/Abstract":               "claimTA",
         "Introduction":                 "claimIntro",
@@ -457,7 +440,6 @@ def save_latex_table(pre_rows, post_rows, split_year, out_dir, n_pre, n_post):
         d       = post["proportion"] - pre["proportion"]
         arrow   = r"$\uparrow$" if d > 0.02 else (r"$\downarrow$" if d < -0.02 else r"$\sim$")
 
-        # Section header row when section changes
         if sec != prev_section:
             if prev_section is not None:
                 lines.append(r"  \midrule")
@@ -475,7 +457,7 @@ def save_latex_table(pre_rows, post_rows, split_year, out_dir, n_pre, n_post):
             f"{pre['cluster_label']} & "
             f"{pre['proportion']*100:.0f}\\% & "
             f"{pre_ci} & "
-            f"& "   # delta pre column (blank — delta is pre→post, shown in post cols)
+            f"& "
             f"{post['proportion']*100:.0f}\\% & "
             f"{post_ci} & "
             f"{delta_s}~{arrow} \\\\"

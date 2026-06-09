@@ -6,6 +6,18 @@ import seaborn as sns
 import numpy as np
 
 # =========================
+# GLOBAL FONT SETTINGS
+# =========================
+plt.rcParams.update({
+    "font.size":        14,   # default text / tick labels
+    "axes.titlesize":   17,   # plot titles (unused, but set for safety)
+    "axes.labelsize":   15,   # x / y axis labels
+    "xtick.labelsize":  13,   # x tick labels
+    "ytick.labelsize":  13,   # y tick labels
+    "legend.fontsize":  13,   # legend text
+})
+
+# =========================
 # OUTPUT DIRECTORY
 # =========================
 out_dir = "/data/Deep_Angiography/AngioVision/slr/analysis-results"
@@ -121,16 +133,15 @@ variance_table.to_csv(os.path.join(out_dir, "variance_table.csv"), index=False)
 # =========================
 # 5. FIGURE 1: HISTOGRAM
 # =========================
-plt.figure(figsize=(8,5))
+plt.figure(figsize=(8, 5))
 
 for group in primary_df["metric_group"].unique():
     subset = primary_df[primary_df["metric_group"] == group]["value"]
     plt.hist(subset, alpha=0.5, bins=10, label=group)
 
-plt.title("Distribution of Primary Metrics Across Studies (0–100 Normalized)")
-plt.xlabel("Metric Value (%)")
-plt.ylabel("Number of Studies")
-plt.legend()
+plt.xlabel("Metric Value (%)", fontsize=15)
+plt.ylabel("Number of Studies", fontsize=15)
+plt.legend(fontsize=13)
 plt.tight_layout()
 
 plt.savefig(os.path.join(out_dir, "histogram_metrics.pdf"), bbox_inches="tight")
@@ -140,12 +151,11 @@ plt.close()
 # =========================
 # 6. FIGURE 2: KDE
 # =========================
-plt.figure(figsize=(8,5))
+plt.figure(figsize=(8, 5))
 
 sns.kdeplot(data=primary_df, x="value", hue="metric_group", fill=True)
 
-plt.title("Density Distribution of Primary Metrics (Normalized)")
-plt.xlabel("Metric Value (%)")
+plt.xlabel("Metric Value (%)", fontsize=15)
 plt.tight_layout()
 
 plt.savefig(os.path.join(out_dir, "kde_metrics.pdf"), bbox_inches="tight")
@@ -155,13 +165,12 @@ plt.close()
 # =========================
 # 7. FIGURE 3: BOXPLOT
 # =========================
-plt.figure(figsize=(9,5))
+plt.figure(figsize=(9, 5))
 
 sns.boxplot(data=primary_df, x="metric_group", y="value")
-plt.xticks(rotation=30)
+plt.xticks(rotation=30, fontsize=13)
 
-plt.title("Primary Metric Distribution by Metric Type (0–100 Scale)")
-plt.ylabel("Metric Value (%)")
+plt.ylabel("Metric Value (%)", fontsize=15)
 plt.tight_layout()
 
 plt.savefig(os.path.join(out_dir, "boxplot_metrics.pdf"), bbox_inches="tight")

@@ -16,7 +16,7 @@ CLUSTERS = {
     'C1': {
         'name'  : 'Data Infrastructure',
         'gaps'  : [
-            ('G1',  'Data scarcity & absent public benchmarks'),
+            ('G1',  'Absence of public benchmarks'),
             ('G2',  'Generalizability & domain shift'),
             ('G10', 'Privacy-preserving & multi-institutional learning'),
         ],
@@ -26,14 +26,14 @@ CLUSTERS = {
         'gaps'  : [
             ('G3',  'Temporal modeling & video-level analysis'),
             ('G4',  '2D constraints & 3D reconstruction'),
-            ('G5',  'Annotation scarcity & annotation-efficient learning'),
+            ('G5',  'Annotation scarcity'),
             ('G9',  'Class imbalance & rare pathology coverage'),
         ],
     },
     'C3': {
         'name'  : 'Clinical Deployment',
         'gaps'  : [
-            ('G6',  'Prospective clinical validation & outcome assessment'),
+            ('G6',  'clinical validation'),
             ('G7',  'Explainability & model transparency'),
             ('G8',  'Multi-modal data integration'),
         ],
@@ -41,8 +41,8 @@ CLUSTERS = {
     'C4': {
         'name'  : 'Outcome & Reporting',
         'gaps'  : [
-            ('G11', 'Imaging biomarkers & clinical outcome prediction'),
-            ('G12', 'Large language models & structured reporting'),
+            ('G11', 'clinical outcome prediction'),
+            ('G12', 'LLMs & structured reporting'),
         ],
     },
 }
@@ -92,8 +92,8 @@ COLOURS = {
     'C4': dict(fill='#FAC775', edge='#854F0B', txt='#412402'),
 }
 
-OUT_PDF = 'analysis-results/venn_diagram.pdf'
-OUT_PNG = 'analysis-results/venn_diagram.png'
+OUT_PDF = '../analysis-results/venn_diagram.pdf'
+OUT_PNG = '../analysis-results/venn_diagram.png'
 
 # ════════════════════════════════════════════════════════
 #  LAYOUT CONSTANTS
@@ -107,23 +107,44 @@ D        = 1.95
 ALPHA    = 0.34
 
 # ── Font sizes (all increased) ───────────────────────────
-FS_PANEL_HEADER  = 13.5
-FS_CLUSTER_LABEL = 11.5
-FS_CLUSTER_ID    = 19.0
-FS_GAP_CODE      = 10.5
-FS_GAP_DESC      = 10.5
-FS_STRAT_CODE    = 10.5
-FS_STRAT_DESC    = 10.5
-FS_ANN           = 9.8
-FS_INT           = 10.5
-FS_KEY_HEADER    = 11.0
-FS_KEY_LABEL     = 9.8
-FS_NOTE          = 9.2
+# FS_PANEL_HEADER  = 13.5
+# FS_CLUSTER_LABEL = 11.5
+# FS_CLUSTER_ID    = 19.0
+# FS_GAP_CODE      = 10.5
+# FS_GAP_DESC      = 10.5
+# FS_STRAT_CODE    = 10.5
+# FS_STRAT_DESC    = 10.5
+# FS_ANN           = 9.8
+# FS_INT           = 10.5
+# FS_KEY_HEADER    = 11.0
+# FS_KEY_LABEL     = 9.8
+# FS_NOTE          = 9.2
 
-GAP_ROW_H    = 0.36
-STRAT_ROW_H  = 0.64
-CLUSTER_GAP  = 0.48
-KEY_ROW_H    = 0.34
+
+# ── Font sizes (substantially larger, same layout) ───────
+
+FS_PANEL_HEADER  = 17
+FS_CLUSTER_LABEL = 18
+FS_CLUSTER_ID    = 26
+
+FS_GAP_CODE      = 17
+FS_GAP_DESC      = 16.5
+
+FS_STRAT_CODE    = 17
+FS_STRAT_DESC    = 16.5
+
+FS_ANN           = 16
+FS_INT           = 16
+
+FS_KEY_HEADER    = 16
+FS_KEY_LABEL     = 16
+
+FS_NOTE          = 10.5
+
+GAP_ROW_H    = 0.42
+STRAT_ROW_H  = 0.68
+CLUSTER_GAP  = 0.56
+KEY_ROW_H    = 0.42
 
 LX, LTY = 0.22, 12.00
 RX, RTY = 14.50, 12.00
@@ -292,12 +313,12 @@ for k, lbl in key_entries:
     sy -= KEY_ROW_H
 
 sy -= 0.14
-ax.text(RX, sy,
-        'Codes inside Venn = shared strategies.\n'
-        'Dashes (—) = no strategy documented across those clusters.\n'
-        'Centre (all four clusters): S1 only.',
-        fontsize=FS_NOTE, color='#666666', style='italic',
-        ha='left', va='top', zorder=5, linespacing=1.5)
+# ax.text(RX, sy,
+#         'Codes inside Venn = shared strategies.\n'
+#         'Dashes (—) = no strategy documented across those clusters.\n'
+#         'Centre (all four clusters): S1 only.',
+#         fontsize=FS_NOTE, color='#666666', style='italic',
+#         ha='left', va='top', zorder=5, linespacing=1.5)
 
 import os
 os.makedirs('analysis-results', exist_ok=True)

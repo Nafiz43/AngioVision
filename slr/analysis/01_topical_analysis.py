@@ -15,6 +15,16 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+# === GLOBAL FONT SETTINGS ===
+plt.rcParams.update({
+    "font.size":        14,   # default text / tick labels
+    "axes.titlesize":   17,   # plot titles
+    "axes.labelsize":   15,   # x / y axis labels
+    "xtick.labelsize":  13,   # x tick labels
+    "ytick.labelsize":  13,   # y tick labels
+    "legend.fontsize":  13,   # legend text
+})
+
 # === CONFIGURATION ===
 INPUT_PATH = Path("/data/Deep_Angiography/AngioVision/slr/results/stage2_results.jsonl")
 OUTPUT_DIR = Path("/data/Deep_Angiography/AngioVision/slr/analysis-results")
@@ -111,8 +121,7 @@ def plot_distribution(series: pd.Series, title: str, filename: Path, top_n: int 
     plt.figure(figsize=(8, 5))
     colors = plt.cm.tab20(np.linspace(0, 1, len(counts)))
     counts.plot(kind="barh", color=colors)
-    plt.xlabel("Count")
-    plt.title(title, fontsize=13, fontweight='bold')
+    plt.xlabel("Count", fontsize=15)
     plt.tight_layout()
     plt.savefig(filename, dpi=300)
     plt.close()
@@ -130,9 +139,8 @@ def run_topical_analysis(df: pd.DataFrame, norm_venue_counts: Counter, venue_typ
 
     plt.figure(figsize=(9, 5))
     year_counts.sort_index().plot(kind="bar", color="skyblue")
-    plt.xlabel("Year", fontsize=12)
-    plt.ylabel("Number of Papers", fontsize=12)
-    plt.title("Temporal Trends of Publications (2000–Present)", fontsize=14, fontweight='bold')
+    plt.xlabel("Year", fontsize=15)
+    plt.ylabel("Number of Papers", fontsize=15)
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / FIGURES["temporal_trends"]["file"], dpi=300)
@@ -158,10 +166,9 @@ def run_topical_analysis(df: pd.DataFrame, norm_venue_counts: Counter, venue_typ
     x = range(len(labels))
     plt.bar(x, journal_values, label="Journal", color="#4C72B0")
     plt.bar(x, conference_values, bottom=journal_values, label="Conference", color="#DD8452")
-    plt.xticks(x, labels, rotation=45, ha="right")
-    plt.ylabel("Number of Papers", fontsize=12)
-    plt.title("Top Venues (Journals vs Conferences)", fontsize=14, fontweight='bold')
-    plt.legend()
+    plt.xticks(x, labels, rotation=45, ha="right", fontsize=13)
+    plt.ylabel("Number of Papers", fontsize=15)
+    plt.legend(fontsize=13)
     plt.tight_layout()
     plt.savefig(OUTPUT_DIR / FIGURES["venue_stacked"]["file"], dpi=300)
     plt.close()
@@ -233,9 +240,8 @@ def run_venue_dominance(raw_venue_counts: Counter) -> None:
     )
     plt.xscale("log")
     plt.yscale("log")
-    plt.xlabel("Venue Rank (log scale)", fontsize=12, fontweight='bold')
-    plt.ylabel("Number of Papers (log scale)", fontsize=12, fontweight='bold')
-    plt.title("Zipf Plot of Publication Venues", fontsize=14, fontweight='bold', pad=10)
+    plt.xlabel("Venue Rank (log scale)", fontsize=15, fontweight='bold')
+    plt.ylabel("Number of Papers (log scale)", fontsize=15, fontweight='bold')
 
     ax.grid(True, which="major", linestyle="-", linewidth=0.8, color='#E5E7EB')
     plt.minorticks_on()
@@ -254,9 +260,8 @@ def run_venue_dominance(raw_venue_counts: Counter) -> None:
         markersize=9, markerfacecolor='#FFFFFF',
         markeredgecolor='#023E8A', markeredgewidth=1.8, zorder=3
     )
-    plt.xlabel("Number of Venues (Top-k)", fontsize=12, fontweight='bold')
-    plt.ylabel("Cumulative Share of Papers", fontsize=12, fontweight='bold')
-    plt.title("Venue Dominance Curve", fontsize=14, fontweight='bold', pad=10)
+    plt.xlabel("Number of Venues (Top-k)", fontsize=15, fontweight='bold')
+    plt.ylabel("Cumulative Share of Papers", fontsize=15, fontweight='bold')
 
     ax2.set_ylim(0, 1)
     ax2.grid(True, which="major", linestyle="-", linewidth=0.8, color='#E5E7EB')
