@@ -2,9 +2,13 @@
 """
 DICOM Query Web Server
 Serves the browser UI and exposes a REST API that bridges:
-  - Natural language → SQL (Ollama)
+  - Natural language → SQL, via an AGENTIC pipeline (smolagents ToolCallingAgent)
+    that can call the database as many times as it needs — exploring the
+    schema, checking real column values, recovering from SQL errors, and
+    refining its query — before producing a final answer. This replaces the
+    old single-shot "generate SQL once, retry-on-error-twice" approach.
   - SQL → SQLite execution
-  - Results → synthesis (Ollama)
+  - Results → synthesis (via the same agent's final answer)
 
 NEW ── Image RAG (with RAD-DINO embeddings):
   POST /api/image-query accepts a base64-encoded image, queries ChromaDB via
@@ -25,18 +29,27 @@ Usage:
     python3 dicom_query_server.py --db /path/to/dicom_staging.db --port 5050
     python3 dicom_query_server.py --model qwen3:14b --no-think
     python3 dicom_query_server.py --chromadb /path/to/chromadb
+    python3 dicom_query_server.py --ollama-host http://localhost:11434 --agent-max-steps 10
+
+Requires (new): pip install 'smolagents[openai]'
+  The agentic NL→SQL pipeline talks to your local Ollama server through its
+  OpenAI-compatible API (http://<ollama-host>/v1), so the model you pick in
+  the UI dropdown needs to support tool/function calling in Ollama (qwen3,
+  llama3.1+, mistral, etc. all work).
 """
 
 import re
 import sys
 import json
 import time
+import queue
 import sqlite3
 import logging
 import argparse
+import traceback
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable, Any, Dict, List
 
 try:
     from flask import Flask, request, jsonify, Response, send_from_directory
@@ -84,16 +97,33 @@ except ImportError:
     PYDICOM_OK = False
     _pydicom_mod = None
 
+# ── Agentic NL→SQL pipeline (soft — server starts without it, /api/query 503s) ─
+try:
+    from smolagents import ToolCallingAgent, Tool, OpenAIServerModel
+    import openai as _openai_mod  # required by OpenAIServerModel under the hood
+    SMOLAGENTS_OK = True
+except ImportError as _sma_err:
+    SMOLAGENTS_OK = False
+    _smolagents_err = str(_sma_err)
+    ToolCallingAgent = None
+    OpenAIServerModel = None
+
+    class Tool:  # minimal fallback so SQLQueryTool can still be defined/imported
+        pass
+
 # ── Config ────────────────────────────────────────────────────────────────────
 DEFAULT_DB        = Path("/data/Deep_Angiography/AngioVision/dicom_staging.db")
 DEFAULT_CHROMADB  = Path("/data/Deep_Angiography/AngioVision/chromadb")
 CHROMA_COLLECTION = "dicom_images"
-DEFAULT_MODEL     = "qwen3:8b"
+DEFAULT_MODEL     = "qwen3:1.7b"
 DEFAULT_PORT      = 5050
 MAX_ROWS_FOR_SYNTHESIS = 200
-MAX_RETRIES       = 2
+MAX_RETRIES       = 2      # legacy, kept for reference; the agent self-corrects instead
 N_SIMILAR_DEFAULT = 5      # results (series) returned to UI
 N_SIMILAR_OVERFETCH = 40   # frames fetched from ChromaDB before grouping
+
+DEFAULT_OLLAMA_HOST     = "http://localhost:11434"
+DEFAULT_AGENT_MAX_STEPS = 10   # how many sql_query calls the NL→SQL agent may make per question
 
 logging.basicConfig(
     level  = logging.INFO,
@@ -247,6 +277,8 @@ Produce a clear, concise, human-readable answer in PLAIN TEXT only.
 - If results reference radiology report text (radrpt), summarise key findings
 - If results are empty, say so and suggest why
 - Do NOT re-state the SQL; be direct and informative
+- If the results include source_path columns, tell the user that thumbnail
+  previews are visible in the Table tab (the UI renders them automatically)
 """
 
 IMAGE_SYNTHESIS_SYSTEM = """
@@ -282,19 +314,25 @@ Key rules:
 - radrpt is a TEXT column in radiology_reports, NOT in dicom_files
 - For "signed by <name>" queries: WHERE LOWER(r.radrpt) LIKE '%signed by%<name>%'
 """
+# NOTE: ERROR_REPAIR_SYSTEM / MAX_RETRIES above are kept for reference but are no
+# longer used by /api/query — the smolagents agent now sees SQL errors directly
+# as tool output and corrects itself across multiple turns instead of a single
+# blind "repair" pass.
 
 # ── Global state ──────────────────────────────────────────────────────────────
-app   = Flask(__name__, static_folder=None)
+app: Flask = Flask(__name__, static_folder=None)
 CORS(app)
 
-_db_path         : Path                  = DEFAULT_DB
-_chromadb_path   : Path                  = DEFAULT_CHROMADB
-_ollama          : Optional[ChatOllama]  = None
-_think           : bool                  = True
-_db_stats_cache  : Optional[dict]        = None
-_chroma_collection                       = None   # lazy-initialised
-_raddino_model   : Optional[object]      = None   # lazy-initialised RAD-DINO model
-_lock            = threading.Lock()
+_db_path: Path = DEFAULT_DB
+_chromadb_path: Path = DEFAULT_CHROMADB
+_ollama: Optional[ChatOllama] = None
+_think: bool = True
+_db_stats_cache: Optional[Dict[str, Any]] = None
+_chroma_collection: Optional[Any] = None   # lazy-initialised ChromaDB collection
+_raddino_model: Optional[object] = None  # lazy-initialised RAD-DINO embedding model
+_lock: threading.Lock = threading.Lock()
+_ollama_host: str = DEFAULT_OLLAMA_HOST  # base URL for Ollama OpenAI-compatible API
+_agent_max_steps: int = DEFAULT_AGENT_MAX_STEPS  # max tool calls per question
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # RAD-DINO Embedding Function
@@ -302,41 +340,57 @@ _lock            = threading.Lock()
 
 class RADDINOEmbeddingFunction:
     """
-    Embedding function using microsoft/rad-dino — the same model used during
-    ingestion. MUST match exactly so query embeddings live in the same space
-    as the indexed embeddings.
-
-    Uses the HuggingFace transformers AutoModel interface (not timm) to load
-    microsoft/rad-dino, which is a ViT-B/16 trained on ~1M radiology images.
-    The CLS token (index 0 of last_hidden_state) is used as the embedding.
+    RAD-DINO embedding function for medical imaging DICOM frames.
+    
+    Uses microsoft/rad-dino (ViT-B/16 trained on ~1M radiology images) via HuggingFace
+    transformers. MUST match the embedding model used during ChromaDB ingestion so that
+    query embeddings live in the same vector space as indexed embeddings.
+    
+    The CLS token (index 0 of last_hidden_state) is extracted and L2-normalised as
+    the 768-dimensional embedding vector.
     """
 
-    # HuggingFace model identifier — must match what was used during ingestion
+    # HuggingFace model identifier — MUST match ingestion pipeline
     MODEL_ID = "microsoft/rad-dino"
 
     @classmethod
     def name(cls) -> str:
+        """Return the name of this embedding function."""
         return "raddino"
 
-    def __init__(self, model_id: str = MODEL_ID):
+    def __init__(self, model_id: str = MODEL_ID) -> None:
+        """
+        Initialize RAD-DINO model for embedding computation.
+        
+        Args:
+            model_id: HuggingFace model identifier (default: microsoft/rad-dino)
+        
+        Raises:
+            ImportError: If torch or transformers are not installed
+        """
         if not RADDINO_OK:
             raise ImportError(
                 "torch and transformers required: "
                 "pip install torch transformers"
             )
 
-        self.device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.processor = AutoImageProcessor.from_pretrained(model_id)
-        self.model     = AutoModel.from_pretrained(model_id).to(self.device)
+        self.model = AutoModel.from_pretrained(model_id).to(self.device)
         self.model.eval()
         log.info(f"RAD-DINO ({model_id}) loaded on {self.device}")
 
-    def __call__(self, input_list):
+    def __call__(self, input_list: List[np.ndarray]) -> List[np.ndarray]:
         """
-        Input:  list of uint8 RGB numpy arrays (H×W×3)
-        Output: list of L2-normalised float32 embedding vectors (768-dim)
+        Embed a batch of images using RAD-DINO.
+        
+        Args:
+            input_list: List of uint8 RGB numpy arrays (H×W×3)
+        
+        Returns:
+            List of L2-normalised 768-dimensional embedding vectors (float32)
         """
-        embeddings = []
+        embeddings: List[np.ndarray] = []
         with torch.no_grad():
             for img_array in input_list:
                 # Ensure RGB uint8
@@ -360,8 +414,13 @@ class RADDINOEmbeddingFunction:
         return embeddings
 
 
-def get_raddino_model():
-    """Lazy-initialise and return the RAD-DINO model."""
+def get_raddino_model() -> Optional[RADDINOEmbeddingFunction]:
+    """
+    Get or lazy-initialize the RAD-DINO embedding model (singleton pattern).
+    
+    Returns:
+        RADDINOEmbeddingFunction instance if dependencies available, else None
+    """
     global _raddino_model
     if _raddino_model is None:
         if not RADDINO_OK:
@@ -369,8 +428,8 @@ def get_raddino_model():
             return None
         try:
             _raddino_model = RADDINOEmbeddingFunction()
-        except Exception as e:
-            log.error(f"Failed to load RAD-DINO model: {e}")
+        except Exception as exc:
+            log.error(f"Failed to load RAD-DINO model: {exc}")
             return None
     return _raddino_model
 
@@ -380,23 +439,35 @@ def get_raddino_model():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def get_ollama() -> ChatOllama:
+    """Get or initialize the Ollama ChatOllama instance (singleton pattern)."""
     global _ollama
     if _ollama is None:
         _ollama = ChatOllama(model=DEFAULT_MODEL)
     return _ollama
 
 
-def set_model(model: str):
+def set_model(model: str) -> None:
+    """Update the global Ollama model instance to use a different model."""
     global _ollama
     _ollama = ChatOllama(model=model)
     log.info(f"Model set to: {model}")
 
 
-def llm_call(messages: list[dict], think: bool = True) -> str:
-    ollama      = get_ollama()
-    lc_messages = []
-    for m in messages:
-        role, content = m["role"], m["content"]
+def llm_call(messages: List[Dict[str, str]], think: bool = True) -> str:
+    """
+    Call the Ollama model with the given messages.
+    
+    Args:
+        messages: List of message dicts with 'role' and 'content' keys
+        think: Whether to prepend '/no_think' directive to user messages (for qwen3)
+    
+    Returns:
+        The model's text response with any <think> tags stripped
+    """
+    ollama = get_ollama()
+    lc_messages: List[Any] = []
+    for msg in messages:
+        role, content = msg["role"], msg["content"]
         if role == "system":
             lc_messages.append(SystemMessage(content=content))
         elif role == "user":
@@ -404,13 +475,22 @@ def llm_call(messages: list[dict], think: bool = True) -> str:
                 content = "/no_think\n" + content
             lc_messages.append(HumanMessage(content=content))
     response = ollama.invoke(lc_messages)
-    text     = response.content
-    text     = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = response.content
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     return text.strip()
 
 
-def clean_sql(raw: str) -> str:
-    sql = re.sub(r"```(?:sql|sqlite)?\s*", "", raw, flags=re.IGNORECASE)
+def clean_sql(raw_sql: str) -> str:
+    """
+    Remove markdown code fence markers from SQL text.
+    
+    Args:
+        raw_sql: Raw SQL text possibly wrapped in markdown code fences
+    
+    Returns:
+        Clean SQL statement
+    """
+    sql = re.sub(r"```(?:sql|sqlite)?\s*", "", raw_sql, flags=re.IGNORECASE)
     sql = re.sub(r"```", "", sql)
     return sql.strip()
 
@@ -420,35 +500,72 @@ def clean_sql(raw: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def open_db() -> sqlite3.Connection:
+    """
+    Open a read-write connection to the DICOM SQLite database.
+    
+    Returns:
+        A sqlite3 Connection with Row factory enabled
+    """
     con = sqlite3.connect(str(_db_path), check_same_thread=False)
     con.row_factory = sqlite3.Row
     return con
 
 
-def run_sql_query(sql: str) -> list[dict]:
+def run_sql_query(sql: str) -> List[Dict[str, Any]]:
+    """
+    Execute a read-only SQL query against the database and return results.
+    
+    Args:
+        sql: SQL SELECT statement
+    
+    Returns:
+        List of result rows as dictionaries
+    
+    Raises:
+        sqlite3.Error: On SQL syntax or execution errors
+    """
     with _lock:
         con = open_db()
         try:
             con.execute("PRAGMA query_only = ON")
-            cur  = con.execute(sql)
+            cur = con.execute(sql)
             cols = [d[0] for d in cur.description] if cur.description else []
             return [dict(zip(cols, row)) for row in cur.fetchall()]
         finally:
             con.close()
 
 
-def get_db_stats() -> dict:
+def get_db_stats() -> Dict[str, Any]:
+    """
+    Compute and cache database statistics (instance, patient, study, series counts).
+    
+    Returns cached stats if available; otherwise queries the database and caches result.
+    
+    Returns:
+        Dictionary with keys: instances, patients, studies, series, errors,
+        modalities, db_path, rpt_total, rpt_linked, rpt_unlinked
+    """
     global _db_stats_cache
     if _db_stats_cache:
         return _db_stats_cache
     with _lock:
         con = open_db()
         try:
-            total    = con.execute("SELECT COUNT(*) FROM dicom_files WHERE parse_error IS NULL").fetchone()[0]
-            patients = con.execute("SELECT COUNT(DISTINCT patient_id) FROM dicom_files WHERE parse_error IS NULL").fetchone()[0]
-            studies  = con.execute("SELECT COUNT(DISTINCT study_instance_uid) FROM dicom_files WHERE parse_error IS NULL").fetchone()[0]
-            series   = con.execute("SELECT COUNT(DISTINCT series_instance_uid) FROM dicom_files WHERE parse_error IS NULL").fetchone()[0]
-            errors   = con.execute("SELECT COUNT(*) FROM dicom_files WHERE parse_error IS NOT NULL").fetchone()[0]
+            total = con.execute(
+                "SELECT COUNT(*) FROM dicom_files WHERE parse_error IS NULL"
+            ).fetchone()[0]
+            patients = con.execute(
+                "SELECT COUNT(DISTINCT patient_id) FROM dicom_files WHERE parse_error IS NULL"
+            ).fetchone()[0]
+            studies = con.execute(
+                "SELECT COUNT(DISTINCT study_instance_uid) FROM dicom_files WHERE parse_error IS NULL"
+            ).fetchone()[0]
+            series = con.execute(
+                "SELECT COUNT(DISTINCT series_instance_uid) FROM dicom_files WHERE parse_error IS NULL"
+            ).fetchone()[0]
+            errors = con.execute(
+                "SELECT COUNT(*) FROM dicom_files WHERE parse_error IS NOT NULL"
+            ).fetchone()[0]
             modalities = con.execute(
                 "SELECT modality, COUNT(*) as cnt FROM dicom_files "
                 "WHERE parse_error IS NULL GROUP BY modality ORDER BY cnt DESC LIMIT 5"
@@ -477,15 +594,15 @@ def get_db_stats() -> dict:
                 rpt_total = rpt_linked = rpt_unlinked = 0
 
             _db_stats_cache = {
-                "instances":   total,
-                "patients":    patients,
-                "studies":     studies,
-                "series":      series,
-                "errors":      errors,
-                "modalities":  [{"modality": r[0] or "?", "count": r[1]} for r in modalities],
-                "db_path":     str(_db_path),
-                "rpt_total":   rpt_total,
-                "rpt_linked":  rpt_linked,
+                "instances": total,
+                "patients": patients,
+                "studies": studies,
+                "series": series,
+                "errors": errors,
+                "modalities": [{"modality": r[0] or "?", "count": r[1]} for r in modalities],
+                "db_path": str(_db_path),
+                "rpt_total": rpt_total,
+                "rpt_linked": rpt_linked,
                 "rpt_unlinked": rpt_unlinked,
             }
             return _db_stats_cache
@@ -494,11 +611,321 @@ def get_db_stats() -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Agentic NL→SQL pipeline (smolagents)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Instead of generating one SQL query and giving up (or doing a single blind
+# "repair" pass) on failure, /api/query now runs a smolagents ToolCallingAgent
+# that can call the `sql_query` tool as many times as it needs — exploring the
+# schema, checking real column values, recovering from SQL errors, and
+# refining its query — before producing a final natural-language answer. The
+# agent talks to whichever local Ollama model is selected in the UI, via
+# Ollama's OpenAI-compatible endpoint.
+
+class SQLQueryTool(Tool):
+    """
+    A smolagents Tool enabling the agent to query the DICOM SQLite database.
+    
+    Allows the agent to execute read-only SELECT statements as many times as needed,
+    exploring the schema, checking actual values, and recovering from SQL errors
+    before producing a final answer.
+    """
+
+    name = "sql_query"
+    description = (
+        "Run a single read-only SQLite SELECT statement against the DICOM imaging "
+        "database (tables: dicom_files, radiology_reports, image_ingestion_status) "
+        "and get the matching rows back as JSON. You can call this tool multiple "
+        "times in a row: explore first if you're unsure about a column's actual "
+        "values (e.g. SELECT DISTINCT modality FROM dicom_files LIMIT 10), then "
+        "write the real query. If a query fails, read the SQL ERROR message, fix "
+        "the query, and call this tool again — never give up after one failed "
+        "attempt."
+    )
+    inputs = {
+        "query": {
+            "type": "string",
+            "description": "A single SQLite SELECT statement (no trailing semicolon-separated statements).",
+        }
+    }
+    output_type = "string"
+
+    def __init__(
+        self,
+        on_step_callback: Optional[Callable[[str, Optional[List[Dict[str, Any]]], int], None]] = None,
+        max_rows: int = MAX_ROWS_FOR_SYNTHESIS,
+    ) -> None:
+        """
+        Initialize the SQL query tool.
+        
+        Args:
+            on_step_callback: Optional callback(sql, rows_or_None, row_count, error=None)
+                             called after each query execution for streaming events
+            max_rows: Maximum rows to return in payload (others truncated but counted)
+        """
+        super().__init__()
+        self.on_step_callback = on_step_callback
+        self.max_rows = max_rows
+
+    def forward(self, query: str) -> str:
+        """
+        Execute a SQL query and return results as JSON.
+        
+        Args:
+            query: SQL SELECT statement (may be wrapped in markdown code fences)
+        
+        Returns:
+            JSON string with row_count, rows, and optional note/error messages
+        """
+        sql = clean_sql(query)
+
+        try:
+            rows = run_sql_query(sql)
+        except Exception as exc:
+            err = str(exc)
+            if self.on_step_callback:
+                self.on_step_callback(sql, None, 0, error=err)
+            return (
+                f"SQL ERROR: {err}\n\n"
+                "Fix the query and call sql_query again. Reminders: every column in "
+                "dicom_files is stored as TEXT — CAST numeric columns explicitly "
+                "(e.g. CAST(frame_count AS INTEGER)); radrpt lives in "
+                "radiology_reports, not dicom_files; join the two with "
+                "JOIN radiology_reports USING (accession_number)."
+            )
+
+        def serialize_value(v: Any) -> Any:
+            """Safely serialize a value to JSON-compatible format."""
+            if v is None:
+                return None
+            try:
+                json.dumps(v)
+                return v
+            except Exception:
+                return str(v)
+
+        clean_rows = [{k: serialize_value(v) for k, v in row.items()} for row in rows]
+        if self.on_step_callback:
+            self.on_step_callback(sql, clean_rows, len(clean_rows))
+
+        display = clean_rows[: self.max_rows]
+        payload: Dict[str, Any] = {"row_count": len(clean_rows), "rows": display}
+        if len(clean_rows) > self.max_rows:
+            payload["note"] = f"{len(clean_rows) - self.max_rows} additional rows truncated."
+        elif not clean_rows:
+            payload["note"] = "Query returned zero rows — consider relaxing filters or checking actual column values."
+        return json.dumps(payload, default=str)
+
+
+def get_smolagents_model(model_name: str) -> "OpenAIServerModel":
+    """Build a smolagents model that talks to the local Ollama server via its
+    OpenAI-compatible API, so the agent uses whatever model is selected in the UI."""
+    if not SMOLAGENTS_OK:
+        raise RuntimeError("smolagents is not installed. Run: pip install 'smolagents[openai]'")
+    return OpenAIServerModel(
+        model_id=model_name,
+        api_base=f"{_ollama_host}/v1",
+        api_key="ollama",   # Ollama ignores the key but the OpenAI client requires one
+    )
+
+
+def build_agent_task(question: str, think: bool) -> str:
+    """Compose the full task text given to the agent: schema, SQL rules, answer
+    style, and the user's question."""
+    prefix = "" if think else "/no_think\n"
+    return f"""{prefix}=== IMPORTANT INSTRUCTIONS ===
+
+1. OFF-TOPIC FILTER:
+   If the user's question is clearly NOT about the DICOM database (e.g., "Hi",
+   "Hello", "What's the weather?"), respond politely WITHOUT using sql_query.
+
+2. IMAGE / SEQUENCE REQUESTS:
+   When the user asks to "show", "display", or "see" images, sequences, or cases:
+   - ALWAYS include source_path in your SELECT — the UI renders thumbnail
+     previews automatically from .dcm file paths in the results table.
+   - Also include: frame_count, series_description, modality, study_date,
+     accession_number so the user gets useful context alongside the images.
+
+3. CLINICAL FINDING WORKFLOWS:
+   When the user asks about a clinical procedure or finding (e.g., "TIPS",
+   "stenosis", "embolization", "angioplasty"), follow this multi-step approach:
+
+   Step 1 — SEARCH REPORTS: Find matching radiology reports first.
+     SELECT accession_number, SUBSTR(radrpt, 1, 200) AS radrpt_excerpt
+     FROM radiology_reports
+     WHERE LOWER(radrpt) LIKE '%tips%'
+     LIMIT 5
+
+   Step 2 — FETCH SEQUENCES: Use the accession numbers from Step 1 to query
+     DICOM sequences, including source_path for image display.
+     SELECT source_path, frame_count, series_description, modality,
+            study_date, accession_number
+     FROM dicom_files
+     WHERE accession_number IN ('acc1', 'acc2', ...)
+       AND parse_error IS NULL
+     ORDER BY CAST(frame_count AS INTEGER) DESC
+     LIMIT 20
+
+   This two-step approach (reports → accessions → sequences) is the correct
+   workflow for any clinical finding query.
+
+==============================
+
+{SCHEMA_CONTEXT}
+
+You are a clinical informatics assistant answering questions about a DICOM
+angiography database using the sql_query tool. Some questions need more than
+one query to answer correctly — explore the data first if you're unsure about
+something (e.g. check distinct values, run a small LIMIT 5 sample), then
+refine. Use the tool as many times as you need, and recover from SQL errors by
+fixing the query and trying again, before giving your final answer.
+
+{SYNTHESIS_SYSTEM}
+
+Question: {question}
+
+When you are confident in your answer, call final_answer with the plain-text
+response described above.
+"""
+
+
+def run_nl_query_agent(question: str, think: bool, model_name: str) -> Any:
+    """
+    Run a smolagents ToolCallingAgent for NL→SQL query resolution.
+
+    Emits rich SSE-compatible event dictionaries so the frontend can show
+    exactly what the agent is doing at every step — which SQL it tried,
+    how many rows came back, whether it hit an error, and what it's
+    thinking.  This replaces the previous "black box" approach where the
+    agent ran silently and only the final answer was visible.
+
+    New events (in addition to the original protocol):
+        agent_start   — agent is initializing (model, max_steps)
+        agent_step    — one sql_query tool call completed (step#, sql,
+                        row_count, error, max_steps)
+
+    Original events (preserved for frontend compatibility):
+        sql_done / sql_repaired, exec_start, exec_done,
+        synth_start, answer, error
+    """
+    event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+    call_count = {"n": 0}
+
+    def on_query_step(
+        sql: str,
+        rows: Optional[List[Dict[str, Any]]],
+        row_count: int,
+        error: Optional[str] = None,
+    ) -> None:
+        """Callback invoked after each sql_query tool call."""
+        call_count["n"] += 1
+
+        # ── NEW: rich step event so the UI can show a step-by-step log ──
+        event_queue.put({
+            "event":     "agent_step",
+            "step":      call_count["n"],
+            "max_steps": _agent_max_steps,
+            "sql":       sql,
+            "row_count": row_count,
+            "error":     error,
+        })
+
+        # ── Original events (kept for backward compat) ──────────────────
+        event_queue.put({
+            "event": "sql_done" if call_count["n"] == 1 else "sql_repaired",
+            "sql": sql,
+        })
+        event_queue.put({"event": "exec_start"})
+        event_queue.put({
+            "event": "exec_done",
+            "rows": rows or [],
+            "row_count": row_count,
+        })
+
+    result_holder: Dict[str, Optional[str]] = {"answer": None, "error": None}
+
+    def worker() -> None:
+        """Background thread running the smolagents agent."""
+        try:
+            # ── Notify UI that the agent is starting ────────────────────
+            event_queue.put({
+                "event":     "agent_start",
+                "model":     model_name,
+                "max_steps": _agent_max_steps,
+            })
+
+            model = get_smolagents_model(model_name)
+            tool  = SQLQueryTool(on_step_callback=on_query_step)
+            agent = ToolCallingAgent(
+                tools=[tool], model=model, max_steps=_agent_max_steps,
+            )
+            task = build_agent_task(question, think)
+
+            log.info(
+                f"Agent starting: model={model_name}, "
+                f"max_steps={_agent_max_steps}, q={question!r:.80}"
+            )
+
+            raw_answer = agent.run(task)
+            answer = re.sub(
+                r"<think>.*?</think>", "", str(raw_answer), flags=re.DOTALL,
+            ).strip()
+            result_holder["answer"] = answer
+
+            log.info(
+                f"Agent finished: {call_count['n']} tool call(s), "
+                f"answer length={len(answer)}"
+            )
+
+        except Exception as exc:
+            tb = traceback.format_exc()
+            log.error(f"Agent execution failed:\n{tb}")
+            result_holder["error"] = f"{exc}\n\n--- traceback ---\n{tb}"
+        finally:
+            event_queue.put({"event": "__agent_done__"})
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    # ── Yield events as the agent emits them ────────────────────────────
+    while True:
+        item = event_queue.get()
+        if item["event"] == "__agent_done__":
+            break
+        yield item
+
+    # ── Final outcome ───────────────────────────────────────────────────
+    if result_holder["error"]:
+        yield {
+            "event":      "error",
+            "message":    f"Agent failed: {result_holder['error']}",
+            "tool_calls": call_count["n"],
+        }
+    else:
+        yield {"event": "synth_start"}
+        final_answer = (
+            result_holder["answer"]
+            or "(The agent did not produce an answer.)"
+        )
+        yield {"event": "answer", "text": final_answer}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ChromaDB / image helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_chroma_collection():
-    """Lazy-initialise and return the ChromaDB collection, or None on failure."""
+def get_chroma_collection() -> Optional[Any]:
+    """
+    Get or lazy-initialize the ChromaDB collection.
+    
+    Uses PersistentClient with cosine distance metric. The collection should have been
+    pre-indexed with RAD-DINO embeddings during image ingestion. We do NOT pass an
+    embedding_function here because the collection was created with a specific function
+    during ingestion; we manually compute embeddings via RAD-DINO and pass them to
+    the query as query_embeddings parameter.
+    
+    Returns:
+        ChromaDB collection object if available, else None
+    """
     global _chroma_collection
     if _chroma_collection is not None:
         return _chroma_collection
@@ -506,11 +933,6 @@ def get_chroma_collection():
         return None
     try:
         client = _chromadb_mod.PersistentClient(path=str(_chromadb_path))
-        # Do NOT pass embedding_function here — the collection may have been
-        # created with a different function (e.g. OpenCLIP default).
-        # We always compute embeddings manually via RAD-DINO and pass them
-        # as query_embeddings= at query time, so ChromaDB never needs to
-        # embed anything itself.
         _chroma_collection = client.get_or_create_collection(
             name=CHROMA_COLLECTION,
             metadata={"hnsw:space": "cosine"},
@@ -525,25 +947,45 @@ def get_chroma_collection():
         return None
 
 
-def decode_image_to_uint8_rgb(b64_str: str):
-    """Decode a base64 image string to a uint8 RGB numpy array (HxWx3)."""
+def decode_image_to_uint8_rgb(b64_str: str) -> np.ndarray:
+    """
+    Decode base64-encoded image to uint8 RGB numpy array.
+    
+    Args:
+        b64_str: Base64-encoded image string
+    
+    Returns:
+        Numpy array with shape (height, width, 3) and dtype uint8
+    
+    Raises:
+        Exception: On base64 decode or image format errors
+    """
     img_bytes = base64.b64decode(b64_str)
     img = PilImage.open(io.BytesIO(img_bytes)).convert("RGB")
     return np.array(img, dtype=np.uint8)
 
 
-def enrich_results_from_sqlite(results: list[dict]) -> list[dict]:
+def enrich_results_from_sqlite(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Join ChromaDB hit metadata with SQLite to add study_date, series_description,
-    patient demographics, and a radiology report excerpt (first 400 chars).
-    Non-fatal: returns original results if any SQLite error occurs.
+    Enrich ChromaDB search results with SQLite metadata and report excerpts.
+    
+    Adds study_date, series_description, modality, patient demographics, and
+    first 400 characters of the radiology report for each result by accession number.
+    
+    Non-fatal: returns original results if enrichment fails.
+    
+    Args:
+        results: ChromaDB search result dicts with accession_number keys
+    
+    Returns:
+        Results with added enrichment fields
     """
     accessions = list({r["accession_number"] for r in results if r.get("accession_number")})
     
     if not accessions:
         return results
 
-    enrichment_map: dict[str, dict] = {}
+    enrichment_map: Dict[str, Dict[str, Any]] = {}
     try:
         placeholders = ", ".join(["?"] * len(accessions))
         with _lock:
@@ -573,15 +1015,15 @@ def enrich_results_from_sqlite(results: list[dict]) -> list[dict]:
         for row in rows:
             acc = row["accession_number"]
             enrichment_map[acc] = {
-                "study_date":         row["study_date"]        or "",
+                "study_date": row["study_date"] or "",
                 "series_description": row["series_description"] or "",
-                "modality":           row["modality"]           or "",
-                "patient_age":        row["patient_age"]        or "",
-                "patient_sex":        row["patient_sex"]        or "",
-                "radrpt_excerpt":     row["radrpt_excerpt"]     or "",
+                "modality": row["modality"] or "",
+                "patient_age": row["patient_age"] or "",
+                "patient_sex": row["patient_sex"] or "",
+                "radrpt_excerpt": row["radrpt_excerpt"] or "",
             }
     except Exception as exc:
-        log.warning(f"SQLite enrichment failed: {exc}")
+        log.warning(f"SQLite enrichment failed (non-fatal): {exc}")
 
     for r in results:
         acc = r.get("accession_number")
@@ -597,53 +1039,61 @@ def load_dicom_frame_as_b64(
     thumb_px: int = 320,
 ) -> Optional[str]:
     """
-    Open a DICOM file, extract the frame at *frame_index*, normalise to uint8
-    RGB, resize so the longest side is at most thumb_px, and return a
-    base64-encoded PNG string.
-
-    Returns None on any failure (missing file, corrupt data, missing deps).
+    Extract and encode a DICOM frame as base64-encoded PNG.
+    
+    Opens the DICOM file, extracts the frame at frame_index, normalises pixel values
+    to 0–255 uint8 RGB, optionally inverts for MONOCHROME1, resizes to max dimension
+    thumb_px, and encodes as PNG.
+    
+    Args:
+        source_path: Path to .dcm file
+        frame_index: Frame number to extract (0-indexed)
+        thumb_px: Maximum dimension in pixels for thumbnail resize
+    
+    Returns:
+        Base64-encoded PNG string, or None on any error
     """
     if not IMAGE_DEPS_OK or not PYDICOM_OK:
         return None
     try:
-        ds          = _pydicom_mod.dcmread(str(source_path), force=False)
+        ds = _pydicom_mod.dcmread(str(source_path), force=False)
         photometric = str(getattr(ds, "PhotometricInterpretation", "")).upper()
-        pixels      = ds.pixel_array   # loads pixel data
+        pixels = ds.pixel_array
 
-        # ── Normalise array shape → extract target frame ─────────────────────
+        # ── Normalise array shape → extract target frame ──────────────
         if pixels.ndim == 2:
-            frame = pixels                          # single grayscale
+            frame = pixels  # single grayscale
         elif pixels.ndim == 3:
             if pixels.shape[2] in (3, 4):
-                frame = pixels                      # single RGB/RGBA (H,W,C)
+                frame = pixels  # single RGB/RGBA (H,W,C)
             else:
-                fi    = min(max(0, frame_index), pixels.shape[0] - 1)
-                frame = pixels[fi]                  # multi-frame grayscale (N,H,W)
+                fi = min(max(0, frame_index), pixels.shape[0] - 1)
+                frame = pixels[fi]  # multi-frame grayscale (N,H,W)
         elif pixels.ndim == 4:
-            fi    = min(max(0, frame_index), pixels.shape[0] - 1)
-            frame = pixels[fi]                      # multi-frame colour (N,H,W,C)
+            fi = min(max(0, frame_index), pixels.shape[0] - 1)
+            frame = pixels[fi]  # multi-frame colour (N,H,W,C)
         else:
             return None
 
-        # ── Convert to uint8 RGB ─────────────────────────────────────────────
+        # ── Convert to uint8 RGB ──────────────────────────────────────
         if frame.ndim == 2:
-            f      = frame.astype(np.float32)
+            f = frame.astype(np.float32)
             lo, hi = f.min(), f.max()
-            f      = (f - lo) / (hi - lo + 1e-8) * 255.0
-            f      = f.astype(np.uint8)
+            f = (f - lo) / (hi - lo + 1e-8) * 255.0
+            f = f.astype(np.uint8)
             if "MONOCHROME1" in photometric:
-                f = 255 - f         # invert: high value = dark
+                f = 255 - f  # invert: high value = dark
             rgb = np.stack([f, f, f], axis=-1)
         elif frame.ndim == 3:
-            f      = frame.astype(np.float32)
+            f = frame.astype(np.float32)
             lo, hi = f.min(), f.max()
-            f      = (f - lo) / (hi - lo + 1e-8) * 255.0
-            f      = f.astype(np.uint8)
-            rgb    = f[:, :, :3]    # drop alpha channel if present
+            f = (f - lo) / (hi - lo + 1e-8) * 255.0
+            f = f.astype(np.uint8)
+            rgb = f[:, :, :3]  # drop alpha channel if present
         else:
             return None
 
-        # ── Resize and encode ────────────────────────────────────────────────
+        # ── Resize and encode ──────────────────────────────────────────
         img = PilImage.fromarray(rgb, "RGB")
         img.thumbnail((thumb_px, thumb_px), PilImage.LANCZOS)
         buf = io.BytesIO()
@@ -660,20 +1110,33 @@ def load_dicom_frame_as_b64(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/api/stats", methods=["GET"])
-def api_stats():
+def api_stats() -> Dict[str, Any]:
+    """
+    GET /api/stats
+    
+    Returns database statistics: instance count, unique patients, studies, series,
+    error count, modalities breakdown, and radiology report linkage coverage.
+    """
     try:
         return jsonify(get_db_stats())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception as exc:
+        log.exception("GET /api/stats failed")
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/chroma-stats", methods=["GET"])
-def api_chroma_stats():
-    """Return ChromaDB collection size and sequence count (not cached)."""
+def api_chroma_stats() -> Dict[str, Any]:
+    """
+    GET /api/chroma-stats
+    
+    Returns ChromaDB collection statistics: total embedded frames, ingested sequences,
+    collection name, and filesystem path. Returns 'available': False if dependencies
+    or collection unavailable.
+    """
     if not IMAGE_DEPS_OK:
         return jsonify({
             "available": False,
-            "error": "Image deps not installed (chromadb, Pillow, numpy)",
+            "error": "Image dependencies not installed (chromadb, Pillow, numpy)",
         })
     try:
         col = get_chroma_collection()
@@ -681,7 +1144,7 @@ def api_chroma_stats():
             return jsonify({"available": False, "count": 0, "sequences": 0})
 
         count = col.count()
-        seq_count = None
+        seq_count: Optional[int] = None
         try:
             with _lock:
                 con = open_db()
@@ -691,125 +1154,81 @@ def api_chroma_stats():
                     ).fetchone()[0]
                 finally:
                     con.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug(f"Could not fetch sequence count: {exc}")
 
         return jsonify({
-            "available":  True,
-            "count":      count,
-            "sequences":  seq_count,
+            "available": True,
+            "count": count,
+            "sequences": seq_count,
             "collection": CHROMA_COLLECTION,
-            "path":       str(_chromadb_path),
+            "path": str(_chromadb_path),
         })
     except Exception as exc:
+        log.exception("GET /api/chroma-stats failed")
         return jsonify({"available": False, "error": str(exc)})
 
 
 @app.route("/api/query", methods=["POST"])
-def api_query():
+def api_query() -> Response:
     """
-    POST { "question": "...", "think": true, "model": "qwen3:8b" }
-    Returns streaming SSE events for the NL→SQL→synthesis pipeline.
+    POST /api/query
+    
+    Agentic NL→SQL query resolution via smolagents ToolCallingAgent.
+    
+    Request body:
+        {
+            "question": "Natural language query",
+            "think": true/false,
+            "model": "qwen3:1.7b" or other Ollama model
+        }
+    
+    Returns Server-Sent Events (SSE) stream with events:
+        - sql_start: Agent beginning SQL generation
+        - sql_done/sql_repaired: SQL statement ready
+        - exec_start/exec_done: Query execution and results
+        - synth_start: Answer synthesis in progress
+        - answer: Final natural-language response
+        - done: Query completed with elapsed_ms
+        - error: Error message if any step fails
+    
+    The agent can call sql_query tool multiple times to explore, recover from
+    errors, and refine its answer before responding. All SSE event names match
+    the original single-shot pipeline for frontend compatibility.
     """
-    data     = request.get_json(force=True)
+    data = request.get_json(force=True)
     question = data.get("question", "").strip()
-    think    = data.get("think", _think)
-    model    = data.get("model", None)
+    think = data.get("think", _think)
+    model = (data.get("model") or DEFAULT_MODEL).strip()
 
     if not question:
+        log.warning("POST /api/query: missing 'question' parameter")
         return jsonify({"error": "question required"}), 400
 
-    if model:
-        set_model(model)
+    if not SMOLAGENTS_OK:
+        log.error("POST /api/query: smolagents not installed")
+        return jsonify({
+            "error": "smolagents is not installed on the server. Run: pip install 'smolagents[openai]'"
+        }), 503
 
     def generate():
         t0 = time.time()
 
-        def emit(obj: dict) -> str:
+        def emit(obj: Dict[str, Any]) -> str:
             return "data: " + json.dumps(obj) + "\n\n"
 
-        # Step 1: SQL generation
         yield emit({"event": "sql_start"})
-        try:
-            raw_sql = llm_call([
-                {"role": "system", "content": SCHEMA_CONTEXT},
-                {"role": "user",   "content": f"Convert this question to a SQLite SQL query:\n\n{question}"},
-            ], think=think)
-            sql = clean_sql(raw_sql)
-        except Exception as e:
-            yield emit({"event": "error", "message": f"SQL generation failed: {e}"})
-            return
 
-        yield emit({"event": "sql_done", "sql": sql})
-
-        # Step 2: Execute SQL (with retry / repair)
-        yield emit({"event": "exec_start"})
-        rows       = None
-        last_error = ""
-        for attempt in range(1 + MAX_RETRIES):
-            try:
-                rows = run_sql_query(sql)
+        had_error = False
+        for evt in run_nl_query_agent(question, think, model):
+            yield emit(evt)
+            if evt.get("event") == "error":
+                had_error = True
                 break
-            except Exception as exc:
-                last_error = str(exc)
-                log.warning(f"SQL exec error (attempt {attempt+1}): {exc}")
-                if attempt < MAX_RETRIES:
-                    try:
-                        repair_raw = llm_call([
-                            {"role": "system", "content": ERROR_REPAIR_SYSTEM},
-                            {"role": "user",   "content": (
-                                f"Original question: {question}\n\n"
-                                f"Failed SQL:\n{sql}\n\n"
-                                f"SQLite error: {last_error}\n\n"
-                                f"Schema:\n{SCHEMA_CONTEXT}"
-                            )},
-                        ], think=think)
-                        sql = clean_sql(repair_raw)
-                        yield emit({"event": "sql_repaired", "sql": sql})
-                    except Exception as re_exc:
-                        log.warning(f"Repair failed: {re_exc}")
 
-        if rows is None:
-            yield emit({"event": "error",
-                        "message": f"SQL execution failed after {MAX_RETRIES} retries: {last_error}"})
-            return
-
-        def serialise(v):
-            if v is None:
-                return None
-            try:
-                json.dumps(v)
-                return v
-            except Exception:
-                return str(v)
-
-        clean_rows = [{k: serialise(v) for k, v in row.items()} for row in rows]
-        yield emit({"event": "exec_done", "rows": clean_rows, "row_count": len(clean_rows)})
-
-        # Step 3: Synthesis
-        yield emit({"event": "synth_start"})
-        try:
-            display   = clean_rows[:MAX_ROWS_FOR_SYNTHESIS]
-            truncated = len(clean_rows) > MAX_ROWS_FOR_SYNTHESIS
-            result_str = json.dumps(display, indent=2, default=str)
-            if truncated:
-                result_str += f"\n\n[... {len(clean_rows) - MAX_ROWS_FOR_SYNTHESIS} additional rows truncated]"
-
-            answer = llm_call([
-                {"role": "system", "content": SYNTHESIS_SYSTEM},
-                {"role": "user",   "content": (
-                    f"Question: {question}\n\n"
-                    f"SQL executed:\n{sql}\n\n"
-                    f"Results ({len(clean_rows)} total rows):\n{result_str}"
-                )},
-            ], think=False)
-        except Exception as e:
-            yield emit({"event": "error", "message": f"Synthesis failed: {e}"})
-            return
-
-        elapsed = int((time.time() - t0) * 1000)
-        yield emit({"event": "answer", "text": answer})
-        yield emit({"event": "done",   "elapsed_ms": elapsed})
+        if not had_error:
+            elapsed = int((time.time() - t0) * 1000)
+            yield emit({"event": "done", "elapsed_ms": elapsed})
 
     return Response(
         generate(),
@@ -819,7 +1238,7 @@ def api_query():
 
 
 @app.route("/api/image-query", methods=["POST"])
-def api_image_query():
+def api_image_query() -> Response:
     """
     POST {
       "image":     "<base64-encoded image>",
@@ -1021,19 +1440,28 @@ def api_image_query():
 
 
 @app.route("/api/thumbnail", methods=["GET"])
-def api_thumbnail():
+def api_thumbnail() -> Response:
     """
     GET /api/thumbnail?path=<file_path>&frame=<frame_index>
-    Returns a binary PNG thumbnail — suitable for use directly in <img src="...">.
+    
+    Extract and return a thumbnail (320px max dimension) PNG from a DICOM frame.
+    
+    Parameters:
+        path: Full path to .dcm file (required)
+        frame: Frame index (0-indexed, default 0)
+    
+    Returns:
+        Binary PNG image (image/png) or 404 if frame cannot be extracted
     """
-    path = request.args.get("path", "")
+    path = request.args.get("path", "").strip()
+    if not path:
+        log.warning("GET /api/thumbnail: missing 'path' parameter")
+        return jsonify({"error": "path required"}), 400
+
     try:
         frame_index = int(request.args.get("frame", 0))
     except ValueError:
         frame_index = 0
-
-    if not path:
-        return jsonify({"error": "path required"}), 400
 
     thumbnail_b64 = load_dicom_frame_as_b64(path, frame_index, thumb_px=320)
     if thumbnail_b64:
@@ -1044,23 +1472,33 @@ def api_thumbnail():
             headers={"Cache-Control": "public, max-age=3600"},
         )
     else:
+        log.debug(f"GET /api/thumbnail: frame not extracted [{path}:{frame_index}]")
         return Response(status=404)
 
 
 @app.route("/api/frame", methods=["GET"])
-def api_frame():
+def api_frame() -> Response:
     """
     GET /api/frame?path=<file_path>&frame=<frame_index>
-    Returns a binary PNG at full resolution — suitable for <img src="..."> in the lightbox.
+    
+    Extract and return a full-resolution PNG from a DICOM frame (lightbox display).
+    
+    Parameters:
+        path: Full path to .dcm file (required)
+        frame: Frame index (0-indexed, default 0)
+    
+    Returns:
+        Binary PNG image (image/png) or 404 if frame cannot be extracted
     """
-    path = request.args.get("path", "")
+    path = request.args.get("path", "").strip()
+    if not path:
+        log.warning("GET /api/frame: missing 'path' parameter")
+        return jsonify({"error": "path required"}), 400
+
     try:
         frame_index = int(request.args.get("frame", 0))
     except ValueError:
         frame_index = 0
-
-    if not path:
-        return jsonify({"error": "path required"}), 400
 
     frame_b64 = load_dicom_frame_as_b64(path, frame_index, thumb_px=2048)
     if frame_b64:
@@ -1071,40 +1509,75 @@ def api_frame():
             headers={"Cache-Control": "public, max-age=3600"},
         )
     else:
+        log.debug(f"GET /api/frame: frame not extracted [{path}:{frame_index}]")
         return Response(status=404)
 
 
 @app.route("/api/model", methods=["POST"])
-def api_set_model():
-    data  = request.get_json(force=True)
+def api_set_model() -> Dict[str, Any]:
+    """
+    POST /api/model
+    
+    Update the Ollama model used for NL→SQL agent and synthesis.
+    
+    Request body:
+        {"model": "qwen3:14b" or other Ollama model identifier}
+    
+    Returns:
+        {"ok": true, "model": "<model_name>"}
+    """
+    data = request.get_json(force=True)
     model = data.get("model", "").strip()
     if not model:
+        log.warning("POST /api/model: missing 'model' parameter")
         return jsonify({"error": "model required"}), 400
     set_model(model)
+    log.info(f"POST /api/model: switched to {model}")
     return jsonify({"ok": True, "model": model})
 
 
 @app.route("/api/sql", methods=["POST"])
-def api_run_sql():
-    """Run arbitrary SQL directly (for advanced users)."""
+def api_run_sql() -> Dict[str, Any]:
+    """
+    POST /api/sql
+    
+    Execute arbitrary read-only SQL directly against the DICOM database.
+    For advanced/debugging use; not used by the standard agentic pipeline.
+    
+    Request body:
+        {"sql": "SELECT ... FROM dicom_files WHERE ..."}
+    
+    Returns:
+        {"rows": [...], "row_count": <int>} or error
+    """
     data = request.get_json(force=True)
-    sql  = data.get("sql", "").strip()
+    sql = data.get("sql", "").strip()
     if not sql:
+        log.warning("POST /api/sql: missing 'sql' parameter")
         return jsonify({"error": "sql required"}), 400
     try:
         rows = run_sql_query(sql)
-        def serialise(v):
-            if v is None: return None
-            try: json.dumps(v); return v
-            except: return str(v)
-        clean_rows = [{k: serialise(v) for k, v in row.items()} for row in rows]
+
+        def serialize_value(v: Any) -> Any:
+            """Safely serialize a value to JSON-compatible format."""
+            if v is None:
+                return None
+            try:
+                json.dumps(v)
+                return v
+            except Exception:
+                return str(v)
+
+        clean_rows = [{k: serialize_value(v) for k, v in row.items()} for row in rows]
         return jsonify({"rows": clean_rows, "row_count": len(clean_rows)})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    except Exception as exc:
+        log.exception("POST /api/sql: execution failed")
+        return jsonify({"error": str(exc)}), 400
 
 
 @app.route("/", methods=["GET"])
-def index():
+def index() -> str:
+    """Serve the main HTML UI for the DICOM query engine."""
     return HTML_PAGE
 
 
@@ -1247,6 +1720,28 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 .data-table tr:nth-child(even) td{background:rgba(255,255,255,.015)}
 .v-null{color:var(--text3);font-style:italic}.v-num{color:#79c0ff}.v-path{color:var(--purple);font-size:10.5px}.v-id{color:var(--teal);font-size:10.5px}.v-report{color:var(--report);font-size:10.5px;font-style:italic}
 .tbl-footer{padding:8px 14px;font-size:10px;font-family:var(--mono);color:var(--text3);border-top:1px solid var(--border);background:var(--bg3);display:flex;align-items:center;gap:8px}
+
+/* ── Agent step log ── */
+.agent-steps{padding:10px 14px;font-family:var(--mono);font-size:11.5px}
+.agent-steps-empty{color:var(--text3);font-style:italic;padding:10px 0}
+.agent-step-item{border-left:2px solid var(--border);padding:6px 0 6px 12px;margin-bottom:8px;transition:border-color .2s}
+.agent-step-item:last-child{margin-bottom:0}
+.agent-step-item.step-ok{border-left-color:var(--green)}
+.agent-step-item.step-err{border-left-color:var(--red)}
+.step-hdr{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.step-badge{font-size:9px;font-weight:700;padding:1px 6px;border-radius:100px;letter-spacing:.3px;text-transform:uppercase}
+.step-ok .step-badge{background:rgba(63,185,80,.12);color:var(--green);border:1px solid rgba(63,185,80,.25)}
+.step-err .step-badge{background:rgba(248,81,73,.12);color:var(--red);border:1px solid rgba(248,81,73,.25)}
+.step-meta{font-size:10px;color:var(--text3)}
+.step-sql{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 10px;margin:4px 0;overflow-x:auto;white-space:pre-wrap;word-break:break-all;font-size:11px;line-height:1.6;color:#c9d1d9}
+.step-result{font-size:10.5px;color:var(--green);margin-top:2px}
+.step-error-msg{font-size:10.5px;color:var(--red);margin-top:2px;white-space:pre-wrap}
+
+/* ── DICOM thumbnails in table cells ── */
+.dcm-cell{display:flex;align-items:center;gap:8px;min-width:200px}
+.tbl-thumb{width:52px;height:52px;object-fit:cover;border-radius:5px;border:1px solid var(--border);cursor:pointer;transition:transform .15s,border-color .15s,box-shadow .15s;background:var(--bg);flex-shrink:0}
+.tbl-thumb:hover{transform:scale(1.15);border-color:var(--accent);box-shadow:0 0 10px rgba(88,166,255,.3)}
+.tbl-thumb-err{width:52px;height:52px;border-radius:5px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--text3);font-family:var(--mono);background:var(--bg);flex-shrink:0}
 
 /* ── Image result card (ChromaDB) ── */
 .img-result-card{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden}
@@ -1476,6 +1971,7 @@ textarea.nl-input::placeholder{color:var(--text3)}
     <div class="hdr-right">
       <div class="status-pill"><span class="status-dot"></span><span id="statusTxt">connecting…</span></div>
       <select class="model-select" id="modelSelect" onchange="onModelChange()">
+        <option>qwen3:1.7b</option>
         <option>qwen3:8b</option>
         <option>qwen3:14b</option>
         <option>qwen3:32b</option>
@@ -1894,7 +2390,13 @@ function renderTable(rows){
     const v=r[c];
     if(v===null||v===undefined)return `<td><span class="v-null">null</span></td>`;
     const s=String(v);
-    if(c==='radrpt')return `<td><span class="v-report" title="${esc(s)}">${esc(s.length>80?s.slice(0,78)+'…':s)}</span></td>`;
+    if(c==='radrpt'||c==='radrpt_excerpt')return `<td><span class="v-report" title="${esc(s)}">${esc(s.length>80?s.slice(0,78)+'…':s)}</span></td>`;
+    if(s.toLowerCase().endsWith('.dcm')&&s.startsWith('/')){
+      const thumbUrl=API+'/api/thumbnail?path='+encodeURIComponent(s)+'&frame=0';
+      const frameUrl=API+'/api/frame?path='+encodeURIComponent(s)+'&frame=0';
+      const shortPath=s.length>40?'…'+s.slice(-38):s;
+      return `<td><div class="dcm-cell"><img src="${thumbUrl}" class="tbl-thumb" loading="lazy" onclick="openLightbox('${frameUrl}','${esc(s)}')" onerror="this.outerHTML='<span class=\\'tbl-thumb-err\\'>no px</span>'"/><span class="v-path" title="${esc(s)}">${esc(shortPath)}</span></div></td>`;
+    }
     if(s.startsWith('/'))return `<td><span class="v-path" title="${esc(s)}">${esc(s.length>50?'…'+s.slice(-48):s)}</span></td>`;
     if(/^\d{8}$/.test(s)&&parseInt(s)>19000101)return `<td><span class="v-num">${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}</span></td>`;
     if(s.length>32&&s.includes('.'))return `<td><span class="v-id" title="${esc(s)}">${esc(s.slice(0,28)+'…')}</span></td>`;
@@ -1902,6 +2404,26 @@ function renderTable(rows){
     return `<td>${esc(s.length>60?s.slice(0,58)+'…':s)}</td>`;
   }).join('')}</tr>`).join('')}</tbody>`;
   return `<div class="tbl-scroll"><table class="data-table">${thead}${tbody}</table></div>`;
+}
+
+function renderSteps(steps){
+  if(!steps||!steps.length)return '<div class="agent-steps"><div class="agent-steps-empty">No tool calls recorded — the agent may have failed before calling sql_query. Check the error message in the Answer tab.</div></div>';
+  let html='<div class="agent-steps">';
+  steps.forEach(s=>{
+    const cls=s.error?'step-err':'step-ok';
+    const badge=s.error?'✗ error':'✓ ok';
+    html+=`<div class="agent-step-item ${cls}">`;
+    html+=`<div class="step-hdr"><span class="step-badge">${badge}</span><span class="step-meta">Step ${s.step} / ${s.max_steps}</span></div>`;
+    html+=`<div class="step-sql">${esc(s.sql)}</div>`;
+    if(s.error){
+      html+=`<div class="step-error-msg">${esc(s.error)}</div>`;
+    } else {
+      html+=`<div class="step-result">${s.row_count} row${s.row_count!==1?'s':''} returned</div>`;
+    }
+    html+=`</div>`;
+  });
+  html+='</div>';
+  return html;
 }
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -1952,14 +2474,26 @@ async function handleTextSend(question){
   setLoading(true);
   inp.value=''; inp.style.height='auto';
   addMsg('msg-user',`<div class="bubble bubble-user">${esc(question)}</div>`);
-  const thinkEl=addMsg('msg-bot',`<div class="thinking"><div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div><span id="thinkTxt">Generating SQL…</span></div>`);
+  const thinkEl=addMsg('msg-bot',`<div class="thinking"><div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div><span id="thinkTxt">Initializing agent…</span></div>`);
   const thinkTxt=thinkEl.querySelector('#thinkTxt');
   setStatus('busy','thinking…');
   const think=document.getElementById('thinkToggle').checked;
   const model=document.getElementById('modelSelect').value;
   let sql='',rows=[],rowCount=0,answer='',elapsed=0;
+  let agentSteps=[];   // ← NEW: track every tool call
+  let allSql=[];       // ← NEW: track every SQL the agent tried
   try{
     const resp=await fetch(`${API}/api/query`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,think,model}),signal:_abortController.signal});
+
+    /* ── NEW: catch non-SSE error responses (503, 400, etc.) ── */
+    if(!resp.ok){
+      let errMsg=`Server returned HTTP ${resp.status}`;
+      try{const errData=await resp.json();errMsg=errData.error||errMsg;}catch{}
+      thinkEl.remove();
+      addMsg('msg-bot',`<div class="bubble-error">Error: ${esc(errMsg)}</div>`);
+      setLoading(false);setStatus('error','error');return;
+    }
+
     const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
     while(true){
       const{done,value}=await reader.read();if(done)break;
@@ -1969,12 +2503,27 @@ async function handleTextSend(question){
         if(!line.startsWith('data: '))continue;
         let evt;try{evt=JSON.parse(line.slice(6));}catch{continue;}
         switch(evt.event){
-          case 'sql_start':    thinkTxt.textContent='Generating SQL…';break;
-          case 'sql_done':     sql=evt.sql;thinkTxt.textContent='Executing query…';break;
-          case 'sql_repaired': sql=evt.sql;thinkTxt.textContent='Repairing SQL…';break;
+
+          /* ── NEW: agent lifecycle events ── */
+          case 'agent_start':
+            thinkTxt.textContent=`Agent started (${evt.model}, max ${evt.max_steps} steps)…`;
+            break;
+          case 'agent_step':
+            agentSteps.push(evt);
+            if(evt.error){
+              thinkTxt.textContent=`Step ${evt.step}/${evt.max_steps}: SQL error → retrying…`;
+            } else {
+              thinkTxt.textContent=`Step ${evt.step}/${evt.max_steps}: ${evt.row_count} row${evt.row_count!==1?'s':''} returned`;
+            }
+            break;
+
+          /* ── Original events ── */
+          case 'sql_start':    thinkTxt.textContent='Agent is thinking…';break;
+          case 'sql_done':     sql=evt.sql;allSql.push(evt.sql);thinkTxt.textContent='Executing query…';break;
+          case 'sql_repaired': sql=evt.sql;allSql.push(evt.sql);thinkTxt.textContent=`Refining SQL (attempt ${allSql.length})…`;break;
           case 'exec_start':   thinkTxt.textContent='Running query…';break;
-          case 'exec_done':    rows=evt.rows;rowCount=evt.row_count;thinkTxt.textContent='Synthesising…';break;
-          case 'synth_start':  thinkTxt.textContent='Synthesising answer…';break;
+          case 'exec_done':    rows=evt.rows;rowCount=evt.row_count;thinkTxt.textContent='Waiting for agent…';break;
+          case 'synth_start':  thinkTxt.textContent='Synthesizing answer…';break;
           case 'answer':       answer=evt.text;break;
           case 'done':         elapsed=evt.elapsed_ms;break;
           case 'error':
@@ -1993,6 +2542,11 @@ async function handleTextSend(question){
     panes+=`<div class="rc-pane" id="${id}-sql"><div class="sql-block">${colorSQL(sql)}</div></div>`;
     tabs+=`<button class="rc-tab" onclick="switchRcTab(this,'${id}-tbl')">Table <span style="font-size:9px;opacity:.7">${rowCount}</span></button>`;
     panes+=`<div class="rc-pane" id="${id}-tbl">${renderTable(rows)}${rowCount?`<div class="tbl-footer"><span>${rowCount} row${rowCount!==1?'s':''}</span><button class="copy-btn" onclick="copySQL('${id}')">copy SQL</button><span style="margin-left:auto">${elapsedSec}s</span></div>`:''}</div>`;
+
+    /* ── NEW: Steps tab showing every tool call the agent made ── */
+    tabs+=`<button class="rc-tab" onclick="switchRcTab(this,'${id}-steps')">Steps <span style="font-size:9px;opacity:.7">${agentSteps.length}</span></button>`;
+    panes+=`<div class="rc-pane" id="${id}-steps">${renderSteps(agentSteps)}</div>`;
+
     addMsg('msg-bot',`<div class="result-card"><div class="rc-tabs">${tabs}<div class="rc-meta"><span>${elapsedSec}s</span></div></div>${panes}</div>`);
     addHistory(question,rowCount,elapsed,false);
     setStatus('ready','ready');
@@ -2270,11 +2824,23 @@ function copySQL(id){
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main():
-    global _db_path, _chromadb_path, _think
+def main() -> None:
+    """
+    Main entry point: parse CLI arguments, initialize globals, and start Flask server.
+    
+    Configures the DICOM Query Server with:
+    - SQLite database path for DICOM metadata
+    - ChromaDB path for image embeddings
+    - Ollama model and API endpoint for agentic NL→SQL pipeline
+    - Optional: extended thinking mode, custom port, max agent steps
+    
+    Logs warnings for optional dependencies not installed but continues if critical
+    dependencies (flask, langchain-ollama) are present.
+    """
+    global _db_path, _chromadb_path, _think, _ollama_host, _agent_max_steps
 
     parser = argparse.ArgumentParser(
-        description="DICOM Query Web Server (NL→SQL + Image RAG with RAD-DINO)",
+        description="DICOM Query Web Server (Agentic NL→SQL via smolagents + Image RAG with RAD-DINO)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2282,33 +2848,77 @@ Examples:
   python3 dicom_query_server.py --db /data/meta.db --port 5050
   python3 dicom_query_server.py --model qwen3:14b --no-think
   python3 dicom_query_server.py --chromadb /data/AngioVision/chromadb
+  python3 dicom_query_server.py --ollama-host http://localhost:11434 --agent-max-steps 12
         """,
     )
-    parser.add_argument("--db",       type=str, default=str(DEFAULT_DB),
-                        help=f"SQLite database path (default: {DEFAULT_DB})")
-    parser.add_argument("--chromadb", type=str, default=str(DEFAULT_CHROMADB),
-                        help=f"ChromaDB persistence directory (default: {DEFAULT_CHROMADB})")
-    parser.add_argument("--port",     type=int, default=DEFAULT_PORT,
-                        help=f"Port to serve on (default: {DEFAULT_PORT})")
-    parser.add_argument("--host",     type=str, default="0.0.0.0",
-                        help="Host to bind to (default: 0.0.0.0)")
-    parser.add_argument("--model",    type=str, default=DEFAULT_MODEL,
-                        help=f"Ollama model (default: {DEFAULT_MODEL})")
-    parser.add_argument("--no-think", action="store_true",
-                        help="Disable Qwen3 thinking mode by default")
+    parser.add_argument(
+        "--db",
+        type=str,
+        default=str(DEFAULT_DB),
+        help=f"SQLite database path (default: {DEFAULT_DB})",
+    )
+    parser.add_argument(
+        "--chromadb",
+        type=str,
+        default=str(DEFAULT_CHROMADB),
+        help=f"ChromaDB persistence directory (default: {DEFAULT_CHROMADB})",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"Port to serve on (default: {DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="0.0.0.0",
+        help="Host to bind to (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f"Ollama model (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--no-think",
+        action="store_true",
+        help="Disable Qwen3 thinking mode by default",
+    )
+    parser.add_argument(
+        "--ollama-host",
+        type=str,
+        default=DEFAULT_OLLAMA_HOST,
+        help=(
+            f"Ollama server base URL, used by the smolagents NL→SQL agent "
+            f"via its OpenAI-compatible API (default: {DEFAULT_OLLAMA_HOST})"
+        ),
+    )
+    parser.add_argument(
+        "--agent-max-steps",
+        type=int,
+        default=DEFAULT_AGENT_MAX_STEPS,
+        help=(
+            f"Max sql_query tool calls the NL→SQL agent may make per "
+            f"question before it must answer (default: {DEFAULT_AGENT_MAX_STEPS})"
+        ),
+    )
     args = parser.parse_args()
 
-    _db_path       = Path(args.db)
+    _db_path = Path(args.db)
     _chromadb_path = Path(args.chromadb)
-    _think         = not args.no_think
+    _think = not args.no_think
+    _ollama_host = args.ollama_host.rstrip("/")
+    _agent_max_steps = args.agent_max_steps
 
     if not _db_path.exists():
         log.warning(f"DB not found at {_db_path} — stats will error until DB is reachable")
 
     if not RADDINO_OK:
         log.warning(
-            "RAD-DINO dependencies not installed (torch, timm, torchvision). "
-            "Install with: pip install torch torchvision timm"
+            "RAD-DINO dependencies not installed (torch, transformers). "
+            "Install with: pip install torch transformers"
         )
 
     if not IMAGE_DEPS_OK:
@@ -2319,14 +2929,25 @@ Examples:
     else:
         log.info(f"ChromaDB path  : {_chromadb_path}")
 
+    if not SMOLAGENTS_OK:
+        log.warning(
+            "smolagents not installed — /api/query (NL→SQL) will return 503. "
+            "Install with: pip install 'smolagents[openai]'"
+        )
+    else:
+        log.info(
+            f"Agentic NL→SQL : smolagents ToolCallingAgent via Ollama @ {_ollama_host} "
+            f"(max_steps={_agent_max_steps})"
+        )
+
     set_model(args.model)
 
     log.info(f"Starting DICOM Query Server on http://{args.host}:{args.port}")
-    log.info(f"  Database : {_db_path}")
-    log.info(f"  Model    : {args.model}")
-    log.info(f"  Thinking : {'ON' if _think else 'OFF'}")
-    log.info(f"  Embeddings: RAD-DINO (if available)")
-    log.info(f"  Open     : http://localhost:{args.port}")
+    log.info(f"  Database   : {_db_path}")
+    log.info(f"  Model      : {args.model}")
+    log.info(f"  Thinking   : {'ON' if _think else 'OFF'}")
+    log.info(f"  Embeddings : RAD-DINO (if available)")
+    log.info(f"  Open       : http://localhost:{args.port}")
 
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
 

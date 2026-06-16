@@ -18,7 +18,7 @@ CLUSTERS = {
         'gaps'  : [
             ('G1',  'Absence of public benchmarks'),
             ('G2',  'Generalizability & domain shift'),
-            ('G10', 'Privacy-preserving & multi-institutional learning'),
+            ('G10', 'Privacy-preserving &\nmulti-institutional learning'),
         ],
     },
     'C2': {
@@ -27,14 +27,14 @@ CLUSTERS = {
             ('G3',  'Temporal modeling & video-level analysis'),
             ('G4',  '2D constraints & 3D reconstruction'),
             ('G5',  'Annotation scarcity'),
-            ('G9',  'Class imbalance & rare pathology coverage'),
+            ('G9',  'Class imbalance & \n rare pathology coverage'),
         ],
     },
     'C3': {
         'name'  : 'Clinical Deployment',
         'gaps'  : [
             ('G6',  'clinical validation'),
-            ('G7',  'Explainability & model transparency'),
+            ('G7',  'Explainability & \n model transparency'),
             ('G8',  'Multi-modal data integration'),
         ],
     },
@@ -270,8 +270,8 @@ for k in ['C1', 'C2', 'C3', 'C4']:
                 color=COLOURS[k]['txt'], ha='left', va='top', zorder=5)
         ax.text(LX + 0.62, y_cursor, desc,
                 fontsize=FS_GAP_DESC, color='#2E2E2E',
-                ha='left', va='top', zorder=5)
-        y_cursor -= GAP_ROW_H
+                ha='left', va='top', zorder=5, linespacing=1.3)
+        y_cursor -= GAP_ROW_H * (desc.count('\n') + 1)
 
     y_cursor -= CLUSTER_GAP
 
