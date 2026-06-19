@@ -16,20 +16,19 @@ CSV behavior (FINAL)
 
 import argparse
 import json
+import os
 import sys
 import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
-import pandas as pd
 import torch
 from PIL import Image
 from tqdm import tqdm
 
-# Try importing MedCLIP - you may need to install it
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 try:
     from medclip import MedCLIPModel, MedCLIPVisionModelViT, MedCLIPProcessor
 except ImportError:
@@ -38,133 +37,22 @@ except ImportError:
     print("Or clone from: https://github.com/RyanWangZf/MedCLIP")
     sys.exit(1)
 
-# -----------------------------
-# Questions and answer options
-# -----------------------------
-QUESTIONS_WITH_OPTIONS = [
-    {
-        "question": "Which artery is catheterized?",
-        "options": [
-            "No catheter visible",
-            "Femoral artery",
-            "Radial artery",
-            "Brachial artery",
-            "Carotid artery",
-            "Vertebral artery",
-            "Coronary artery",
-            "Renal artery",
-            "Mesenteric artery",
-            "Iliac artery",
-            "Unclear or other artery",
-        ],
-    },
-    {
-        "question": "Is variant anatomy present?",
-        "options": [
-            "No variant anatomy visible",
-            "Yes, variant anatomy present",
-            "Unclear if variant anatomy present",
-        ],
-    },
-    {
-        "question": "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
-        "options": [
-            "No hemorrhage or extravasation",
-            "Yes, hemorrhage present",
-            "Yes, contrast extravasation present",
-            "Yes, both hemorrhage and extravasation present",
-            "Unclear",
-        ],
-    },
-    {
-        "question": "Is there evidence of arterial or venous dissection?",
-        "options": [
-            "No dissection visible",
-            "Yes, arterial dissection present",
-            "Yes, venous dissection present",
-            "Unclear if dissection present",
-        ],
-    },
-    {
-        "question": "Is stenosis present in any visualized vessel?",
-        "options": [
-            "No stenosis visible",
-            "Yes, mild stenosis present",
-            "Yes, moderate stenosis present",
-            "Yes, severe stenosis present",
-            "Unclear if stenosis present",
-        ],
-    },
-    {
-        "question": "Is an endovascular stent visible in this sequence?",
-        "options": [
-            "No stent visible",
-            "Yes, stent visible",
-            "Unclear if stent present",
-        ],
-    },
-]
-
+from shared.csv_helpers import append_csv_row, ensure_csv_header
+from shared.prompts import QUESTIONS_WITH_OPTIONS
+from shared.sequence_utils import SequenceMosaicInfo, find_sequence_dirs, load_mosaics
+from shared.text_utils import utc_timestamp
 
 # -----------------------------
 # Defaults
 # -----------------------------
 DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
-DEFAULT_MODEL_NAME = "medclip-vit"  # "medclip-vit" or "medclip-resnet"
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
-
-# -----------------------------
-# CSV helpers (append-only)
-# -----------------------------
-def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
-    """Create CSV with headers if it doesn't exist."""
-    if out_path.exists() and out_path.stat().st_size > 0:
-        return
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(columns=columns).to_csv(out_path, index=False)
-
-
-def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
-    """Append a single row to CSV."""
-    ordered = {c: row.get(c) for c in columns}
-    pd.DataFrame([ordered]).to_csv(out_path, mode="a", header=False, index=False)
-
-
-# -----------------------------
-# Directory discovery
-# -----------------------------
-def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
-    """Find all sequence directories containing frames."""
-    seq_dirs: List[Path] = []
-    for d in base_path.rglob("*"):
-        if not d.is_dir():
-            continue
-        frames_dir = d / frames_subdir
-        if not frames_dir.exists():
-            continue
-        try:
-            if any(p.suffix.lower() in IMAGE_EXTS for p in frames_dir.iterdir()):
-                seq_dirs.append(d)
-        except PermissionError:
-            continue
-    return sorted(seq_dirs, key=lambda p: p.as_posix())
+DEFAULT_MODEL_NAME = "medclip-vit"
 
 
 # -----------------------------
 # MedCLIP Model Loading
 # -----------------------------
-def load_medclip_model(model_name: str, device: str = None) -> Tuple[Any, Any, torch.device]:
-    """
-    Load MedCLIP model and processor.
-
-    Args:
-        model_name: 'medclip-vit' or 'medclip-resnet'
-        device: 'cuda', 'cpu', or None for auto-detection
-
-    Returns:
-        (model, processor, device)
-    """
+def load_medclip_model(model_name, device=None):
     if device is None:
         dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -177,7 +65,6 @@ def load_medclip_model(model_name: str, device: str = None) -> Tuple[Any, Any, t
     print(f"Loading MedCLIP model: {model_name_l} on {dev}")
 
     try:
-        # Load the pretrained model
         model = MedCLIPModel(vision_cls=MedCLIPVisionModelViT)
         model.from_pretrained()
         model = model.to(dev)
@@ -185,9 +72,8 @@ def load_medclip_model(model_name: str, device: str = None) -> Tuple[Any, Any, t
 
         processor = MedCLIPProcessor()
 
-        print("✓ MedCLIP model loaded successfully")
+        print("MedCLIP model loaded successfully")
         return model, processor, dev
-
     except Exception as e:
         print(f"ERROR loading MedCLIP pretrained weights: {e}")
         print("\nCommon fixes:")
@@ -201,52 +87,24 @@ def load_medclip_model(model_name: str, device: str = None) -> Tuple[Any, Any, t
 # -----------------------------
 # MedCLIP Inference
 # -----------------------------
-def medclip_classify(
-    image_path: Path,
-    question: str,
-    options: List[str],
-    model: Any,
-    processor: Any,
-    device: torch.device,
-) -> Dict[str, Any]:
-    """
-    Use MedCLIP to classify which option best matches the image for a given question.
-
-    Returns:
-        Dict with 'answer', 'confidence', 'evidence', 'all_scores', and 'notes'
-    """
+def medclip_classify(image_path, question, options, model, processor, device):
     try:
         image = Image.open(image_path).convert("RGB")
-
-        # Combine question + option (simple prompt format)
         prompts = [f"{question} {opt}" for opt in options]
 
-        inputs = processor(
-            text=prompts,
-            images=image,
-            return_tensors="pt",
-            padding=True,
-        )
-        
-        # Move to device
+        inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True)
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        
-        # Get predictions
+
         with torch.no_grad():
             outputs = model(**inputs)
-            
-            # Get similarity scores between image and each text prompt
-            # Shape: [1, num_options]
             logits = outputs.logits_per_image
             probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
-        
-        # Get the best matching option
+
         best_idx = int(np.argmax(probs))
         confidence = float(probs[best_idx] * 100.0)
         answer = options[best_idx]
 
         all_scores = {opt: float(prob * 100.0) for opt, prob in zip(options, probs)}
-
         top_indices = np.argsort(probs)[-3:][::-1]
         evidence = [f"{options[i]}: {probs[i]*100:.1f}%" for i in top_indices]
 
@@ -257,7 +115,6 @@ def medclip_classify(
             "all_scores": all_scores,
             "notes": "MedCLIP zero-shot classification",
         }
-
     except Exception as e:
         return {
             "answer": "Error",
@@ -269,52 +126,9 @@ def medclip_classify(
 
 
 # -----------------------------
-# Helpers
-# -----------------------------
-def utc_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-@dataclass
-class SequenceMosaicInfo:
-    seq_dir: Path
-    seq_rel: str
-    mosaic_path: Path
-    ok: bool
-    error: Optional[str] = None
-
-
-def load_mosaics(seq_dirs: List[Path], base_path: Path, mosaic_name: str) -> List[SequenceMosaicInfo]:
-    infos: List[SequenceMosaicInfo] = []
-    for d in seq_dirs:
-        rel = d.relative_to(base_path).as_posix()
-        mp = d / mosaic_name
-        exists = mp.exists()
-        infos.append(
-            SequenceMosaicInfo(
-                seq_dir=d,
-                seq_rel=rel,
-                mosaic_path=mp,
-                ok=exists,
-                error=None if exists else "Missing mosaic",
-            )
-        )
-    return infos
-
-
-# -----------------------------
 # Main processing loop
 # -----------------------------
-def run_medclip_analysis(
-    infos: List[SequenceMosaicInfo],
-    out_path: Path,
-    columns: List[str],
-    model: Any,
-    processor: Any,
-    device: torch.device,
-    model_name: str,
-    delay: float = 0.0,
-) -> None:
+def run_medclip_analysis(infos, out_path, columns, model, processor, device, model_name, delay=0.0):
     total = len(infos) * len(QUESTIONS_WITH_OPTIONS)
 
     with tqdm(total=total, desc="Analyzing mosaics with MedCLIP", unit="q") as pbar:
@@ -331,14 +145,12 @@ def run_medclip_analysis(
                 }
 
                 if not info.ok:
-                    row.update(
-                        {
-                            "answer": "Not stated",
-                            "confidence": 0,
-                            "evidence": "[]",
-                            "notes": info.error,
-                        }
-                    )
+                    row.update({
+                        "answer": "Not stated",
+                        "confidence": 0,
+                        "evidence": "[]",
+                        "notes": info.error,
+                    })
                 else:
                     result = medclip_classify(
                         image_path=info.mosaic_path,
@@ -348,14 +160,12 @@ def run_medclip_analysis(
                         processor=processor,
                         device=device,
                     )
-                    row.update(
-                        {
-                            "answer": result["answer"],
-                            "confidence": result["confidence"],
-                            "evidence": json.dumps(result["evidence"]),
-                            "notes": result["notes"],
-                        }
-                    )
+                    row.update({
+                        "answer": result["answer"],
+                        "confidence": result["confidence"],
+                        "evidence": json.dumps(result["evidence"]),
+                        "notes": result["notes"],
+                    })
 
                 append_csv_row(out_path, row, columns)
                 pbar.update(1)
@@ -367,51 +177,17 @@ def run_medclip_analysis(
 # -----------------------------
 # Entrypoint
 # -----------------------------
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(
         description="Extract labels from angiography mosaics using MedCLIP"
     )
-    parser.add_argument(
-        "--base_path",
-        type=Path,
-        default=DEFAULT_BASE_PATH,
-        help="Base path to DICOM sequences",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=DEFAULT_MODEL_NAME,
-        help="MedCLIP model variant (medclip-vit or medclip-resnet)",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Device to use: 'cuda', 'cpu', or None for auto",
-    )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=0.0,
-        help="Delay between analyses (seconds)",
-    )
-    parser.add_argument(
-        "--frames_subdir",
-        default="frames",
-        help="Subdirectory name containing frames",
-    )
-    parser.add_argument(
-        "--mosaic_name",
-        default="mosaic.png",
-        help="Mosaic filename to analyze",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Limit number of sequences to process",
-    )
-
+    parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL_NAME)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--delay", type=float, default=0.0)
+    parser.add_argument("--frames_subdir", default="frames")
+    parser.add_argument("--mosaic_name", default="mosaic.png")
+    parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
 
     seq_dirs = find_sequence_dirs(args.base_path, args.frames_subdir)
@@ -424,14 +200,8 @@ def main() -> None:
     out_csv = output_root / "mosaics_extracted_labels_medclip.csv"
 
     columns = [
-        "Timestamp",
-        "Model Name",
-        "sequence_dir",
-        "question",
-        "answer",
-        "confidence",
-        "evidence",
-        "notes",
+        "Timestamp", "Model Name", "sequence_dir", "question",
+        "answer", "confidence", "evidence", "notes",
     ]
     ensure_csv_header(out_csv, columns)
 
@@ -442,17 +212,12 @@ def main() -> None:
     model, processor, device = load_medclip_model(args.model, args.device)
 
     run_medclip_analysis(
-        infos=infos,
-        out_path=out_csv,
-        columns=columns,
-        model=model,
-        processor=processor,
-        device=device,
-        model_name=args.model,
-        delay=args.delay,
+        infos=infos, out_path=out_csv, columns=columns,
+        model=model, processor=processor, device=device,
+        model_name=args.model, delay=args.delay,
     )
 
-    print("Done ✔ Incremental results preserved.")
+    print("Done. Incremental results preserved.")
 
 
 if __name__ == "__main__":
