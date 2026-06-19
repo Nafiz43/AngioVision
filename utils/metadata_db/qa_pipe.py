@@ -38,6 +38,7 @@ Requires (new): pip install 'smolagents[openai]'
   llama3.1+, mistral, etc. all work).
 """
 
+import os
 import re
 import sys
 import json
@@ -321,7 +322,8 @@ Key rules:
 
 # ── Global state ──────────────────────────────────────────────────────────────
 app: Flask = Flask(__name__, static_folder=None)
-CORS(app)
+_cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:*")
+CORS(app, origins=_cors_origins.split(","))
 
 _db_path: Path = DEFAULT_DB
 _chromadb_path: Path = DEFAULT_CHROMADB
@@ -1439,6 +1441,15 @@ def api_image_query() -> Response:
     )
 
 
+def _validate_dicom_path(path: str) -> bool:
+    """Reject path traversal attempts and restrict to .dcm files."""
+    resolved = os.path.realpath(path)
+    if ".." in path or not resolved.lower().endswith(".dcm"):
+        return False
+    allowed_root = os.environ.get("DICOM_DATA_ROOT", "/data")
+    return resolved.startswith(os.path.realpath(allowed_root))
+
+
 @app.route("/api/thumbnail", methods=["GET"])
 def api_thumbnail() -> Response:
     """
@@ -1447,7 +1458,7 @@ def api_thumbnail() -> Response:
     Extract and return a thumbnail (320px max dimension) PNG from a DICOM frame.
     
     Parameters:
-        path: Full path to .dcm file (required)
+        path: Full path to .dcm file (required, must be under DICOM_DATA_ROOT)
         frame: Frame index (0-indexed, default 0)
     
     Returns:
@@ -1457,6 +1468,9 @@ def api_thumbnail() -> Response:
     if not path:
         log.warning("GET /api/thumbnail: missing 'path' parameter")
         return jsonify({"error": "path required"}), 400
+    if not _validate_dicom_path(path):
+        log.warning(f"GET /api/thumbnail: path rejected [{path}]")
+        return jsonify({"error": "invalid path"}), 403
 
     try:
         frame_index = int(request.args.get("frame", 0))
@@ -1484,7 +1498,7 @@ def api_frame() -> Response:
     Extract and return a full-resolution PNG from a DICOM frame (lightbox display).
     
     Parameters:
-        path: Full path to .dcm file (required)
+        path: Full path to .dcm file (required, must be under DICOM_DATA_ROOT)
         frame: Frame index (0-indexed, default 0)
     
     Returns:
@@ -1494,6 +1508,9 @@ def api_frame() -> Response:
     if not path:
         log.warning("GET /api/frame: missing 'path' parameter")
         return jsonify({"error": "path required"}), 400
+    if not _validate_dicom_path(path):
+        log.warning(f"GET /api/frame: path rejected [{path}]")
+        return jsonify({"error": "invalid path"}), 403
 
     try:
         frame_index = int(request.args.get("frame", 0))
@@ -1536,13 +1553,20 @@ def api_set_model() -> Dict[str, Any]:
     return jsonify({"ok": True, "model": model})
 
 
+_SQL_BLOCKED_KEYWORDS = re.compile(
+    r"\b(DROP|ALTER|CREATE|INSERT|UPDATE|DELETE|REPLACE|ATTACH|DETACH|REINDEX|VACUUM)\b",
+    re.IGNORECASE,
+)
+
+
 @app.route("/api/sql", methods=["POST"])
 def api_run_sql() -> Dict[str, Any]:
     """
     POST /api/sql
     
-    Execute arbitrary read-only SQL directly against the DICOM database.
+    Execute read-only SQL directly against the DICOM database.
     For advanced/debugging use; not used by the standard agentic pipeline.
+    Only SELECT and PRAGMA statements are permitted.
     
     Request body:
         {"sql": "SELECT ... FROM dicom_files WHERE ..."}
@@ -1555,6 +1579,9 @@ def api_run_sql() -> Dict[str, Any]:
     if not sql:
         log.warning("POST /api/sql: missing 'sql' parameter")
         return jsonify({"error": "sql required"}), 400
+    if _SQL_BLOCKED_KEYWORDS.search(sql):
+        log.warning("POST /api/sql: blocked mutating statement")
+        return jsonify({"error": "only SELECT queries are allowed"}), 403
     try:
         rows = run_sql_query(sql)
 
@@ -1578,7 +1605,12 @@ def api_run_sql() -> Dict[str, Any]:
 @app.route("/", methods=["GET"])
 def index() -> str:
     """Serve the main HTML UI for the DICOM query engine."""
-    return HTML_PAGE
+    creds_json = os.environ.get("ANGIOVISION_USERS", "[]")
+    try:
+        json.loads(creds_json)
+    except (json.JSONDecodeError, TypeError):
+        creds_json = "[]"
+    return HTML_PAGE.replace("__CREDENTIALS_PLACEHOLDER__", creds_json)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2116,10 +2148,10 @@ textarea.nl-input::placeholder{color:var(--text3)}
 // ════════════════════════════════════════════════
 // LOGIN
 // ════════════════════════════════════════════════
-const CREDENTIALS = [
-  { user: 'goldman',  pass: 'xK9#mQ2$vL5@pN8!' },
-  { user: 'vfilkov',  pass: 'ChangeMe#001!'     },
-];
+// Credentials are injected server-side from environment variables.
+// Set ANGIOVISION_USERS as a JSON array, e.g.:
+//   export ANGIOVISION_USERS='[{"user":"admin","pass":"changeme"}]'
+const CREDENTIALS = __CREDENTIALS_PLACEHOLDER__;
 const MAX_ATTEMPTS = 5;
 let loginAttempts = 0, lockoutTimer = null;
 

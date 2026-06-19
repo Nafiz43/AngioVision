@@ -31,7 +31,7 @@ from Bio import Entrez
 # ─────────────────────────────────────────────
 
 ENTREZ_EMAIL   = "nikhan@ucdavis.edu"
-NCBI_API_KEY   = os.getenv("NCBI_API_KEY", "b62cdd0f606eecea1e4ec3fb9b348b8b9809")
+NCBI_API_KEY   = os.getenv("NCBI_API_KEY", "")  # set via environment variable
 OUTPUT_FILE    = "/data/Deep_Angiography/AngioVision/slr/results/slr_stage1_screening.csv"
 STATS_FILE     = "/data/Deep_Angiography/AngioVision/slr/results/slr_fetching_stats.csv"
 MAX_PER_SOURCE = 5000
@@ -235,7 +235,7 @@ def fetch_pubmed(query, max_results=MAX_PER_SOURCE):
 
 SS_BASE    = "https://api.semanticscholar.org/graph/v1/paper/search"
 SS_FIELDS  = "title,authors,year,venue,externalIds,abstract,openAccessPdf,url"
-SS_API_KEY = os.getenv("S2_API_KEY", "s2k-zzVnmfb9aBVopLLnx3K82JPbEbO3FQr4UNGqEbSs")  # register free at semanticscholar.org/product/api
+SS_API_KEY = os.getenv("S2_API_KEY", "")  # register free at semanticscholar.org/product/api
 
 
 def _ss_get_with_backoff(params, max_retries=8):
