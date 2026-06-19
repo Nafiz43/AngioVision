@@ -99,7 +99,7 @@ def _parse_date_to_int(x) -> Optional[int]:
             d = int(s[6:8])
             if 1900 <= y <= 2100 and 1 <= m <= 12 and 1 <= d <= 31:
                 return int(s)
-        except Exception:
+        except (ValueError, TypeError, IndexError):
             pass
 
     dt = pd.to_datetime(s, errors="coerce", utc=False)
@@ -169,7 +169,7 @@ def _parse_time_to_int(x) -> Optional[int]:
         frac = (frac[:6]).ljust(6, "0")  # microseconds
         try:
             micros = int(frac)
-        except Exception:
+        except (ValueError, TypeError):
             micros = 0
     else:
         main = s2
@@ -192,7 +192,7 @@ def _parse_time_to_int(x) -> Optional[int]:
         if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
             return None
         return hh * 3600 * 1_000_000 + mm * 60 * 1_000_000 + ss * 1_000_000 + micros
-    except Exception:
+    except (ValueError, TypeError, IndexError):
         return None
 
 

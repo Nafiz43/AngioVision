@@ -74,8 +74,9 @@ def _process_one(sop_dir_str: str, min_frames: int = 2, dry_run: bool = False) -
 
         return Result(sop_dir=sop_dir_str, checked=True, removed=False, n_frames=n_frames, reason="kept")
 
-    except Exception:
-        return Result(sop_dir=sop_dir_str, checked=False, removed=False, n_frames=None, reason="error")
+    except Exception as exc:
+        print(f"[ERROR] Processing {sop_dir_str}: {exc}", file=__import__('sys').stderr)
+        return Result(sop_dir=sop_dir_str, checked=False, removed=False, n_frames=None, reason=f"error: {exc}")
 
 
 def _gather_sop_dirs(base_dir: Path) -> list[str]:

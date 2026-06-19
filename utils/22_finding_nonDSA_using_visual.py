@@ -6,6 +6,7 @@ Parallelized version using ProcessPoolExecutor
 
 import argparse
 import csv
+import sys
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -35,7 +36,8 @@ def load_frame_gray(path):
             arr = np.array(Image.open(path).convert("L"), dtype=np.float32)
 
         return arr
-    except Exception:
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"[WARN] Could not load frame {path}: {exc}", file=sys.stderr)
         return None
 
 

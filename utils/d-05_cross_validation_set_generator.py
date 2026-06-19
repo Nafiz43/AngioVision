@@ -51,7 +51,7 @@ def parse_timestamp(ts: str):
     try:
         # handle Zulu 'Z'
         return pd.to_datetime(ts, utc=True)
-    except Exception:
+    except (ValueError, TypeError, OverflowError):
         return pd.NaT
 
 

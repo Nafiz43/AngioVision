@@ -182,7 +182,8 @@ def docx_contains_media(docx_path: Path) -> bool:
         with zipfile.ZipFile(docx_path, "r") as z:
             names = z.namelist()
             return any(n.startswith("word/media/") for n in names)
-    except Exception:
+    except (zipfile.BadZipFile, OSError) as exc:
+        print(f"[WARN] Could not inspect DOCX {docx_path}: {exc}", file=sys.stderr)
         return False
 
 
@@ -228,7 +229,8 @@ def _open_image_rgb(path: Path) -> Optional[Image.Image]:
         if img.mode != "RGB":
             img = img.convert("RGB")
         return img
-    except Exception:
+    except (OSError, ValueError) as exc:
+        print(f"[WARN] Could not open image {path}: {exc}", file=sys.stderr)
         return None
 
 

@@ -202,7 +202,8 @@ def frame_stats(img_path_str: str) -> dict | None:
             "entropy":     pixel_entropy(active),
             "active_frac": float(active.size) / arr.size,
         }
-    except Exception:
+    except (OSError, ValueError) as exc:
+        print(f"[WARN] Could not compute frame stats for {img_path_str}: {exc}", file=__import__('sys').stderr)
         return None
 
 
@@ -383,7 +384,7 @@ def is_mask_frame(img_path_str: str, thresholds: dict) -> bool:
             and bright_frac <= thresholds["MASK_MAX_BRIGHT_FRAC"]
             and entropy_val <= thresholds["MASK_MAX_ENTROPY"]
         )
-    except Exception:
+    except (OSError, ValueError):
         return False
 
 

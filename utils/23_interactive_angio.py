@@ -54,11 +54,11 @@ from transformers import (
 
 try:
     from transformers import ViTImageProcessor as _ViTProcessor
-except Exception:
+except ImportError:
     _ViTProcessor = None
 try:
     from transformers import ViTFeatureExtractor as _ViTFeatureExtractor
-except Exception:
+except ImportError:
     _ViTFeatureExtractor = None
 
 
@@ -122,7 +122,7 @@ def parse_sop_instance_uids(val) -> List[str]:
             parsed = ast.literal_eval(s)
             if isinstance(parsed, (list, tuple)):
                 return [str(x).strip() for x in parsed if str(x).strip()]
-        except Exception:
+        except (ValueError, SyntaxError):
             pass
     return [t.strip() for t in re.split(r"\s*,\s*", s) if t.strip()]
 
@@ -168,7 +168,8 @@ def preprocess_frames(
         try:
             imgs.append(Image.open(p).convert("RGB"))
             valid.append(i)
-        except Exception:
+        except (OSError, ValueError) as exc:
+            print(f"[WARN] Skipping frame {p}: {exc}", file=sys.stderr)
             continue
     if not imgs:
         return None, []
@@ -179,7 +180,7 @@ def preprocess_frames(
     for img in imgs:
         try:
             img.close()
-        except Exception:
+        except OSError:
             pass
     return pv, valid
 

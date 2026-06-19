@@ -127,12 +127,12 @@ def is_probably_dicom(path: Path) -> bool:
             f.seek(128)
             if f.read(4) == b"DICM":
                 return True
-    except Exception:
+    except OSError:
         return False
     try:
         pydicom.dcmread(path, stop_before_pixels=True, force=True)
         return True
-    except Exception:
+    except (pydicom.errors.InvalidDicomError, OSError, ValueError):
         return False
 
 
@@ -149,7 +149,7 @@ def is_nullish(v) -> bool:
 def safe_str(x: object) -> str:
     try:
         return str(x)
-    except Exception:
+    except (TypeError, ValueError, UnicodeDecodeError):
         return NA_VALUE
 
 
@@ -485,11 +485,11 @@ def _process_leaf_dirs(
                 import shutil
                 try:
                     shutil.rmtree(per_dicom_dir, ignore_errors=True)
-                except Exception:
+                except OSError:
                     pass
                 try:
                     metadata_tmp.unlink(missing_ok=True)
-                except Exception:
+                except OSError:
                     pass
             finally:
                 del ds

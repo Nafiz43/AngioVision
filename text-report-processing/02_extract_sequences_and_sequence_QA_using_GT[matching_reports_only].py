@@ -274,7 +274,7 @@ def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
 
     try:
         return json.loads(text)
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         pass
 
     start, end = text.find("{"), text.rfind("}")
@@ -282,7 +282,7 @@ def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
         candidate = text[start : end + 1].strip()
         try:
             return json.loads(candidate)
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             return None
     return None
 
@@ -499,7 +499,7 @@ def build_gt_lookup(gt_df: pd.DataFrame) -> Tuple[Dict[str, Dict[str, Any]], str
             try:
                 if raw_n is not None and not (isinstance(raw_n, float) and pd.isna(raw_n)):
                     n = int(raw_n)
-            except Exception:
+            except (ValueError, TypeError):
                 n = None
         if n is None:
             n = len(uids)

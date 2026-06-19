@@ -104,12 +104,12 @@ def is_probably_dicom(path: Path) -> bool:
             f.seek(128)
             if f.read(4) == b"DICM":
                 return True
-    except Exception:
+    except OSError:
         return False
     try:
         pydicom.dcmread(path, stop_before_pixels=True, force=True)
         return True
-    except Exception:
+    except (pydicom.errors.InvalidDicomError, OSError, ValueError):
         return False
 
 

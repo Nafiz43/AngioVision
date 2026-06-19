@@ -508,7 +508,7 @@ def api_query():
             try:
                 json.dumps(v)
                 return v
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 return str(v)
 
         clean_rows = [{k: serialise(v) for k, v in row.items()} for row in rows]
@@ -571,7 +571,7 @@ def api_run_sql():
         def serialise(v):
             if v is None: return None
             try: json.dumps(v); return v
-            except: return str(v)
+            except (TypeError, ValueError, OverflowError): return str(v)
         clean_rows = [{k: serialise(v) for k, v in row.items()} for row in rows]
         return jsonify({"rows": clean_rows, "row_count": len(clean_rows)})
     except Exception as e:

@@ -111,7 +111,8 @@ def inspect_file(fpath: str) -> tuple | None:
 
     except InvalidDicomError:
         return None
-    except Exception:
+    except (OSError, ValueError, RuntimeError) as exc:
+        log.debug(f"Could not read DICOM {fpath}: {exc}")
         return None
 
 

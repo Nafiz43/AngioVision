@@ -360,14 +360,14 @@ def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
     text = text.strip()
     try:
         return json.loads(text)
-    except Exception:
+    except (json.JSONDecodeError, ValueError):
         pass
 
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end != -1 and end > start:
         try:
             return json.loads(text[start : end + 1])
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             return None
     return None
 

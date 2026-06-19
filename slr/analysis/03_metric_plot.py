@@ -40,7 +40,7 @@ def normalize_value(val):
     """
     try:
         val = float(val)
-    except:
+    except (ValueError, TypeError):
         return None
 
     if val <= 1:
