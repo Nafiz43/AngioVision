@@ -1,59 +1,64 @@
-"""RAD-DINO query-time embedding function (must match the ingestion model)."""
+"""Query-time image-embedding functions (must match the model used at ingestion)."""
 
 from __future__ import annotations
 
 import logging
 from typing import List, Optional
 
-from . import deps
+from . import config, deps
 from .deps import RADDINO_OK, torch, AutoModel, AutoImageProcessor, np, PilImage
 from .state import state
 
 log = logging.getLogger(__name__)
 
 
-class RADDINOEmbeddingFunction:
+class HFImageEmbeddingFunction:
     """
-    RAD-DINO embedding function for medical imaging DICOM frames.
+    Generic HuggingFace image-embedding function for DICOM frames.
 
-    Uses microsoft/rad-dino (ViT trained on ~1M radiology images) via HuggingFace
-    transformers. MUST match the embedding model used during ChromaDB ingestion so
-    that query embeddings live in the same vector space as indexed embeddings.
+    Loads the model named by an EMBEDDING_MODELS registry key (e.g. "rad-dino"
+    → microsoft/rad-dino, "vit-base" → google/vit-base-patch16-224) via the
+    transformers AutoImageProcessor + AutoModel API. The CLS token (index 0 of
+    last_hidden_state) is extracted and L2-normalised so ChromaDB cosine
+    similarity behaves like a dot product.
 
-    The CLS token (index 0 of last_hidden_state) is extracted and L2-normalised as
-    the 768-dimensional embedding vector.
+    The model used here at query time MUST match the model used to ingest the
+    collection being searched — query vectors from a different model live in a
+    different vector space and produce meaningless similarity results.
     """
 
-    # HuggingFace model identifier — MUST match ingestion pipeline
-    MODEL_ID = "microsoft/rad-dino"
-
-    @classmethod
-    def name(cls) -> str:
-        """Return the name of this embedding function."""
-        return "raddino"
-
-    def __init__(self, model_id: str = MODEL_ID) -> None:
+    def __init__(self, model_key: str = config.DEFAULT_EMBEDDING_MODEL) -> None:
         if not RADDINO_OK:
             raise ImportError(
                 "torch and transformers required: "
                 "pip install torch transformers"
             )
 
+        self.model_key = config.resolve_embedding_model(model_key)
+        spec           = config.EMBEDDING_MODELS[self.model_key]
+        self.model_id  = spec["hf_id"]
+        self.label     = spec["label"]
+        self.collection_name = spec["collection"]
+
         self.device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.processor = AutoImageProcessor.from_pretrained(model_id)
-        self.model     = AutoModel.from_pretrained(model_id).to(self.device)
+        self.processor = AutoImageProcessor.from_pretrained(self.model_id)
+        self.model     = AutoModel.from_pretrained(self.model_id).to(self.device)
         self.model.eval()
-        log.info(f"RAD-DINO ({model_id}) loaded on {self.device}")
+        log.info(f"Embedding model '{self.model_key}' ({self.model_id}) loaded on {self.device}")
+
+    def name(self) -> str:
+        """Return the registry key of this embedding function."""
+        return self.model_key
 
     def __call__(self, input_list: List[np.ndarray]) -> List[np.ndarray]:
         """
-        Embed a batch of images using RAD-DINO.
+        Embed a batch of images with the loaded model.
 
         Args:
             input_list: List of uint8 RGB numpy arrays (H×W×3)
 
         Returns:
-            List of L2-normalised 768-dimensional embedding vectors (float32)
+            List of L2-normalised CLS-token embedding vectors (float32)
         """
         embeddings: List[np.ndarray] = []
         with torch.no_grad():
@@ -79,15 +84,30 @@ class RADDINOEmbeddingFunction:
         return embeddings
 
 
-def get_raddino_model() -> Optional["RADDINOEmbeddingFunction"]:
-    """Get or lazy-initialize the RAD-DINO embedding model (singleton pattern)."""
-    if state.raddino_model is None:
-        if not RADDINO_OK:
-            log.warning("RAD-DINO dependencies not available")
-            return None
-        try:
-            state.raddino_model = RADDINOEmbeddingFunction()
-        except Exception as exc:
-            log.error(f"Failed to load RAD-DINO model: {exc}")
-            return None
-    return state.raddino_model
+def get_embedding_model(model_key: Optional[str] = None) -> Optional["HFImageEmbeddingFunction"]:
+    """
+    Get or lazy-initialise the embedding model for the given registry key.
+
+    Models are cached per key in state.embedding_models so each is loaded at most
+    once. Returns None if dependencies are missing or the model fails to load.
+    """
+    key = config.resolve_embedding_model(model_key)
+    cached = state.embedding_models.get(key)
+    if cached is not None:
+        return cached
+
+    if not RADDINO_OK:
+        log.warning("Embedding model dependencies not available (torch/transformers)")
+        return None
+    try:
+        ef = HFImageEmbeddingFunction(key)
+        state.embedding_models[key] = ef
+        return ef
+    except Exception as exc:
+        log.error(f"Failed to load embedding model '{key}': {exc}")
+        return None
+
+
+def get_raddino_model() -> Optional["HFImageEmbeddingFunction"]:
+    """Back-compat shim: return the default RAD-DINO embedding model."""
+    return get_embedding_model("rad-dino")

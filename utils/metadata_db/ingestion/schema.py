@@ -130,23 +130,62 @@ CREATE TABLE IF NOT EXISTS radiology_reports (
 CREATE INDEX IF NOT EXISTS idx_rpt_accession ON radiology_reports (accession_number);
 
 -- ── Image ingestion tracking ─────────────────────────────────────────────────
--- One row per DICOM sequence (one .dcm file = one sequence).
--- sequence_id  = the DICOM file stem (guaranteed unique per file).
--- ChromaDB frame IDs are "{sequence_id}_f{frame_idx:06d}", so partial
--- ingestion from a crashed run can be cleaned up deterministically on retry.
+-- One row per (DICOM sequence, embedding model). One .dcm file = one sequence.
+-- sequence_id     = the DICOM file stem (guaranteed unique per file).
+-- embedding_model = the EMBEDDING_MODELS key used to build that collection, so a
+--                   sequence can be independently ingested by several models
+--                   (each into its own ChromaDB collection) without clobbering
+--                   another model's resume state.
+-- ChromaDB frame IDs are "{sequence_id}_f{frame_idx:06d}" within each model's
+-- collection, so partial ingestion from a crashed run can be cleaned up
+-- deterministically on retry.
 CREATE TABLE IF NOT EXISTS image_ingestion_status (
-    sequence_id      TEXT PRIMARY KEY,
+    sequence_id      TEXT NOT NULL,
+    embedding_model  TEXT NOT NULL DEFAULT 'rad-dino',
     accession_number TEXT,
     series_uid       TEXT,
     source_path      TEXT,
     frames_ingested  INTEGER DEFAULT 0,
     status           TEXT,      -- 'in_progress' | 'completed' | 'error'
     error_msg        TEXT,
-    ingested_at      TEXT
+    ingested_at      TEXT,
+    PRIMARY KEY (sequence_id, embedding_model)
 );
 
 CREATE INDEX IF NOT EXISTS idx_img_status    ON image_ingestion_status (status);
 CREATE INDEX IF NOT EXISTS idx_img_accession ON image_ingestion_status (accession_number);
+CREATE INDEX IF NOT EXISTS idx_img_model     ON image_ingestion_status (embedding_model);
+"""
+
+# Migration applied to pre-existing databases whose image_ingestion_status table
+# was created before per-embedding-model tracking existed (sequence_id was the
+# sole PRIMARY KEY). Rebuilds the table with the composite key and tags all
+# existing rows as 'rad-dino' (the only model used before this change). Idempotent:
+# store.open_db() only runs it when the embedding_model column is absent.
+MIGRATE_IMAGE_STATUS_ADD_MODEL = """
+ALTER TABLE image_ingestion_status RENAME TO _img_status_old;
+CREATE TABLE image_ingestion_status (
+    sequence_id      TEXT NOT NULL,
+    embedding_model  TEXT NOT NULL DEFAULT 'rad-dino',
+    accession_number TEXT,
+    series_uid       TEXT,
+    source_path      TEXT,
+    frames_ingested  INTEGER DEFAULT 0,
+    status           TEXT,
+    error_msg        TEXT,
+    ingested_at      TEXT,
+    PRIMARY KEY (sequence_id, embedding_model)
+);
+INSERT INTO image_ingestion_status
+    (sequence_id, embedding_model, accession_number, series_uid, source_path,
+     frames_ingested, status, error_msg, ingested_at)
+SELECT sequence_id, 'rad-dino', accession_number, series_uid, source_path,
+       frames_ingested, status, error_msg, ingested_at
+FROM _img_status_old;
+DROP TABLE _img_status_old;
+CREATE INDEX IF NOT EXISTS idx_img_status    ON image_ingestion_status (status);
+CREATE INDEX IF NOT EXISTS idx_img_accession ON image_ingestion_status (accession_number);
+CREATE INDEX IF NOT EXISTS idx_img_model     ON image_ingestion_status (embedding_model);
 """
 
 ALL_COLUMNS = [

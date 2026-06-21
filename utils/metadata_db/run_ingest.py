@@ -44,6 +44,10 @@ Examples:
   # Image ingestion only (metadata already loaded)
   python3 run_ingest.py --images-only
 
+  # Build the ViT-Base collection (separate from RAD-DINO's; needed before the
+  # query UI can search with the "ViT-Base" embedding option)
+  python3 run_ingest.py --images-only --embedding-model vit-base
+
   # Image ingestion — process at most 50 sequences then stop
   python3 run_ingest.py --images-only --limit-sequences 50
 
@@ -66,6 +70,15 @@ Examples:
     parser.add_argument("--chroma-batch",    type=int, default=config.CHROMA_BATCH)
     parser.add_argument("--limit",           type=int, default=0)
     parser.add_argument("--limit-sequences", type=int, default=0)
+    parser.add_argument(
+        "--embedding-model",
+        default=config.DEFAULT_EMBEDDING_MODEL,
+        choices=list(config.EMBEDDING_MODELS.keys()),
+        help=(
+            "Embedding model used to build the image ChromaDB collection. Each "
+            "model writes to its own collection. Default: %(default)s"
+        ),
+    )
     parser.add_argument("--dry-run",         action="store_true")
     parser.add_argument("--summary-only",    action="store_true")
     parser.add_argument("--reports-only",    action="store_true")
@@ -93,6 +106,7 @@ Examples:
         images_only     = args.images_only,
         skip_reports    = args.skip_reports,
         skip_images     = args.skip_images,
+        embedding_model = args.embedding_model,
     )
 
 

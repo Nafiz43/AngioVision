@@ -4,9 +4,27 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from .schema import SQLITE_SCHEMA, ALL_COLUMNS, INSERT_SQL
+from .schema import (
+    SQLITE_SCHEMA,
+    ALL_COLUMNS,
+    INSERT_SQL,
+    MIGRATE_IMAGE_STATUS_ADD_MODEL,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _migrate_image_status(con: sqlite3.Connection) -> None:
+    """
+    Bring a pre-existing image_ingestion_status table up to the per-embedding-model
+    schema. No-op when the table is already current (or freshly created).
+    """
+    cols = [r[1] for r in con.execute("PRAGMA table_info(image_ingestion_status)").fetchall()]
+    if not cols or "embedding_model" in cols:
+        return
+    log.info("Migrating image_ingestion_status \u2192 per-embedding-model schema (tagging existing rows as 'rad-dino') \u2026")
+    con.executescript(MIGRATE_IMAGE_STATUS_ADD_MODEL)
+    con.commit()
 
 
 def open_db(db_path: Path) -> sqlite3.Connection:
@@ -14,6 +32,7 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(str(db_path), check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.executescript(SQLITE_SCHEMA)
+    _migrate_image_status(con)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
     con.execute("PRAGMA cache_size=-65536")
@@ -56,6 +75,13 @@ def db_summary(con: sqlite3.Connection) -> None:
         "SELECT COALESCE(SUM(frames_ingested), 0) FROM image_ingestion_status "
         "WHERE status = 'completed'"
     ).fetchone()[0]
+    img_by_model = con.execute(
+        "SELECT embedding_model, "
+        "       COUNT(*) AS seqs, "
+        "       COALESCE(SUM(frames_ingested), 0) AS frames "
+        "FROM image_ingestion_status WHERE status = 'completed' "
+        "GROUP BY embedding_model ORDER BY embedding_model"
+    ).fetchall()
 
     log.info("─" * 60)
     log.info(f"Total DICOM rows    : {total:>10,}")
@@ -68,6 +94,8 @@ def db_summary(con: sqlite3.Connection) -> None:
     log.info(f"Image seqs done     : {img_completed:>10,}")
     log.info(f"Image seqs errored  : {img_error:>10,}")
     log.info(f"Frames in ChromaDB  : {img_frames:>10,}  (completed seqs)")
+    for r in img_by_model:
+        log.info(f"  · {(r['embedding_model'] or '?'):14s}: {r['seqs']:>8,} seqs, {r['frames']:>10,} frames")
     log.info("─" * 60)
     log.info("Modality breakdown:")
     for r in con.execute(

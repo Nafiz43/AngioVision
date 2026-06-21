@@ -8,7 +8,7 @@ and a few are lazily populated singletons / caches guarded by `state.lock`.
 
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from . import config
 
@@ -26,10 +26,13 @@ class AppState:
         self.lock: threading.Lock = threading.Lock()
 
         # ── Lazy singletons / caches ─────────────────────────────────────────
-        self.ollama: Optional[Any]            = None
-        self.db_stats_cache: Optional[dict]   = None
-        self.chroma_collection: Optional[Any] = None
-        self.raddino_model: Optional[Any]     = None
+        self.ollama: Optional[Any]          = None
+        self.db_stats_cache: Optional[dict] = None
+
+        # Per-embedding-model caches (keyed by EMBEDDING_MODELS key). Each model
+        # has its own loaded embedding function and its own ChromaDB collection.
+        self.embedding_models: Dict[str, Any]   = {}
+        self.chroma_collections: Dict[str, Any] = {}
 
 
 state = AppState()

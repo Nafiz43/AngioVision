@@ -39,6 +39,7 @@ def run_ingestion(
     images_only: bool = False,
     skip_reports: bool = False,
     skip_images: bool = False,
+    embedding_model: str = config.DEFAULT_EMBEDDING_MODEL,
 ) -> None:
     """Run any combination of metadata, report, and image ingestion stages."""
     dicom_root  = Path(root)
@@ -58,6 +59,7 @@ def run_ingestion(
     log.info(f"Chroma batch   : {chroma_batch}")
     log.info(f"Limit (meta)   : {limit or 'none'}")
     log.info(f"Limit (seqs)   : {limit_sequences or 'none'}")
+    log.info(f"Embed model    : {embedding_model}")
     log.info(f"Dry run        : {dry_run}")
 
     if summary_only:
@@ -185,6 +187,7 @@ def run_ingestion(
             chroma_path       = chroma_path,
             limit_sequences   = limit_sequences,
             chroma_batch_size = chroma_batch,
+            embedding_model   = embedding_model,
         )
 
     if con:

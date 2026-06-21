@@ -17,35 +17,43 @@ from .db import open_db
 log = logging.getLogger(__name__)
 
 
-def get_chroma_collection() -> Optional[Any]:
+def get_chroma_collection(model_key: Optional[str] = None) -> Optional[Any]:
     """
-    Get or lazy-initialize the ChromaDB collection.
+    Get or lazy-initialize the ChromaDB collection for the given embedding model.
 
-    Uses PersistentClient with cosine distance metric. The collection should have
-    been pre-indexed with RAD-DINO embeddings during image ingestion. No embedding
-    function is attached here — query embeddings are computed via RAD-DINO and passed
+    Each embedding model owns a separate collection (see config.EMBEDDING_MODELS)
+    so query vectors are only ever compared against vectors produced by the same
+    model. Collections are cached per model key in state.chroma_collections.
+
+    Uses PersistentClient with cosine distance metric. No embedding function is
+    attached here — query embeddings are computed by the matching model and passed
     explicitly as query_embeddings.
 
     Returns:
         ChromaDB collection object if available, else None
     """
-    if state.chroma_collection is not None:
-        return state.chroma_collection
+    key = config.resolve_embedding_model(model_key)
+    cached = state.chroma_collections.get(key)
+    if cached is not None:
+        return cached
     if not IMAGE_DEPS_OK:
         return None
+
+    collection_name = config.EMBEDDING_MODELS[key]["collection"]
     try:
         client = _chromadb_mod.PersistentClient(path=str(state.chromadb_path))
-        state.chroma_collection = client.get_or_create_collection(
-            name=config.CHROMA_COLLECTION,
+        collection = client.get_or_create_collection(
+            name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
+        state.chroma_collections[key] = collection
         log.info(
-            f"ChromaDB collection '{config.CHROMA_COLLECTION}' ready at {state.chromadb_path} "
-            f"— {state.chroma_collection.count():,} items"
+            f"ChromaDB collection '{collection_name}' (model '{key}') ready at "
+            f"{state.chromadb_path} — {collection.count():,} items"
         )
-        return state.chroma_collection
+        return collection
     except Exception as exc:
-        log.error(f"ChromaDB init failed: {exc}")
+        log.error(f"ChromaDB init failed for model '{key}': {exc}")
         return None
 
 

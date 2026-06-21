@@ -27,7 +27,7 @@ function handleLogin(){
     document.getElementById('sessionUser').textContent=u;
     document.getElementById('loginOverlay').classList.add('hidden');
     document.getElementById('appWrapper').classList.add('visible');
-    loadStats(); loadChromaStats();
+    loadStats(); loadEmbeddingModels();
     document.getElementById('nlInput').focus();
   } else {
     loginAttempts++;
@@ -189,6 +189,61 @@ function onModelChange(){
     .then(r=>r.json()).then(d=>{if(d.ok)setStatus('ready',m);});
 }
 
+// ════════════════════════════════════════════════
+// IMAGE EMBEDDING MODEL (image RAG)
+// ════════════════════════════════════════════════
+let embedModels = [];   // [{key,label,hf_id,collection}]
+
+function getSelectedEmbedModel(){
+  const sel=document.getElementById('embedModelSelect');
+  return (sel && sel.value) || localStorage.getItem('av-embed-model') || 'rad-dino';
+}
+
+function shortModelLabel(key){
+  const m=embedModels.find(x=>x.key===key);
+  return m ? m.label : key;
+}
+
+function updateEmbedModelUI(key){
+  const m=embedModels.find(x=>x.key===key);
+  const label=m?m.label:key;
+  const hint=document.getElementById('embedModelHint');
+  const hdr=document.getElementById('hdrEmbedModel');
+  const prev=document.getElementById('imgPreviewModel');
+  const chromaLbl=document.getElementById('chromaSecLabel');
+  if(hint) hint.textContent=m?m.hf_id:'';
+  if(hdr) hdr.textContent=label;
+  if(prev) prev.textContent=label;
+  if(chromaLbl) chromaLbl.textContent='ChromaDB · '+label;
+}
+
+async function loadEmbeddingModels(){
+  const sel=document.getElementById('embedModelSelect');
+  try{
+    const r=await fetch(`${API}/api/embedding-models`);
+    const d=await r.json();
+    embedModels=d.models||[];
+    const saved=localStorage.getItem('av-embed-model');
+    const initial=embedModels.some(m=>m.key===saved)?saved:(d.default||'rad-dino');
+    if(sel){
+      sel.innerHTML=embedModels.map(m=>`<option value="${m.key}">${m.label}</option>`).join('');
+      sel.value=initial;
+    }
+    localStorage.setItem('av-embed-model',initial);
+    updateEmbedModelUI(initial);
+  }catch(e){
+    if(sel) sel.innerHTML='<option value="rad-dino">RAD-DINO (radiology)</option>';
+  }
+  loadChromaStats();
+}
+
+function onEmbedModelChange(){
+  const key=getSelectedEmbedModel();
+  localStorage.setItem('av-embed-model',key);
+  updateEmbedModelUI(key);
+  loadChromaStats();
+}
+
 function setStatus(state,label){
   const dot=document.querySelector('.status-dot'),txt=document.getElementById('statusTxt');
   const colors={ready:'#3fb950',error:'#f85149',busy:'#d29922'};
@@ -233,17 +288,23 @@ async function loadStats(){
 }
 
 async function loadChromaStats(){
+  const model=getSelectedEmbedModel();
+  const ingestHint=`Not ingested · run_ingest.py --images-only --embedding-model ${model}`;
   try{
-    const r=await fetch(`${API}/api/chroma-stats`);
+    const r=await fetch(`${API}/api/chroma-stats?model=${encodeURIComponent(model)}`);
     const d=await r.json();
-    if(d.available){
+    if(d.model_label){
+      const chromaLbl=document.getElementById('chromaSecLabel');
+      if(chromaLbl) chromaLbl.textContent='ChromaDB · '+d.model_label;
+    }
+    if(d.available && d.count>0){
       document.getElementById('sChromaFrames').textContent=fmtNum(d.count);
       document.getElementById('sChromaSeqs').textContent=d.sequences!=null?fmtNum(d.sequences):'—';
       document.getElementById('chromaStatusLabel').textContent=`Collection: ${d.collection}`;
     } else {
-      document.getElementById('sChromaFrames').textContent='—';
-      document.getElementById('sChromaSeqs').textContent='—';
-      document.getElementById('chromaStatusLabel').textContent=d.error?'Unavailable':'Not ingested';
+      document.getElementById('sChromaFrames').textContent=d.available?'0':'—';
+      document.getElementById('sChromaSeqs').textContent=d.available?'0':'—';
+      document.getElementById('chromaStatusLabel').textContent=d.error?'Unavailable':ingestHint;
     }
   }catch(e){
     document.getElementById('chromaStatusLabel').textContent='Unavailable';
@@ -509,6 +570,7 @@ async function handleImageSend(question){
         question: question,
         n_results: 5,
         think:    document.getElementById('thinkToggle').checked,
+        embedding_model: getSelectedEmbedModel(),
       })
     });
     const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
@@ -522,7 +584,7 @@ async function handleImageSend(question){
         switch(evt.event){
           case 'decode_start':  thinkTxt.textContent='Decoding image…';break;
           case 'decode_done':   thinkTxt.textContent=`Querying ChromaDB (${evt.width}×${evt.height} px)…`;break;
-          case 'chroma_start':  thinkTxt.textContent='Searching vector database (RAD-DINO)…';break;
+          case 'chroma_start':  thinkTxt.textContent=`Searching vector database (${shortModelLabel(getSelectedEmbedModel())})…`;break;
           case 'chroma_done':
             results=evt.results;
             thinkTxt.textContent=`Found ${evt.count} cases · enriching…`;

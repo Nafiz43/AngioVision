@@ -52,7 +52,7 @@
     </div>
     <span class="hdr-title">AngioVision · Query Engine</span>
     <div class="hdr-sep"></div>
-    <span class="hdr-sub">NL → SQL · Image RAG (RAD-DINO)</span>
+    <span class="hdr-sub">NL → SQL · Image RAG (<span id="hdrEmbedModel">RAD-DINO</span>)</span>
     <div class="hdr-right">
       <div class="status-pill"><span class="status-dot"></span><span id="statusTxt">connecting…</span></div>
       <select class="model-select" id="modelSelect" onchange="onModelChange()">
@@ -117,7 +117,7 @@
     <div class="img-preview-bar" id="imgPreviewBar">
       <img class="img-preview-thumb" id="imgPreviewThumb" src="" alt="">
       <div class="img-preview-info">
-        <div class="img-preview-label">Image attached · RAD-DINO vector search enabled</div>
+        <div class="img-preview-label">Image attached · <span id="imgPreviewModel">RAD-DINO</span> vector search</div>
         <div class="img-preview-name" id="imgPreviewName">—</div>
       </div>
       <button class="img-clear-btn" onclick="clearImage()" title="Remove image">
@@ -174,8 +174,13 @@
       </div>
       <div class="rpt-coverage-label" id="rptCoverageLabel"></div>
     </div>
+    <div class="sb-sec" id="embedModelSec">
+      <div class="sb-label">Image Embedding Model</div>
+      <select class="sb-select" id="embedModelSelect" onchange="onEmbedModelChange()"></select>
+      <div class="sb-hint" id="embedModelHint">—</div>
+    </div>
     <div class="sb-sec" id="chromaSec">
-      <div class="sb-label">ChromaDB · RAD-DINO</div>
+      <div class="sb-label" id="chromaSecLabel">ChromaDB · RAD-DINO</div>
       <div class="stat-grid">
         <div class="stat"><div class="stat-val chroma" id="sChromaFrames">—</div><div class="stat-lab">Frames</div></div>
         <div class="stat"><div class="stat-val chroma" id="sChromaSeqs">—</div><div class="stat-lab">Sequences</div></div>

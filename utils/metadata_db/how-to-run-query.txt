@@ -55,13 +55,17 @@ All commands below are run from inside:  utils/metadata_db/
      # Metadata + reports only (skip the heavy image embedding step)
      python3 run_ingest.py --skip-images
 
-     # Image embeddings only (metadata already loaded)
+     # Image embeddings only (metadata already loaded) — uses RAD-DINO by default
      python3 run_ingest.py --images-only
+
+     # Build the ViT-Base collection (separate from RAD-DINO; required before the
+     # UI can search with the "ViT-Base" embedding option)
+     python3 run_ingest.py --images-only --embedding-model vit-base
 
      # Smoke test: only embed the first 50 sequences
      python3 run_ingest.py --images-only --limit-sequences 50
 
-     # Print DB + ChromaDB statistics and exit
+     # Print DB + ChromaDB statistics and exit (per-model breakdown included)
      python3 run_ingest.py --summary-only
 
   Key ingestion options (defaults come from ingestion/config.py):
@@ -70,6 +74,8 @@ All commands below are run from inside:  utils/metadata_db/
      --reports <csv>       radiology report CSV
      --labeled-csv <csv>   labeled DSA sequence CSV
      --chromadb <dir>      ChromaDB persistence dir
+     --embedding-model <k> image embedding model: rad-dino | vit-base
+                           (default: rad-dino)
      --workers <n>         parallel parse workers    (default: CPU count - 1)
      --limit <n>           cap .dcm files parsed (0 = all)
      --limit-sequences <n> cap sequences embedded (0 = all)
@@ -77,6 +83,15 @@ All commands below are run from inside:  utils/metadata_db/
 
   Ingestion is resumable: already-parsed SOPInstanceUIDs and already-embedded
   sequences are skipped automatically on re-run.
+
+  Embedding models & collections:
+     Each embedding model writes to its OWN ChromaDB collection (rad-dino ->
+     "dicom_images", vit-base -> "dicom_images_vit_base") and tracks resume state
+     under its own embedding_model key. Vectors from different models are NOT
+     comparable, so the UI only returns meaningful results for a model once that
+     model's collection has been ingested. Exact HuggingFace IDs and collection
+     names live in ingestion/config.py and qa_app/config.py (EMBEDDING_MODELS) and
+     must stay in sync between the two.
 
 
 --------------------------------------------------------------------------------
@@ -114,12 +129,15 @@ All commands below are run from inside:  utils/metadata_db/
 
   GET  /                     Browser UI
   GET  /api/stats            DB stats (instances, patients, studies, reports)
-  GET  /api/chroma-stats     ChromaDB collection stats
+  GET  /api/embedding-models Image-embedding model registry (key, label, hf_id)
+  GET  /api/chroma-stats     ChromaDB collection stats for a model
+                               query: ?model=<rad-dino|vit-base>
   POST /api/query            Agentic NL->SQL  (Server-Sent Events stream)
                                body: {"question": "...", "think": true,
                                       "model": "qwen3:1.7b"}
   POST /api/image-query      Image similarity RAG  (SSE stream)
-                               body: {"image": "<base64>", "n_results": 5}
+                               body: {"image": "<base64>", "n_results": 5,
+                                      "embedding_model": "rad-dino"}
   GET  /api/thumbnail        ?path=<.dcm>&frame=<i>   -> 320px PNG
   GET  /api/frame            ?path=<.dcm>&frame=<i>   -> full-res PNG
   POST /api/model            Switch synthesis model   body: {"model": "..."}

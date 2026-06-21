@@ -3,7 +3,7 @@
 import json
 import time
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from flask import Blueprint, request, jsonify, Response, render_template
 
@@ -12,7 +12,7 @@ from .deps import IMAGE_DEPS_OK, SMOLAGENTS_OK, base64
 from .state import state
 from .db import get_db_stats, run_sql_query, open_db
 from .agent import run_nl_query_agent
-from .embeddings import get_raddino_model
+from .embeddings import get_embedding_model
 from .images import (
     get_chroma_collection,
     decode_image_to_uint8_rgb,
@@ -37,43 +37,102 @@ def api_stats():
         return jsonify({"error": str(exc)}), 500
 
 
+def _completed_sequences_for_model(model_key: str) -> Optional[int]:
+    """
+    Count completed image-ingestion sequences for a given embedding model.
+
+    Returns None if the count can't be determined. On databases predating
+    per-model tracking (no embedding_model column) the count is only meaningful
+    for the default model, so it is reported only in that case (else 0).
+    """
+    try:
+        with state.lock:
+            con = open_db()
+            try:
+                cols = [r[1] for r in con.execute(
+                    "PRAGMA table_info(image_ingestion_status)"
+                ).fetchall()]
+                if not cols:
+                    return None
+                if "embedding_model" in cols:
+                    return con.execute(
+                        "SELECT COUNT(*) FROM image_ingestion_status "
+                        "WHERE status='completed' AND embedding_model=?",
+                        (model_key,),
+                    ).fetchone()[0]
+                # Legacy schema: existing rows are implicitly the default model.
+                if model_key == config.DEFAULT_EMBEDDING_MODEL:
+                    return con.execute(
+                        "SELECT COUNT(*) FROM image_ingestion_status WHERE status='completed'"
+                    ).fetchone()[0]
+                return 0
+            finally:
+                con.close()
+    except Exception as exc:
+        log.debug(f"Could not fetch sequence count: {exc}")
+        return None
+
+
+@bp.route("/api/embedding-models", methods=["GET"])
+def api_embedding_models():
+    """GET /api/embedding-models — registry of selectable image-embedding models."""
+    models = [
+        {
+            "key":        key,
+            "label":      spec["label"],
+            "hf_id":      spec["hf_id"],
+            "collection": spec["collection"],
+        }
+        for key, spec in config.EMBEDDING_MODELS.items()
+    ]
+    return jsonify({"models": models, "default": config.DEFAULT_EMBEDDING_MODEL})
+
+
 @bp.route("/api/chroma-stats", methods=["GET"])
 def api_chroma_stats():
-    """GET /api/chroma-stats — ChromaDB collection statistics."""
+    """
+    GET /api/chroma-stats?model=<key> — ChromaDB statistics for the selected
+    embedding model's collection (defaults to the default model).
+    """
     if not IMAGE_DEPS_OK:
         return jsonify({
             "available": False,
             "error": "Image dependencies not installed (chromadb, Pillow, numpy)",
         })
-    try:
-        col = get_chroma_collection()
-        if col is None:
-            return jsonify({"available": False, "count": 0, "sequences": 0})
 
-        count = col.count()
-        seq_count = None
-        try:
-            with state.lock:
-                con = open_db()
-                try:
-                    seq_count = con.execute(
-                        "SELECT COUNT(*) FROM image_ingestion_status WHERE status='completed'"
-                    ).fetchone()[0]
-                finally:
-                    con.close()
-        except Exception as exc:
-            log.debug(f"Could not fetch sequence count: {exc}")
+    model_key = config.resolve_embedding_model(request.args.get("model"))
+    spec      = config.EMBEDDING_MODELS[model_key]
+    try:
+        col = get_chroma_collection(model_key)
+        if col is None:
+            return jsonify({
+                "available":   False,
+                "count":       0,
+                "sequences":   0,
+                "model":       model_key,
+                "model_label": spec["label"],
+                "hf_id":       spec["hf_id"],
+                "collection":  spec["collection"],
+            })
 
         return jsonify({
-            "available": True,
-            "count": count,
-            "sequences": seq_count,
-            "collection": config.CHROMA_COLLECTION,
-            "path": str(state.chromadb_path),
+            "available":   True,
+            "count":       col.count(),
+            "sequences":   _completed_sequences_for_model(model_key),
+            "model":       model_key,
+            "model_label": spec["label"],
+            "hf_id":       spec["hf_id"],
+            "collection":  spec["collection"],
+            "path":        str(state.chromadb_path),
         })
     except Exception as exc:
         log.exception("GET /api/chroma-stats failed")
-        return jsonify({"available": False, "error": str(exc)})
+        return jsonify({
+            "available":   False,
+            "error":       str(exc),
+            "model":       model_key,
+            "model_label": spec["label"],
+        })
 
 
 @bp.route("/api/query", methods=["POST"])
@@ -128,17 +187,21 @@ def api_query() -> Response:
 @bp.route("/api/image-query", methods=["POST"])
 def api_image_query() -> Response:
     """
-    POST /api/image-query — RAD-DINO + ChromaDB visual similarity search.
+    POST /api/image-query — embedding-model + ChromaDB visual similarity search.
 
-    Body: {"image": "<base64>", "question": "...", "n_results": 5, "think": true}
-    Streams SSE events; groups frames by SOPInstanceUID so each result represents a
-    full series with all frames available for browsing.
+    Body: {"image": "<base64>", "question": "...", "n_results": 5, "think": true,
+           "embedding_model": "rad-dino"}
+    The query image is embedded with the selected model and matched against that
+    model's own ChromaDB collection. Streams SSE events; groups frames by
+    SOPInstanceUID so each result represents a full series.
     """
     data      = request.get_json(force=True)
     b64_image = data.get("image", "").strip()
     question  = data.get("question", "Show me the most similar cases to this image.").strip()
     n_results = max(1, min(20, int(data.get("n_results", config.N_SIMILAR_DEFAULT))))
     think     = data.get("think", state.think)
+    model_key   = config.resolve_embedding_model(data.get("embedding_model"))
+    model_label = config.EMBEDDING_MODELS[model_key]["label"]
 
     if not b64_image:
         return jsonify({"error": "image required"}), 400
@@ -170,13 +233,14 @@ def api_image_query() -> Response:
         # ── Step 2: ChromaDB similarity search ───────────────────────────────
         yield emit({"event": "chroma_start"})
         try:
-            col = get_chroma_collection()
+            col = get_chroma_collection(model_key)
             if col is None:
                 yield emit({
                     "event":   "error",
                     "message": (
-                        "ChromaDB collection not available. "
-                        "Run image ingestion (run_ingest.py --images-only) first."
+                        f"ChromaDB collection for '{model_label}' not available. "
+                        f"Build it first: python3 run_ingest.py --images-only "
+                        f"--embedding-model {model_key}"
                     ),
                 })
                 return
@@ -185,15 +249,19 @@ def api_image_query() -> Response:
             if available == 0:
                 yield emit({
                     "event":   "error",
-                    "message": "ChromaDB collection is empty. Ingest images first.",
+                    "message": (
+                        f"No vectors indexed for '{model_label}' yet. Build its "
+                        f"collection first: python3 run_ingest.py --images-only "
+                        f"--embedding-model {model_key}"
+                    ),
                 })
                 return
 
             # Over-fetch to allow grouping by SOPInstanceUID
             fetch_n = min(available, config.N_SIMILAR_OVERFETCH)
 
-            # Get RAD-DINO model for query embedding
-            ef = get_raddino_model()
+            # Embed the query with the selected model
+            ef = get_embedding_model(model_key)
             if ef is None:
                 # Fallback to query_images parameter
                 raw = col.query(
@@ -202,7 +270,7 @@ def api_image_query() -> Response:
                     include=["metadatas", "distances"],
                 )
             else:
-                # Use RAD-DINO embeddings
+                # Use the selected model's embeddings
                 query_embedding = ef([img_array])[0]
                 raw = col.query(
                     query_embeddings=[query_embedding],
@@ -299,7 +367,7 @@ def api_image_query() -> Response:
                 {"role": "user",   "content": (
                     f"Question: {question}\n\n"
                     f"Top {len(enriched)} visually similar series retrieved from ChromaDB "
-                    f"(RAD-DINO embedding similarity):\n\n{cases_text}"
+                    f"({model_label} embedding similarity):\n\n{cases_text}"
                 )},
             ], think=False)
         except Exception as exc:

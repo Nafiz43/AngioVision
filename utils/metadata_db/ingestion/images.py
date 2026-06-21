@@ -7,14 +7,20 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from .config import CHROMA_AVAILABLE, RAD_DINO_AVAILABLE, CHROMA_BATCH
+from .config import (
+    CHROMA_AVAILABLE,
+    RAD_DINO_AVAILABLE,
+    CHROMA_BATCH,
+    EMBEDDING_MODELS,
+    resolve_embedding_model,
+)
 from .labels import load_labeled_csv
 from .dicom_parser import (
     build_dicom_index,
     parse_dicom_stem_from_csv_path,
     extract_frames,
 )
-from .embeddings import load_rad_dino_model, setup_chromadb, embed_frames_rad_dino
+from .embeddings import load_embedding_model, setup_chromadb, embed_frames
 
 log = logging.getLogger(__name__)
 
@@ -26,17 +32,22 @@ def ingest_images_to_chromadb(
     chroma_path: Path,
     limit_sequences: int = 0,
     chroma_batch_size: int = CHROMA_BATCH,
+    embedding_model: str = "rad-dino",
 ) -> None:
     """
     End-to-end image ingestion:
       1. Load and filter the labeled CSV
       2. Build a DICOM stem→path index (SQLite-backed, filesystem fallback)
-      3. Load microsoft/rad-dino ONCE
+      3. Load the chosen embedding model ONCE
       4. Connect to ChromaDB (no embedding function — we supply embeddings)
       5. Iterate sequences: extract frames → embed → store
       6. Record status in image_ingestion_status for safe resume
 
-    Resume behaviour:
+    Each embedding model writes to its own ChromaDB collection and tracks resume
+    state under its own embedding_model key, so the same sequences can be ingested
+    independently by several models without clobbering one another.
+
+    Resume behaviour (scoped to this embedding model):
       • Sequences with status='completed' in SQLite are skipped.
       • Sequences with status='error' or 'in_progress' are retried;
         any previously written ChromaDB frames are deleted first.
@@ -57,17 +68,23 @@ def ingest_images_to_chromadb(
     # ── 2. Build DICOM index ─────────────────────────────────────────────────
     dicom_index = build_dicom_index(dicom_root, con=con)
 
-    # ── 3. Load RAD-DINO once — model stays in memory for all batches ───────
-    rad_dino_model, rad_dino_processor, rad_dino_device = load_rad_dino_model()
+    model_key       = resolve_embedding_model(embedding_model)
+    collection_name = EMBEDDING_MODELS[model_key]["collection"]
+    log.info(f"Embedding model : {model_key}  →  ChromaDB collection '{collection_name}'")
 
-    # ── 4. Connect to ChromaDB ───────────────────────────────────────────────
-    _, collection = setup_chromadb(chroma_path)
+    # ── 3. Load the embedding model once — stays in memory for all batches ──
+    emb_model, emb_processor, emb_device = load_embedding_model(model_key)
 
-    # ── 5. Determine already-completed sequences ─────────────────────────────
+    # ── 4. Connect to ChromaDB (per-model collection) ────────────────────────
+    _, collection = setup_chromadb(chroma_path, collection_name)
+
+    # ── 5. Determine already-completed sequences (for THIS model) ────────────
     completed: set[str] = {
         row[0]
         for row in con.execute(
-            "SELECT sequence_id FROM image_ingestion_status WHERE status = 'completed'"
+            "SELECT sequence_id FROM image_ingestion_status "
+            "WHERE status = 'completed' AND embedding_model = ?",
+            (model_key,),
         ).fetchall()
     }
     log.info(f"Already completed sequences (will be skipped): {len(completed):,}")
@@ -124,11 +141,11 @@ def ingest_images_to_chromadb(
             con.execute(
                 """
                 INSERT OR REPLACE INTO image_ingestion_status
-                    (sequence_id, accession_number, series_uid, source_path,
-                     frames_ingested, status, error_msg, ingested_at)
-                VALUES (?, ?, ?, ?, 0, 'in_progress', NULL, ?)
+                    (sequence_id, embedding_model, accession_number, series_uid,
+                     source_path, frames_ingested, status, error_msg, ingested_at)
+                VALUES (?, ?, ?, ?, ?, 0, 'in_progress', NULL, ?)
                 """,
-                (seq_id, accession, series_uid, path_str, now),
+                (seq_id, model_key, accession, series_uid, path_str, now),
             )
             con.commit()
 
@@ -142,8 +159,8 @@ def ingest_images_to_chromadb(
                 # Clean up any frames from a previous partial run
                 prev_row = con.execute(
                     "SELECT frames_ingested FROM image_ingestion_status "
-                    "WHERE sequence_id = ?",
-                    (seq_id,),
+                    "WHERE sequence_id = ? AND embedding_model = ?",
+                    (seq_id, model_key),
                 ).fetchone()
                 prev_n = int(prev_row[0]) if prev_row and prev_row[0] else 0
                 if prev_n > 0:
@@ -158,8 +175,8 @@ def ingest_images_to_chromadb(
                 for batch_start in range(0, n_frames, chroma_batch_size):
                     batch = frames[batch_start: batch_start + chroma_batch_size]
 
-                    embeddings = embed_frames_rad_dino(
-                        batch, rad_dino_model, rad_dino_processor, rad_dino_device
+                    embeddings = embed_frames(
+                        batch, emb_model, emb_processor, emb_device
                     )
 
                     ids = [
@@ -188,9 +205,9 @@ def ingest_images_to_chromadb(
                     """
                     UPDATE image_ingestion_status
                     SET frames_ingested = ?, status = 'completed', ingested_at = ?
-                    WHERE sequence_id = ?
+                    WHERE sequence_id = ? AND embedding_model = ?
                     """,
-                    (frames_added, datetime.datetime.utcnow().isoformat(), seq_id),
+                    (frames_added, datetime.datetime.utcnow().isoformat(), seq_id, model_key),
                 )
                 con.commit()
 
@@ -204,9 +221,9 @@ def ingest_images_to_chromadb(
                     """
                     UPDATE image_ingestion_status
                     SET status = 'error', error_msg = ?, ingested_at = ?
-                    WHERE sequence_id = ?
+                    WHERE sequence_id = ? AND embedding_model = ?
                     """,
-                    (err_msg, datetime.datetime.utcnow().isoformat(), seq_id),
+                    (err_msg, datetime.datetime.utcnow().isoformat(), seq_id, model_key),
                 )
                 con.commit()
                 failed += 1
