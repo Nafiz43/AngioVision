@@ -408,6 +408,12 @@ def api_run_sql():
         return jsonify({"error": str(exc)}), 400
 
 
+@bp.route("/about", methods=["GET"])
+def about() -> str:
+    """Serve the About / team page."""
+    return render_template("about.html")
+
+
 @bp.route("/", methods=["GET"])
 def index() -> str:
     """Serve the main HTML UI for the DICOM query engine."""

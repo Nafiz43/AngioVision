@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>About · AngioVision</title>
+<!-- honor the app's saved light/dark preference before paint -->
+<script>try{if(localStorage.getItem('av-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+<style>
+  /* The shared stylesheet locks body scroll for the SPA; re-enable it for this page. */
+  html,body{overflow-y:auto !important;overflow-x:hidden !important;height:auto !important;min-height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans)}
+
+  .about-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+    background-image:linear-gradient(rgba(88,166,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(88,166,255,.04) 1px,transparent 1px);
+    background-size:40px 40px}
+
+  .about-topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:14px;
+    padding:13px 22px;background:color-mix(in srgb,var(--bg) 82%,transparent);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  .back-link{display:inline-flex;align-items:center;gap:7px;text-decoration:none;font-family:var(--mono);
+    font-size:12px;color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;transition:all .15s}
+  .back-link:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+  .back-link svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2}
+  .tb-brand{display:flex;align-items:center;gap:10px;margin-left:4px}
+  .tb-logo{width:28px;height:28px;background:var(--accent2);border-radius:7px;display:flex;align-items:center;justify-content:center}
+  .tb-logo svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:2}
+  .tb-title{font-size:14px;font-weight:800;letter-spacing:-.3px}
+
+  .about-main{position:relative;z-index:1;max-width:1060px;margin:0 auto;padding:56px 24px 80px}
+
+  .about-hero{text-align:center;margin-bottom:58px}
+  .about-eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:var(--accent)}
+  .about-h1{font-size:42px;font-weight:800;letter-spacing:-1.2px;margin:14px 0 16px;
+    background:linear-gradient(120deg,var(--text),var(--accent));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .about-lead{font-size:16px;color:var(--text2);max-width:700px;margin:0 auto;line-height:1.75}
+
+  .team-head{text-align:center;margin-bottom:30px}
+  .team-head h2{font-size:24px;font-weight:800;letter-spacing:-.5px}
+  .team-head p{font-family:var(--mono);font-size:12px;color:var(--text3);margin-top:6px;letter-spacing:.4px}
+
+  .team-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:24px;align-items:stretch}
+
+  .member-card{position:relative;display:flex;flex-direction:column;background:var(--bg2);border:1px solid var(--border);
+    border-radius:18px;padding:30px 26px 26px;text-align:center;overflow:hidden;
+    transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
+  .member-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--ring,var(--accent))}
+  .member-card:hover{transform:translateY(-5px);border-color:var(--ring,var(--accent));box-shadow:0 16px 44px rgba(0,0,0,.42)}
+
+  .member-photo{width:122px;height:122px;border-radius:50%;object-fit:cover;display:block;margin:6px auto 16px;
+    background:var(--bg3);border:3px solid var(--ring,var(--border2));box-shadow:0 6px 22px rgba(0,0,0,.35)}
+  .member-name{font-size:19px;font-weight:800;letter-spacing:-.3px}
+  .member-role{font-family:var(--mono);font-size:11px;color:var(--ring,var(--accent));text-transform:uppercase;letter-spacing:.5px;margin-top:6px}
+  .member-affil{font-size:12.5px;color:var(--text3);margin-top:3px}
+  .member-bio{font-size:13px;color:var(--text2);line-height:1.7;margin-top:16px;text-align:left;flex:1}
+  .member-links{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:18px}
+  .member-link{font-family:var(--mono);font-size:11px;color:var(--text2);text-decoration:none;
+    border:1px solid var(--border);border-radius:100px;padding:5px 12px;transition:all .15s}
+  .member-link:hover{border-color:var(--ring,var(--accent));color:var(--ring,var(--accent))}
+
+  .about-footer{text-align:center;margin-top:66px;font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.8}
+  .about-footer a{color:var(--accent);text-decoration:none}
+  .about-footer a:hover{text-decoration:underline}
+
+  @media(max-width:560px){.about-h1{font-size:32px}.about-main{padding:40px 18px 64px}}
+</style>
+</head>
+<body>
+
+<div class="about-bg"></div>
+
+<div class="about-topbar">
+  <a class="back-link" href="{{ url_for('api.index') }}">
+    <svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+    Back to Query Engine
+  </a>
+  <div class="tb-brand">
+    <div class="tb-logo">
+      <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="3"/></svg>
+    </div>
+    <span class="tb-title">AngioVision</span>
+  </div>
+</div>
+
+<main class="about-main">
+
+  <section class="about-hero">
+    <div class="about-eyebrow">About the Project</div>
+    <h1 class="about-h1">AngioVision</h1>
+    <p class="about-lead">
+      AngioVision is a research project at <strong>UC&nbsp;Davis</strong> exploring multi-modal analysis of
+      coronary angiography — pairing angiographic image sequences with their radiology reports and applying modern
+      machine learning, vision-language models, and retrieval-augmented generation to surface clinically meaningful
+      insight. This query engine lets you explore the curated DICOM database in natural language and find visually
+      similar cases through image-based vector search.
+    </p>
+  </section>
+
+  <div class="team-head">
+    <h2>The Team</h2>
+    <p>// the people behind AngioVision</p>
+  </div>
+
+  <section class="team-grid">
+
+    <!-- ── Nafiz Imtiaz Khan ── -->
+    <article class="member-card" style="--ring:var(--accent)">
+      <img class="member-photo" src="https://github.com/Nafiz43.png?size=320" alt="Nafiz Imtiaz Khan"
+           onerror="this.onerror=null;this.src='https://ui-avatars.com/api/?name=Nafiz+Imtiaz+Khan&size=320&background=1f6feb&color=fff&bold=true&format=png'">
+      <div class="member-name">Nafiz Imtiaz Khan</div>
+      <div class="member-role">Lead Developer · PhD Candidate, CS</div>
+      <div class="member-affil">DECAL Lab · UC Davis</div>
+      <p class="member-bio">
+        PhD candidate in Computer Science at UC&nbsp;Davis (DECAL Lab), advised by Prof. Vladimir Filkov and
+        co-advised by Dr. Roger Goldman. His research applies large language models, machine learning, and deep
+        learning to software engineering and health informatics — including scalable ML/DL pipelines,
+        domain-specific LLM fine-tuning, and retrieval-augmented generation. Previously a Lecturer in CSE at MIST.
+        He leads the design and development of AngioVision.
+      </p>
+      <div class="member-links">
+        <a class="member-link" href="https://nafiz43.github.io/portfolio/" target="_blank" rel="noopener">Portfolio</a>
+        <a class="member-link" href="https://github.com/Nafiz43" target="_blank" rel="noopener">GitHub</a>
+        <a class="member-link" href="https://www.linkedin.com/in/nafiz43" target="_blank" rel="noopener">LinkedIn</a>
+      </div>
+    </article>
+
+    <!-- ── Vladimir Filkov ── -->
+    <article class="member-card" style="--ring:var(--violet-light)">
+      <img class="member-photo" src="https://www.cs.ucdavis.edu/%7Efilkov/filkov.jpg" alt="Vladimir Filkov"
+           onerror="this.onerror=null;this.src='https://ui-avatars.com/api/?name=Vladimir+Filkov&size=320&background=7c3aed&color=fff&bold=true&format=png'">
+      <div class="member-name">Vladimir Filkov</div>
+      <div class="member-role">Faculty Advisor · Professor of CS</div>
+      <div class="member-affil">DECAL Lab · UC Davis</div>
+      <p class="member-bio">
+        Professor of Computer Science at UC&nbsp;Davis and director of the DECAL Lab. His research spans software
+        engineering, mining software repositories, open-source software sustainability, and data science — supported
+        by NSF grants and projects such as OSSPREY and UC-OSPO. He provides the project's machine-learning and
+        data-science guidance as faculty advisor for AngioVision.
+      </p>
+      <div class="member-links">
+        <a class="member-link" href="https://web.cs.ucdavis.edu/~filkov/" target="_blank" rel="noopener">Homepage</a>
+        <a class="member-link" href="https://cs.ucdavis.edu/" target="_blank" rel="noopener">UC Davis CS</a>
+      </div>
+    </article>
+
+    <!-- ── Roger Eric Goldman ── -->
+    <article class="member-card" style="--ring:var(--report)">
+      <img class="member-photo" src="https://physicians.ucdavis.edu/Custom/Photos/42868.jpg" alt="Roger Eric Goldman"
+           onerror="this.onerror=null;this.src='https://ui-avatars.com/api/?name=Roger+Goldman&size=320&background=f0883e&color=fff&bold=true&format=png'">
+      <div class="member-name">Roger Eric Goldman, M.D., Ph.D.</div>
+      <div class="member-role">Clinical Co-Advisor · Asst. Professor</div>
+      <div class="member-affil">Radiology · UC Davis Health</div>
+      <p class="member-bio">
+        Physician-scientist in Vascular and Interventional Radiology at UC&nbsp;Davis Health, practicing at the
+        Lawrence&nbsp;J.&nbsp;Ellison Ambulatory Care Center. His work bridges interventional radiology with medical
+        imaging, data, and AI. As clinical co-advisor he grounds AngioVision in real radiological practice and
+        provides domain expertise on angiography and reporting.
+      </p>
+      <div class="member-links">
+        <a class="member-link" href="https://health.ucdavis.edu/radiology/team/42868/roger-goldman---vascular-and-interventional-radiology-sacramento/" target="_blank" rel="noopener">UC Davis Health</a>
+      </div>
+    </article>
+
+  </section>
+
+  <div class="about-footer">
+    AngioVision · UC Davis &nbsp;·&nbsp; Multi-modal angiography analysis<br>
+    <a href="{{ url_for('api.index') }}">← Return to the Query Engine</a>
+  </div>
+
+</main>
+
+</body>
+</html>
