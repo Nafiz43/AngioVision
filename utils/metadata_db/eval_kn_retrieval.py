@@ -32,6 +32,12 @@ Frame modes (--frame-mode)
   fl     Use frames from First_Diag_Image to Last_Diag_Image  [default]
   all    Use every frame (optionally capped by --max-frames)
 
+Split modes (--split-mode)
+──────────────────────────
+  cv       n-fold stratified cross-validation (--n-folds)              [default]
+  holdout  single stratified train/test split (--scale-down train fraction)
+           — reproduces the legacy eval_k1*.py 80/20 experiments
+
 Embedding models (--model)
 ──────────────────────────
   rad-dino        microsoft/rad-dino          768-dim  [default]
@@ -146,13 +152,13 @@ def code(label: str) -> str:
     return CODE_MAP.get(label, label[:8])
 
 def _auto_output_paths(
-    model_alias: str, frame_mode: str, temporal: bool, n_folds: int,
+    model_alias: str, frame_mode: str, temporal: bool, split_tag: str,
 ) -> tuple[str, str, str]:
-    """Build self-documenting filenames: kn_results_{model}_{mode}_{n}fold[_temporal].ext"""
+    """Build self-documenting filenames: kn_results_{model}_{mode}_{split_tag}[_temporal].ext"""
     safe = "".join(c if c.isalnum() or c == "-" else "-" for c in model_alias)
     while "--" in safe: safe = safe.replace("--", "-")
     safe = safe.strip("-") or "model"
-    parts = ["kn_results", safe, frame_mode, f"{n_folds}fold"]
+    parts = ["kn_results", safe, frame_mode, split_tag]
     if temporal: parts.append("temporal")
     stem = "_".join(parts)
     return f"{stem}.md", f"{stem}.png", f"{stem}.docx"
@@ -313,6 +319,38 @@ def create_cv_folds(
             if test and train: fold_splits[label] = (train, test)
         folds.append(fold_splits)
     return folds
+
+
+def create_holdout_split(
+    groups: dict[str, list[dict]], scale_down: float, min_seqs: int, seed: int,
+) -> list[dict[str, tuple[list, list]]]:
+    """
+    Single stratified holdout split (replicates the legacy eval_k1*.py behaviour).
+    scale_down is the TRAIN fraction per category (e.g. 0.80 → 80% train / 20% test).
+    Categories with fewer than min_seqs sequences are excluded.
+    Returns a one-element list of { label: (train_list, test_list) } so the
+    downstream fold loop / aggregation can treat it as a single "fold".
+    """
+    rng = random.Random(seed)
+    split: dict[str, tuple[list, list]] = {}
+    skipped: list[tuple[str, int]] = []
+
+    log.info(f"Holdout split (scale_down={scale_down:.0%} train) …")
+    for label, seqs in sorted(groups.items(), key=lambda x: -len(x[1])):
+        n = len(seqs)
+        if n < min_seqs: skipped.append((label, n)); continue
+        shuffled = list(seqs); rng.shuffle(shuffled)
+        n_train = max(1, round(n * scale_down))
+        n_test  = n - n_train
+        if n_test == 0: n_train -= 1; n_test = 1   # guarantee ≥1 test sequence
+        if n_train < 1: continue
+        split[label] = (shuffled[:n_train], shuffled[n_train:])
+        log.info(f"  {code(label):8s}  total={n:4d}  train={n_train:4d}  test={n_test:4d}")
+
+    if skipped:
+        log.info(f"  Skipped (< {min_seqs} seqs): " + ", ".join(f"{code(l)}({n})" for l, n in skipped))
+    log.info(f"Holdout: 1 split × {len(split)} categories ({sum(len(tr)+len(te) for tr,te in split.values()):,} sequences)")
+    return [split]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -987,8 +1025,12 @@ def main() -> None:
         help="Max frames per seq when --frame-mode=all  (0=all)  [default: 0]")
     parser.add_argument("--k-values",    type=int, nargs="+", default=DEFAULT_K_VALUES,
         help="K values to evaluate  [default: 1 3 5 7 9 11 13 15]")
+    parser.add_argument("--split-mode",  default="cv", choices=("cv", "holdout"),
+        help="cv=n-fold cross-validation | holdout=single train/test split  [default: cv]")
     parser.add_argument("--n-folds",     type=int, default=10,
-        help="Number of CV folds  [default: 10]")
+        help="Number of CV folds (split-mode=cv)  [default: 10]")
+    parser.add_argument("--scale-down",  type=float, default=0.80,
+        help="TRAIN fraction per category (split-mode=holdout); e.g. 0.80 = 80%% train / 20%% test  [default: 0.80]")
     parser.add_argument("--embed-batch", type=int, default=16,
         help="Frames per model forward pass  [default: 16]")
     parser.add_argument("--temporal",    action="store_true",
@@ -1003,21 +1045,31 @@ def main() -> None:
     args     = parser.parse_args()
     k_values = sorted(set(args.k_values))
 
+    # Split-mode → effective "fold" count + self-documenting filename tag
+    if args.split_mode == "holdout":
+        n_folds_eff = 1
+        split_tag   = f"holdout{round(args.scale_down*100)}"
+        split_desc  = f"holdout ({args.scale_down:.0%} train / {1-args.scale_down:.0%} test)"
+    else:
+        n_folds_eff = args.n_folds
+        split_tag   = f"{args.n_folds}fold"
+        split_desc  = f"{args.n_folds}-fold cross-validation"
+
     _auto_md, _auto_png, _auto_docx = _auto_output_paths(
-        args.model, args.frame_mode, args.temporal, args.n_folds,
+        args.model, args.frame_mode, args.temporal, split_tag,
     )
     out_md   = Path(args.out_md   or _auto_md)
     out_plot = Path(args.out_plot or _auto_png)
     out_docx = Path(args.out_docx or _auto_docx)
 
     log.info("═" * 60)
-    log.info("  AngioVision K@N Retrieval Evaluation  (Cross-Validated)")
+    log.info("  AngioVision K@N Retrieval Evaluation")
     log.info("═" * 60)
     log.info(f"  model         : {args.model}")
     log.info(f"  frame-mode    : {args.frame_mode}" +
              (f"  (max-frames={args.max_frames})" if args.frame_mode=="all" and args.max_frames else ""))
     log.info(f"  temporal      : {'ON  (mean+std pooling)' if args.temporal else 'OFF'}")
-    log.info(f"  n-folds       : {args.n_folds}")
+    log.info(f"  split-mode    : {split_desc}")
     log.info(f"  K values      : {k_values}")
     log.info(f"  workers       : {args.workers}  |  embed-batch: {args.embed_batch}")
     log.info(f"  min-seqs      : {args.min_seqs}  |  seed: {args.seed}")
@@ -1041,10 +1093,14 @@ def main() -> None:
         groups = dict(list(groups.items())[:args.limit_cats])
         log.info(f"--limit-cats={args.limit_cats}: {list(groups.keys())}")
 
-    # 5. Build CV folds
-    log.info(f"Building {args.n_folds}-fold CV splits …")
-    folds = create_cv_folds(groups, args.n_folds, args.min_seqs, args.seed)
-    if not folds or not folds[0]: log.error("No categories remain after CV filtering — aborting"); sys.exit(1)
+    # 5. Build splits (n-fold CV or single holdout)
+    if args.split_mode == "holdout":
+        log.info(f"Building holdout split (scale-down={args.scale_down:.0%}) …")
+        folds = create_holdout_split(groups, args.scale_down, args.min_seqs, args.seed)
+    else:
+        log.info(f"Building {args.n_folds}-fold CV splits …")
+        folds = create_cv_folds(groups, args.n_folds, args.min_seqs, args.seed)
+    if not folds or not folds[0]: log.error("No categories remain after split filtering — aborting"); sys.exit(1)
 
     # 6. Load model
     embed_fn, model_id, emb_dim = load_embedding_model(args.model, args.device)
@@ -1055,10 +1111,10 @@ def main() -> None:
         args.embed_batch, args.workers, temporal=args.temporal,
     )
 
-    # 8. Cross-validation loop
+    # 8. Evaluation loop (1 iteration for holdout, n_folds for CV)
     fold_results: list[dict[int, dict[str, dict]]] = []
     for fold_idx, fold_splits in enumerate(folds):
-        log.info(f"═══ Fold {fold_idx+1}/{args.n_folds} ═══")
+        log.info(f"═══ Fold {fold_idx+1}/{n_folds_eff} ═══")
         collection = create_ephemeral_collection()
         n_entries  = ingest_fold_from_precomputed(fold_splits, collection, all_embs, args.frame_mode, args.temporal)
         log.info(f"  Fold {fold_idx+1}: {n_entries:,} ChromaDB entries")
@@ -1073,12 +1129,12 @@ def main() -> None:
     if not fold_results: log.error("No folds completed — aborting"); sys.exit(1)
 
     # 9. Aggregate across folds
-    all_results = aggregate_cv_results(fold_results, k_values, args.n_folds)
+    all_results = aggregate_cv_results(fold_results, k_values, n_folds_eff)
 
     # 10. Report
-    print_results_table(all_results, k_values, args.n_folds, model_id, args.frame_mode)
-    save_bar_chart(all_results, k_values, args.n_folds, model_id, args.frame_mode, out_plot)
-    write_markdown(all_results, k_values, args.n_folds, args.seed, model_id, args.frame_mode, emb_dim, args.temporal, out_md)
+    print_results_table(all_results, k_values, n_folds_eff, model_id, args.frame_mode)
+    save_bar_chart(all_results, k_values, n_folds_eff, model_id, args.frame_mode, out_plot)
+    write_markdown(all_results, k_values, n_folds_eff, args.seed, model_id, args.frame_mode, emb_dim, args.temporal, out_md)
 
     # 11. Visual examples docx — use last fold's collection
     last_splits = folds[-1]

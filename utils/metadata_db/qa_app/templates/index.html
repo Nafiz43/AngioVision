@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AngioVision · Query Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+
+</head>
+<body>
+
+<!-- LOGIN OVERLAY -->
+<div id="loginOverlay">
+  <div class="login-card" id="loginCard">
+    <div class="login-logo">
+      <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+    </div>
+    <div class="login-title">AngioVision</div>
+    <div class="login-sub">QUERY ENGINE · RESTRICTED ACCESS</div>
+    <div id="loginError" class="login-error">Invalid username or password.</div>
+    <div class="login-field">
+      <label class="login-label" for="loginUser">Username</label>
+      <input class="login-input" id="loginUser" type="text" placeholder="Enter username" autocomplete="username" spellcheck="false">
+    </div>
+    <div class="login-field">
+      <label class="login-label" for="loginPass">Password</label>
+      <div class="pw-wrap">
+        <input class="login-input" id="loginPass" type="password" placeholder="Enter password" autocomplete="current-password">
+        <button class="pw-toggle" id="pwToggle" type="button" onclick="togglePwVisibility()">
+          <svg id="eyeOpen" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg id="eyeOff" viewBox="0 0 24 24" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+        </button>
+      </div>
+    </div>
+    <button class="login-btn" id="loginBtn" onclick="handleLogin()">Sign In</button>
+    <div class="login-footer">
+      Authorised access only &nbsp;·&nbsp; Session: <span id="sessionUser">—</span>
+      <div class="attempt-bar"><div class="attempt-fill" id="attemptFill"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="appWrapper">
+<div class="layout">
+
+  <header class="header">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="3"/></svg>
+    </div>
+    <span class="hdr-title">AngioVision · Query Engine</span>
+    <div class="hdr-sep"></div>
+    <span class="hdr-sub">NL → SQL · Image RAG (RAD-DINO)</span>
+    <div class="hdr-right">
+      <div class="status-pill"><span class="status-dot"></span><span id="statusTxt">connecting…</span></div>
+      <select class="model-select" id="modelSelect" onchange="onModelChange()">
+        <option>qwen3:1.7b</option>
+        <option>qwen3:8b</option>
+        <option>qwen3:14b</option>
+        <option>qwen3:32b</option>
+        <option>qwen3:35b</option>
+        <option>llama3.2:latest</option>
+      </select>
+      <button class="theme-toggle" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle light / dark mode">
+        <!-- moon icon (shown in dark mode) -->
+        <svg id="iconMoon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <!-- sun icon (shown in light mode) -->
+        <svg id="iconSun" viewBox="0 0 24 24" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+      <button class="logout-btn" onclick="handleLogout()">Logout</button>
+    </div>
+  </header>
+
+  <main class="chat-col">
+    <div class="messages" id="messages">
+      <div class="empty" id="emptyState">
+        <div class="empty-icon">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="1.8"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+        </div>
+        <div class="empty-title">Ask about your DICOM data</div>
+        <div class="empty-sub">Natural language → SQL for metadata &amp; reports. Upload an angiography image to find visually similar cases via ChromaDB vector search with RAD-DINO embeddings.</div>
+      </div>
+    </div>
+
+    <div class="chips-wrap">
+      <div class="chip-group">
+        <span class="chip-group-label">DICOM</span>
+        <span class="chip" onclick="fillQ('How many unique patients are in the database?')">Patient count</span>
+        <span class="chip" onclick="fillQ('How many studies, series, and instances do we have in total?')">Overview</span>
+        <span class="chip" onclick="fillQ('List all DSA series with more than 20 frames, showing accession number and source path.')">DSA &gt; 20 frames</span>
+        <span class="chip" onclick="fillQ('What modalities are present and how many instances does each have?')">Modalities</span>
+        <span class="chip" onclick="fillQ('How many studies were performed each year? Order by year.')">Studies/year</span>
+        <span class="chip" onclick="fillQ('Which instances have the highest dose product? Show top 10.')">Top dose</span>
+      </div>
+      <div class="chip-group">
+        <span class="chip-group-label">Reports</span>
+        <span class="chip report" onclick="fillQ('How many accession numbers have a linked radiology report?')">Coverage</span>
+        <span class="chip report" onclick="fillQ('Show 5 example radiology reports with their accession number and study date.')">Sample reports</span>
+        <span class="chip report" onclick="fillQ('Find all reports electronically signed by [Doctor Name].')">By doctor</span>
+        <span class="chip report" onclick="fillQ('Find all studies whose report mentions stenosis.')">Stenosis</span>
+        <span class="chip report" onclick="fillQ('What is the average DICOM dose product for studies signed by a specific doctor?')">Dose by doctor</span>
+      </div>
+      <div class="chip-group">
+        <span class="chip-group-label">Image RAG</span>
+        <span class="chip image" onclick="promptImageUpload('Show me the 5 most similar angiography sequences to this image.')">Upload → find similar</span>
+        <span class="chip image" onclick="promptImageUpload('Find cases similar to this image and show their radiology reports.')">Upload → with reports</span>
+        <span class="chip image" onclick="promptImageUpload('What accession numbers are most visually similar to this DSA frame?')">Upload → accessions</span>
+      </div>
+    </div>
+
+    <!-- Image preview bar (shown when image is attached) -->
+    <div class="img-preview-bar" id="imgPreviewBar">
+      <img class="img-preview-thumb" id="imgPreviewThumb" src="" alt="">
+      <div class="img-preview-info">
+        <div class="img-preview-label">Image attached · RAD-DINO vector search enabled</div>
+        <div class="img-preview-name" id="imgPreviewName">—</div>
+      </div>
+      <button class="img-clear-btn" onclick="clearImage()" title="Remove image">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="input-bar">
+      <div class="input-wrap" id="inputWrap">
+        <textarea class="nl-input" id="nlInput" rows="1"
+          placeholder="Ask about DICOM metadata, radiology reports, or upload an image…"></textarea>
+      </div>
+      <!-- Hidden file input -->
+      <input type="file" id="imageFileInput" accept="image/*" style="display:none" onchange="onImageSelected(event)">
+      <!-- Attach button -->
+      <button class="attach-btn" id="attachBtn" onclick="triggerImagePick()"
+              title="Attach angiography image for visual similarity search">
+        <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <!-- Stop button (visible only while loading) -->
+      <button class="stop-btn" id="stopBtn" onclick="stopQuery()" title="Stop">
+        <svg viewBox="0 0 10 10"><rect x="0" y="0" width="10" height="10" rx="1.5"/></svg>
+      </button>
+      <!-- Send button -->
+      <button class="send-btn" id="sendBtn" onclick="handleSend()" title="Send (Enter)">
+        <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      </button>
+    </div>
+  </main>
+
+  <aside class="sidebar">
+    <div class="sb-hdr">Database</div>
+    <div class="sb-sec">
+      <div class="sb-label">Path</div>
+      <div class="db-path" id="dbPath">—</div>
+    </div>
+    <div class="sb-sec">
+      <div class="sb-label">DICOM Instances</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-val" id="sInst">—</div><div class="stat-lab">Instances</div></div>
+        <div class="stat"><div class="stat-val" id="sPat">—</div><div class="stat-lab">Patients</div></div>
+        <div class="stat"><div class="stat-val" id="sStu">—</div><div class="stat-lab">Studies</div></div>
+        <div class="stat"><div class="stat-val" id="sSer">—</div><div class="stat-lab">Series</div></div>
+      </div>
+    </div>
+    <div class="sb-sec">
+      <div class="sb-label">Radiology Reports</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-val report" id="sRptTotal">—</div><div class="stat-lab">Reports</div></div>
+        <div class="stat"><div class="stat-val report" id="sRptLinked">—</div><div class="stat-lab">Linked</div></div>
+      </div>
+      <div class="rpt-coverage" id="rptCoverageWrap" style="display:none">
+        <div class="rpt-coverage-bar" id="rptCoverageBar" style="width:0%"></div>
+      </div>
+      <div class="rpt-coverage-label" id="rptCoverageLabel"></div>
+    </div>
+    <div class="sb-sec" id="chromaSec">
+      <div class="sb-label">ChromaDB · RAD-DINO</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-val chroma" id="sChromaFrames">—</div><div class="stat-lab">Frames</div></div>
+        <div class="stat"><div class="stat-val chroma" id="sChromaSeqs">—</div><div class="stat-lab">Sequences</div></div>
+      </div>
+      <div class="rpt-coverage-label" id="chromaStatusLabel" style="margin-top:6px"></div>
+    </div>
+    <div class="sb-sec" id="modalitySec" style="display:none">
+      <div class="sb-label">Modalities</div>
+      <div id="modalityBars"></div>
+    </div>
+    <div class="sb-sec">
+      <div class="sb-label">Options</div>
+      <div class="opt-row"><span class="opt-lab">Thinking mode</span><label class="toggle"><input type="checkbox" id="thinkToggle" checked><span class="tslider"></span></label></div>
+      <div class="opt-row"><span class="opt-lab">Auto-scroll</span><label class="toggle"><input type="checkbox" id="autoScrollToggle" checked><span class="tslider"></span></label></div>
+    </div>
+    <div class="sb-hdr" style="border-top:1px solid var(--border)">History</div>
+    <div class="hist-scroll" id="histScroll"></div>
+  </aside>
+
+</div>
+</div>
+
+
+
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+<!-- LIGHTBOX -->
+<div id="lightbox">
+  <button class="lb-close" onclick="closeLightbox()">×</button>
+  <img id="lightboxImg" src="" alt="">
+  <div id="lightboxMeta"></div>
+</div>
+
+</body>
+</html>

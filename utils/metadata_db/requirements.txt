@@ -1,0 +1,28 @@
+# ════════════════════════════════════════════════════════════════════════════
+# AngioVision — metadata_db requirements
+# Covers both the ingestion pipeline (run_ingest.py) and the query web server
+# (run_server.py). Install with:  pip install -r requirements.txt
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── Web server (run_server.py) ───────────────────────────────────────────────
+Flask>=3.0
+flask-cors>=4.0
+
+# ── LLM synthesis (Ollama via LangChain) ─────────────────────────────────────
+langchain-ollama>=0.2
+langchain-core>=0.3
+
+# ── Agentic NL→SQL pipeline (talks to Ollama's OpenAI-compatible API) ─────────
+smolagents[openai]>=1.2
+openai>=1.40
+
+# ── DICOM parsing + metadata ingestion (run_ingest.py) ───────────────────────
+pydicom>=2.4
+numpy>=1.24
+tqdm>=4.66
+
+# ── Image RAG: RAD-DINO embeddings + ChromaDB vector store ───────────────────
+chromadb>=0.5
+Pillow>=10.0
+torch>=2.1
+transformers>=4.40

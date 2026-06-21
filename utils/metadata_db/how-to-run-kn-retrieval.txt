@@ -1,0 +1,153 @@
+# How to Run K@N Retrieval Evaluation
+
+All sequence-retrieval experiments in this directory are now driven by a single
+streamlined pipeline: `eval_kn_retrieval.py`. The old per-experiment scripts
+(`eval_k1.py`, `eval_k1_best_image.py`, `eval_k1_best_set_of_images.py`) are fully
+reproducible from this one script by changing arguments — no functionality was lost.
+
+Run every command from this directory:
+
+```
+cd utils/metadata_db
+```
+
+---
+
+## 1. Quick start
+
+```bash
+python3 eval_kn_retrieval.py
+```
+
+Defaults: `--model rad-dino --frame-mode fl --split-mode cv --n-folds 10 --k-values 1 3 5 7 9 11 13 15`.
+
+Each run writes three self-documenting output files (auto-named from the arguments):
+
+- `kn_results_<model>_<frame-mode>_<split-tag>[_temporal].md`   — results table (mean+/-std)
+- `kn_results_<model>_<frame-mode>_<split-tag>[_temporal].png`  — bar chart + K-sweep
+- `kn_results_<model>_<frame-mode>_<split-tag>[_temporal].docx` — K@1 visual examples
+
+`<split-tag>` is `10fold` for CV or `holdout80` for an 80/20 holdout, so different
+experiments never overwrite each other.
+
+---
+
+## 2. The arguments that define an experiment
+
+| Argument | Choices / Default | Controls |
+|:---------|:------------------|:---------|
+| `--model` | `rad-dino` (default), `vit-b16`, `vit-l16`, `openclip-b32`, `openclip-l14`, or any HF model ID | Embedding model |
+| `--frame-mode` | `best`, `fl` (default), `all` | Which DICOM frames per sequence |
+| `--max-frames` | int, `0`=all (default) | Cap frames when `--frame-mode all` (uniform sampling) |
+| `--split-mode` | `cv` (default), `holdout` | Validation scheme |
+| `--n-folds` | int, `10` (default) | CV folds (only when `--split-mode cv`) |
+| `--scale-down` | float, `0.80` (default) | Train fraction (only when `--split-mode holdout`) |
+| `--k-values` | ints, `1 3 5 7 9 11 13 15` | K values to sweep |
+| `--temporal` | flag, off | Mean+std temporal pooling (1 vector/sequence) |
+| `--embed-batch` | int, `16` | Frames per model forward pass |
+| `--workers` | int, half of CPU cores | DICOM reader threads |
+| `--min-seqs` | int, `3` | Min sequences/category to include |
+| `--seed` | int, `42` | RNG seed (keep fixed for reproducibility) |
+| `--device` | `cuda`/`cpu` (auto) | Compute device |
+| `--limit-cats` | int, `0`=all | Smoke-test on first N categories |
+| `--labeled-csv` / `--dicom-root` / `--sqlite-db` | paths | Data sources |
+| `--out-md` / `--out-plot` / `--out-docx` | paths | Override auto-named outputs |
+
+---
+
+## 3. Reproducing the legacy scripts (exact commands)
+
+The three old K@1 scripts used a single 80/20 holdout split with RAD-DINO.
+Use `--split-mode holdout --scale-down 0.80 --k-values 1` to match them exactly.
+
+### `eval_k1_best_image.py`  ->  Best_Image frame only
+```bash
+python3 eval_kn_retrieval.py --model rad-dino --frame-mode best --split-mode holdout --scale-down 0.80 --k-values 1
+```
+
+### `eval_k1_best_set_of_images.py`  ->  First_Diag_Image -> Last_Diag_Image window
+```bash
+python3 eval_kn_retrieval.py --model rad-dino --frame-mode fl --split-mode holdout --scale-down 0.80 --k-values 1
+```
+
+### `eval_k1.py`  ->  all frames, uniformly sampled to 10
+```bash
+python3 eval_kn_retrieval.py --model rad-dino --frame-mode all --max-frames 10 --split-mode holdout --scale-down 0.80 --k-values 1
+```
+
+> Note: the legacy scripts only reported K=1 on a single split. The new pipeline
+> additionally lets you sweep K and use cross-validation (see below) for more
+> robust numbers — just drop `--k-values 1` and/or switch to `--split-mode cv`.
+
+---
+
+## 4. Reproducing `commands.sh` (10-fold CV, ViT-B/16)
+
+These are the current standard experiments. Cross-validation is the default,
+so `--split-mode cv --n-folds 10` is implied.
+
+```bash
+# First->Last diagnostic window
+python3 eval_kn_retrieval.py --model vit-b16 --frame-mode fl
+python3 eval_kn_retrieval.py --model vit-b16 --frame-mode fl --temporal
+
+# Best image only
+python3 eval_kn_retrieval.py --model vit-b16 --frame-mode best
+python3 eval_kn_retrieval.py --model vit-b16 --frame-mode best --temporal
+
+# All frames
+python3 eval_kn_retrieval.py --model vit-b16 --frame-mode all
+python3 eval_kn_retrieval.py --model vit-b16 --frame-mode all --temporal
+```
+
+---
+
+## 5. Common experiment recipes
+
+Swap the model on any of the above by changing `--model`:
+
+```bash
+# RAD-DINO, diagnostic window, 10-fold CV (default model+mode)
+python3 eval_kn_retrieval.py
+
+# OpenCLIP ViT-B/32, all frames capped at 20, 10-fold CV
+python3 eval_kn_retrieval.py --model openclip-b32 --frame-mode all --max-frames 20
+
+# 5-fold CV instead of 10
+python3 eval_kn_retrieval.py --model vit-b16 --frame-mode fl --n-folds 5
+
+# Custom K sweep with more reader threads
+python3 eval_kn_retrieval.py --k-values 1 3 5 --workers 8
+
+# Temporal aggregation (one mean+std vector per sequence)
+python3 eval_kn_retrieval.py --temporal --n-folds 5
+
+# Fast smoke-test on the first 3 categories
+python3 eval_kn_retrieval.py --limit-cats 3 --frame-mode best
+```
+
+---
+
+## 6. Reproducibility checklist
+
+1. Keep `--seed 42` (default) fixed across runs you want to compare.
+2. Always state `--model`, `--frame-mode`, `--split-mode`, and the fold/scale-down
+   value — these four fully define an experiment.
+3. The auto-generated filenames encode these settings, so saved results are
+   self-labeling and never collide.
+4. CV (`--split-mode cv`) reports mean+/-std across folds; holdout
+   (`--split-mode holdout`) reports a single split's accuracy.
+
+---
+
+## 7. Requirements
+
+```bash
+pip install pydicom chromadb transformers torch pillow tqdm matplotlib open-clip-torch python-docx
+```
+
+- `open-clip-torch` is only needed for `--model openclip-*`.
+- `python-docx` is only needed for the K@1 examples `.docx`.
+- `matplotlib` is only needed for the `.png` chart.
+
+Neo4j connection settings (if used elsewhere) live in `config.py`.

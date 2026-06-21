@@ -1,0 +1,168 @@
+================================================================================
+ HOW TO RUN — AngioVision Query Web App  (qa_app / run_server.py)
+================================================================================
+
+This guide explains how to install, ingest data for, and run the DICOM query
+web application. The app provides:
+
+  - A browser UI at http://localhost:<port>
+  - Agentic natural-language -> SQL querying (smolagents + a local Ollama model)
+  - Image RAG: upload an image, retrieve visually similar DICOM sequences
+    (RAD-DINO embeddings + ChromaDB), enriched with SQLite metadata + reports
+  - DICOM frame thumbnails / full-resolution rendering
+
+All commands below are run from inside:  utils/metadata_db/
+
+
+--------------------------------------------------------------------------------
+ 1. PREREQUISITES
+--------------------------------------------------------------------------------
+
+  a) Python 3.10+
+
+  b) Python dependencies:
+        pip install -r requirements.txt
+
+     Minimal (server boots, NL->SQL + image RAG return 503 until extras added):
+        pip install flask flask-cors langchain-ollama
+     Full feature set additionally needs:
+        smolagents[openai] openai        (agentic NL->SQL)
+        chromadb pillow numpy            (image RAG / vector search)
+        torch transformers               (RAD-DINO embeddings)
+        pydicom                          (DICOM frame rendering)
+
+  c) A running Ollama server with a tool/function-calling capable model pulled.
+        # install + start Ollama (see https://ollama.com)
+        ollama serve
+        ollama pull qwen3:1.7b           # default; qwen3 / llama3.1+ / mistral work
+
+     The agent talks to Ollama's OpenAI-compatible API at
+     <ollama-host>/v1, so the chosen model MUST support tool calling.
+
+  d) Built databases (SQLite + ChromaDB). See section 2.
+
+
+--------------------------------------------------------------------------------
+ 2. BUILD THE DATABASES  (ingestion — run once, resumable)
+--------------------------------------------------------------------------------
+
+  The web app reads a SQLite DB (DICOM metadata + radiology reports) and a
+  ChromaDB store (image embeddings). Build them with run_ingest.py:
+
+     # Full pipeline: metadata + reports + image embeddings
+     python3 run_ingest.py
+
+     # Metadata + reports only (skip the heavy image embedding step)
+     python3 run_ingest.py --skip-images
+
+     # Image embeddings only (metadata already loaded)
+     python3 run_ingest.py --images-only
+
+     # Smoke test: only embed the first 50 sequences
+     python3 run_ingest.py --images-only --limit-sequences 50
+
+     # Print DB + ChromaDB statistics and exit
+     python3 run_ingest.py --summary-only
+
+  Key ingestion options (defaults come from ingestion/config.py):
+     --root <dir>          DICOM root to scan        (default: /data/.../DICOM)
+     --db <file>           SQLite output             (default: .../dicom_staging.db)
+     --reports <csv>       radiology report CSV
+     --labeled-csv <csv>   labeled DSA sequence CSV
+     --chromadb <dir>      ChromaDB persistence dir
+     --workers <n>         parallel parse workers    (default: CPU count - 1)
+     --limit <n>           cap .dcm files parsed (0 = all)
+     --limit-sequences <n> cap sequences embedded (0 = all)
+     --dry-run             parse but write nothing
+
+  Ingestion is resumable: already-parsed SOPInstanceUIDs and already-embedded
+  sequences are skipped automatically on re-run.
+
+
+--------------------------------------------------------------------------------
+ 3. RUN THE WEB SERVER
+--------------------------------------------------------------------------------
+
+     # Defaults: db + chromadb from qa_app/config.py, model qwen3:1.7b, port 5050
+     python3 run_server.py
+
+     # Custom database + port
+     python3 run_server.py --db /data/meta.db --port 5050
+
+     # Pick a different Ollama model, disable "thinking" mode by default
+     python3 run_server.py --model qwen3:14b --no-think
+
+     # Point at a remote Ollama host and allow more agent reasoning steps
+     python3 run_server.py --ollama-host http://localhost:11434 --agent-max-steps 12
+
+  Then open:  http://localhost:5050
+
+  Server options:
+     --db <file>            SQLite database path
+     --chromadb <dir>       ChromaDB persistence directory
+     --port <n>             port to serve on            (default: 5050)
+     --host <addr>          bind address                (default: 0.0.0.0)
+     --model <name>         Ollama model                (default: qwen3:1.7b)
+     --no-think             disable Qwen3 thinking mode by default
+     --ollama-host <url>    Ollama base URL             (default: http://localhost:11434)
+     --agent-max-steps <n>  max sql_query tool calls per question (default: 10)
+
+
+--------------------------------------------------------------------------------
+ 4. API ENDPOINTS  (served by qa_app/routes.py)
+--------------------------------------------------------------------------------
+
+  GET  /                     Browser UI
+  GET  /api/stats            DB stats (instances, patients, studies, reports)
+  GET  /api/chroma-stats     ChromaDB collection stats
+  POST /api/query            Agentic NL->SQL  (Server-Sent Events stream)
+                               body: {"question": "...", "think": true,
+                                      "model": "qwen3:1.7b"}
+  POST /api/image-query      Image similarity RAG  (SSE stream)
+                               body: {"image": "<base64>", "n_results": 5}
+  GET  /api/thumbnail        ?path=<.dcm>&frame=<i>   -> 320px PNG
+  GET  /api/frame            ?path=<.dcm>&frame=<i>   -> full-res PNG
+  POST /api/model            Switch synthesis model   body: {"model": "..."}
+  POST /api/sql              Run read-only SQL        body: {"sql": "SELECT ..."}
+
+  Example (curl, NL query SSE stream):
+     curl -N -X POST http://localhost:5050/api/query \
+          -H 'Content-Type: application/json' \
+          -d '{"question":"How many XA studies are there?","model":"qwen3:1.7b"}'
+
+
+--------------------------------------------------------------------------------
+ 5. TROUBLESHOOTING
+--------------------------------------------------------------------------------
+
+  "smolagents is not installed" / /api/query returns 503
+     -> pip install 'smolagents[openai]'  (and ensure Ollama is running)
+
+  /api/image-query returns 503
+     -> pip install chromadb pillow numpy torch transformers
+
+  Thumbnails / frames return 404 or blank
+     -> pip install pydicom ; verify source_path values point to readable .dcm files
+
+  Agent errors / no tool calls
+     -> the Ollama model must support function calling (qwen3, llama3.1+, mistral).
+        Verify Ollama is reachable:  curl http://localhost:11434/v1/models
+
+  Empty stats / DB errors
+     -> confirm --db points to a populated SQLite file (run section 2 first),
+        or run:  python3 run_ingest.py --summary-only
+
+  Port already in use
+     -> python3 run_server.py --port 5060
+
+
+--------------------------------------------------------------------------------
+ 6. RELATIONSHIP TO LEGACY SCRIPTS
+--------------------------------------------------------------------------------
+
+  run_server.py + qa_app/   replace   qa_pipe.py
+  run_ingest.py  + ingestion/ replace ingest.py
+
+  The legacy single-file scripts are kept in this directory for reference and
+  remain runnable, but the package-based entry points above are the maintained
+  path forward. Behaviour (CLI flags, routes, SSE events) is identical.
