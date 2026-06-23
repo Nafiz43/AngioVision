@@ -8,7 +8,7 @@
   --report:#f0883e;--report-bg:rgba(240,136,62,.1);
   --violet:#7c3aed;--violet-light:#a78bfa;--violet-bg:rgba(124,58,237,.12);
   --mono:'JetBrains Mono',monospace;
-  --sans:'Syne',sans-serif;
+  --sans:"Styrene B","Styrene A","Inter",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",Arial,sans-serif;
 }
 [data-theme="light"]{
   --bg:#f0f2f5;--bg2:#ffffff;--bg3:#f5f7fa;--bg4:#eaecf0;--bg5:#dde1e7;

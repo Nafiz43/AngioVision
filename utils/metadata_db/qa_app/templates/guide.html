@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>How to Use · AngioVision</title>
+<!-- honor the app's saved light/dark preference before paint -->
+<script>try{if(localStorage.getItem('av-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+<style>
+  /* The shared stylesheet locks body scroll for the SPA; re-enable it for this page. */
+  html,body{overflow-y:auto !important;overflow-x:hidden !important;height:auto !important;min-height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans)}
+
+  .about-bg{position:fixed;inset:0;z-index:0;pointer-events:none;
+    background-image:linear-gradient(rgba(88,166,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(88,166,255,.04) 1px,transparent 1px);
+    background-size:40px 40px}
+
+  .about-topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:14px;
+    padding:13px 22px;background:color-mix(in srgb,var(--bg) 82%,transparent);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  .back-link{display:inline-flex;align-items:center;gap:7px;text-decoration:none;font-family:var(--mono);
+    font-size:12px;color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;transition:all .15s}
+  .back-link:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+  .back-link svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2}
+  .tb-brand{display:flex;align-items:center;gap:10px;margin-left:4px}
+  .tb-logo{width:28px;height:28px;background:var(--accent2);border-radius:7px;display:flex;align-items:center;justify-content:center}
+  .tb-logo svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:2}
+  .tb-title{font-size:14px;font-weight:800;letter-spacing:-.3px}
+
+  .about-main{position:relative;z-index:1;max-width:980px;margin:0 auto;padding:52px 24px 80px}
+
+  .about-hero{text-align:center;margin-bottom:56px}
+  .about-eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:2.5px;text-transform:uppercase;color:var(--accent)}
+  .about-h1{font-size:40px;font-weight:800;letter-spacing:-1.2px;margin:14px 0 16px;
+    background:linear-gradient(120deg,var(--text),var(--accent));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .about-lead{font-size:16px;color:var(--text2);max-width:680px;margin:0 auto;line-height:1.75}
+
+  .gd-section{margin-bottom:56px}
+  .gd-section-head{margin-bottom:24px}
+  .gd-section-head h2{font-size:23px;font-weight:800;letter-spacing:-.5px}
+  .gd-section-head p{font-family:var(--mono);font-size:12px;color:var(--text3);margin-top:6px;letter-spacing:.3px}
+
+  /* Quick-start steps */
+  .gd-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px}
+  .gd-step{position:relative;background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:26px 22px}
+  .gd-step-num{width:38px;height:38px;border-radius:10px;background:var(--accent2);color:#fff;font-weight:800;font-size:17px;
+    display:flex;align-items:center;justify-content:center;font-family:var(--sans);margin-bottom:16px}
+  .gd-step h3{font-size:16px;font-weight:700;margin-bottom:8px}
+  .gd-step p{font-size:13.5px;color:var(--text2);line-height:1.7}
+  .gd-step p strong{color:var(--text)}
+  .gd-step kbd{font-family:var(--mono);font-size:11px;background:var(--bg3);border:1px solid var(--border);
+    border-bottom-width:2px;border-radius:5px;padding:1px 6px;color:var(--text)}
+
+  /* Feature cards */
+  .gd-feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+  .gd-feature{background:var(--bg2);border:1px solid var(--border);border-left:3px solid var(--ring,var(--accent));border-radius:14px;padding:22px}
+  .gd-feature-head{display:flex;align-items:center;gap:11px;margin-bottom:11px}
+  .gd-feature-icon{width:32px;height:32px;border-radius:8px;background:var(--ring-bg,var(--accent-bg));
+    display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .gd-feature-icon svg{width:17px;height:17px;stroke:var(--ring,var(--accent));fill:none;stroke-width:2}
+  .gd-feature h3{font-size:15px;font-weight:700}
+  .gd-feature p{font-size:13px;color:var(--text2);line-height:1.65;margin-bottom:13px}
+  .gd-example{display:block;font-family:var(--mono);font-size:11.5px;color:var(--text2);
+    background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:9px 11px;line-height:1.5}
+  .gd-example::before{content:'e.g.  ';color:var(--text3)}
+
+  /* Result-tab legend */
+  .gd-tabs{display:flex;flex-direction:column;gap:10px}
+  .gd-tab-row{display:flex;gap:14px;align-items:flex-start;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .gd-tab-badge{flex-shrink:0;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;
+    color:var(--accent);border:1px solid var(--border);border-radius:6px;padding:5px 0;width:72px;text-align:center;background:var(--bg3)}
+  .gd-tab-row p{font-size:13px;color:var(--text2);line-height:1.6}
+  .gd-tab-row p strong{color:var(--text)}
+
+  /* Tips */
+  .gd-tips{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px 22px}
+  .gd-tip{display:flex;gap:12px;align-items:flex-start;font-size:13px;color:var(--text2);line-height:1.6}
+  .gd-tip svg{width:18px;height:18px;stroke:var(--accent);fill:none;stroke-width:2;flex-shrink:0;margin-top:1px}
+  .gd-tip strong{color:var(--text);font-weight:600}
+
+  /* Callouts */
+  .gd-callout{display:flex;gap:14px;align-items:center;background:var(--accent-bg);border:1px solid var(--border);border-radius:14px;padding:17px 20px;margin-top:24px}
+  .gd-callout svg{width:24px;height:24px;stroke:var(--accent);fill:none;stroke-width:1.8;flex-shrink:0}
+  .gd-callout p{font-size:13.5px;color:var(--text2);line-height:1.65}
+  .gd-callout strong{color:var(--text)}
+
+  .about-footer{text-align:center;margin-top:60px;font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.8}
+  .about-footer a{color:var(--accent);text-decoration:none}
+  .about-footer a:hover{text-decoration:underline}
+
+  @media(max-width:560px){.about-h1{font-size:30px}.about-main{padding:38px 18px 64px}}
+</style>
+</head>
+<body>
+
+<div class="about-bg"></div>
+
+<div class="about-topbar">
+  <a class="back-link" href="{{ url_for('api.index') }}">
+    <svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+    Back to Query Engine
+  </a>
+  <div class="tb-brand">
+    <div class="tb-logo">
+      <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="19" cy="17" r="3"/></svg>
+    </div>
+    <span class="tb-title">AngioVision</span>
+  </div>
+</div>
+
+<main class="about-main">
+
+  <section class="about-hero">
+    <div class="about-eyebrow">User Guide</div>
+    <h1 class="about-h1">How to Use AngioVision</h1>
+    <p class="about-lead">
+      Ask questions about your imaging database in plain English — no SQL and no coding required.
+      An AI assistant translates your question, runs it safely against the data, and explains the
+      result. Here is everything you need, in about two minutes.
+    </p>
+  </section>
+
+  <!-- ── QUICK START ── -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>Quick Start</h2>
+      <p>// three steps to your first answer</p>
+    </div>
+    <div class="gd-steps">
+      <div class="gd-step">
+        <div class="gd-step-num">1</div>
+        <h3>Ask a question</h3>
+        <p>Click the box at the bottom of the screen and type what you want to know, for example
+          <strong>&ldquo;How many patients are in the database?&rdquo;</strong> Press
+          <kbd>Enter</kbd> to send (<kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line).</p>
+      </div>
+      <div class="gd-step">
+        <div class="gd-step-num">2</div>
+        <h3>Let the assistant work</h3>
+        <p>AngioVision plans the query, runs it against the database, and automatically retries if
+          something does not work. A <strong>live status</strong> shows each step as it happens.</p>
+      </div>
+      <div class="gd-step">
+        <div class="gd-step-num">3</div>
+        <h3>Read and explore</h3>
+        <p>You get a clear, written answer. Switch the tabs on the result to see a
+          <strong>chart</strong>, the exact <strong>SQL</strong>, the raw <strong>table</strong>,
+          or every <strong>step</strong> the assistant took.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── WHAT YOU CAN ASK ── -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>What You Can Ask</h2>
+      <p>// four kinds of questions</p>
+    </div>
+    <div class="gd-feature-grid">
+
+      <div class="gd-feature" style="--ring:var(--accent);--ring-bg:var(--accent-bg)">
+        <div class="gd-feature-head">
+          <div class="gd-feature-icon">
+            <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>
+          </div>
+          <h3>DICOM metadata</h3>
+        </div>
+        <p>Counts and details about patients, studies, series, instances, modalities, equipment,
+          dates, and radiation dose.</p>
+        <code class="gd-example">How many studies were performed each year?</code>
+      </div>
+
+      <div class="gd-feature" style="--ring:var(--report);--ring-bg:rgba(240,136,62,.12)">
+        <div class="gd-feature-head">
+          <div class="gd-feature-icon">
+            <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </div>
+          <h3>Radiology reports</h3>
+        </div>
+        <p>Search the free-text radiology reports — findings, signing physician, impressions — and
+          link them back to the matching studies.</p>
+        <code class="gd-example">Find all studies whose report mentions stenosis.</code>
+      </div>
+
+      <div class="gd-feature" style="--ring:var(--green);--ring-bg:rgba(63,185,80,.12)">
+        <div class="gd-feature-head">
+          <div class="gd-feature-icon">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          </div>
+          <h3>Image similarity</h3>
+        </div>
+        <p>Attach an angiography frame and find the most visually similar cases using AI image
+          search, each enriched with its report.</p>
+        <code class="gd-example">Show me the 5 most similar sequences to this image.</code>
+      </div>
+
+      <div class="gd-feature" style="--ring:var(--violet-light);--ring-bg:rgba(163,113,247,.12)">
+        <div class="gd-feature-head">
+          <div class="gd-feature-icon">
+            <svg viewBox="0 0 24 24"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+          </div>
+          <h3>Charts &amp; graphs</h3>
+        </div>
+        <p>Ask for a plot and the assistant fetches the numbers and draws it right in the browser —
+          bar, line, or pie.</p>
+        <code class="gd-example">Plot a bar chart of the number of studies per year.</code>
+      </div>
+
+    </div>
+
+    <div class="gd-callout">
+      <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      <p><strong>Not sure where to start?</strong> Click any of the suggestion chips just above the
+        input box to drop a ready-made question straight into the prompt, then press Enter.</p>
+    </div>
+  </section>
+
+  <!-- ── UNDERSTANDING RESULTS ── -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>Understanding Your Results</h2>
+      <p>// the tabs on every answer</p>
+    </div>
+    <div class="gd-tabs">
+      <div class="gd-tab-row">
+        <span class="gd-tab-badge">Answer</span>
+        <p>A plain-language summary of what the data shows. This is what you will read most of the time.</p>
+      </div>
+      <div class="gd-tab-row">
+        <span class="gd-tab-badge">Chart</span>
+        <p>Appears when you ask for a visual — a bar, line, or pie chart drawn from the results.</p>
+      </div>
+      <div class="gd-tab-row">
+        <span class="gd-tab-badge">SQL</span>
+        <p>The exact database query that ran, with a one-click <strong>copy</strong> button if you want to reuse it.</p>
+      </div>
+      <div class="gd-tab-row">
+        <span class="gd-tab-badge">Table</span>
+        <p>The raw rows returned by the query, so you can inspect the underlying data yourself.</p>
+      </div>
+      <div class="gd-tab-row">
+        <span class="gd-tab-badge">Steps</span>
+        <p>Every action the assistant took, in order — handy for checking its reasoning or troubleshooting.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── HANDY CONTROLS ── -->
+  <section class="gd-section">
+    <div class="gd-section-head">
+      <h2>Handy Controls</h2>
+      <p>// make the most of it</p>
+    </div>
+    <div class="gd-tips">
+      <div class="gd-tip">
+        <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <span><strong>Suggestion chips.</strong> Click a chip above the input to auto-fill an example question.</span>
+      </div>
+      <div class="gd-tip">
+        <svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        <span><strong>Choose a model.</strong> Pick one in the top-right. Larger models handle harder questions; smaller ones are faster.</span>
+      </div>
+      <div class="gd-tip">
+        <svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5.76.76 1.23 1.52 1.41 2.5"/></svg>
+        <span><strong>Thinking mode.</strong> Toggle it in the sidebar to let the model reason before answering — better for complex questions.</span>
+      </div>
+      <div class="gd-tip">
+        <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        <span><strong>Attach an image.</strong> Use the paperclip button to upload an angiography frame for visual similarity search.</span>
+      </div>
+      <div class="gd-tip">
+        <svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+        <span><strong>Stop anytime.</strong> Press the stop button to cancel a query that is still running.</span>
+      </div>
+      <div class="gd-tip">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span><strong>History.</strong> Your previous questions are saved in the sidebar so you can revisit them.</span>
+      </div>
+      <div class="gd-tip">
+        <svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span><strong>Light or dark.</strong> Switch themes with the toggle in the header — your choice is remembered.</span>
+      </div>
+    </div>
+
+    <div class="gd-callout">
+      <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      <p><strong>Your data stays private.</strong> Every query, image search, and answer is processed
+        locally on your institution&rsquo;s own server — no images or patient information ever leave
+        the premises.</p>
+    </div>
+  </section>
+
+  <div class="about-footer">
+    AngioVision · UC Davis &nbsp;·&nbsp; Multi-modal angiography analysis<br>
+    <a href="{{ url_for('api.index') }}">← Return to the Query Engine</a>
+  </div>
+
+</main>
+
+</body>
+</html>

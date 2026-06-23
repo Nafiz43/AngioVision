@@ -476,6 +476,12 @@ def api_run_sql():
         return jsonify({"error": str(exc)}), 400
 
 
+@bp.route("/guide", methods=["GET"])
+def guide() -> str:
+    """Serve the How-to-use guide page."""
+    return render_template("guide.html")
+
+
 @bp.route("/about", methods=["GET"])
 def about() -> str:
     """Serve the About / team page."""

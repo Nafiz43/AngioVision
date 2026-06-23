@@ -51,8 +51,8 @@ self-supervised encoder RAD-DINO---with a selectable general-purpose Vision
 Transformer baseline---indexing each encoder's vectors in a dedicated ChromaDB
 collection; and a Flask web interface in which an agentic orchestrator
 (smolagents) drives a locally hosted Qwen3 model through multi-step reasoning
-over the relational metadata and report store, with results streamed via
-server-sent events.\\
+over the relational metadata and report store and renders agent-generated charts
+on request, with results streamed via server-sent events.\\
 \textbf{Results:} The system architecture is described, including a
 user-selectable image encoder (RAD-DINO or a general-purpose Vision Transformer)
 with one vector collection per encoder. A reproducible evaluation framework
@@ -198,32 +198,42 @@ The Flask backend pairs with a dependency-free vanilla-JavaScript frontend
 (HTML/CSS/JS, no build step; Figure~\ref{fig:ui}) and exposes three
 capabilities: \textbf{(a)}~agentic natural-language querying via a locally hosted
 Qwen3 model~\cite{yang2025qwen3} (selectable at query time, Qwen3-1.7B by
-default) served through Ollama; \textbf{(b)}~image-similarity retrieval, in which
+default) served through Ollama, whose answers may be accompanied by an
+agent-generated chart---bar, line, pie/doughnut, or horizontal bar---drawn in
+the browser by a dependency-free \texttt{<canvas>} renderer;
+\textbf{(b)}~image-similarity retrieval, in which
 a query image is embedded with the user-selected encoder, the corresponding
 ChromaDB collection returns the top-$k$ similar sequences grouped by
 SOPInstanceUID and accession number, and each hit is enriched with SQLite
 metadata and a report excerpt; and \textbf{(c)}~on-demand frame extraction
 handling MONOCHROME1 inversion, multi-frame indexing, and uint8 normalization.
-Both pathways stream progress to the browser via server-sent events (SSE).
+Both query pathways stream progress---including any emitted chart
+specification---to the browser via server-sent events (SSE).
 
 \paragraph{Agentic query orchestration.}
-Initial versions employed a single-shot pipeline: one LLM call generated SQL,
-execution proceeded with up to two automatic repairs, and a second call
-synthesized an answer. The current implementation replaces this with an agentic
-orchestrator built on smolagents~\cite{huggingface2025smolagents}. The model
+Rather than a single-shot pipeline---one LLM call to generate SQL, up to two
+automatic repairs, and a second call to synthesize an answer---query resolution
+is delegated to an agentic orchestrator built on
+smolagents~\cite{huggingface2025smolagents}. The model
 follows a ReAct-style reason--act--observe loop~\cite{yao2023react}: at each
 step it plans an action, invokes a tool, inspects the result, and iterates. The
-agent is equipped with a single read-only SQL tool that spans both the
+agent is equipped with two tools, both issued through structured function calls
+rather than free-form code. The first is a read-only SQL tool spanning the
 structured metadata and the free-text reports---the latter searched with
-\texttt{LIKE} predicates on the report column---and it issues this tool through
-structured function calls rather than free-form code. With it the agent explores
-the schema, samples distinct column values, recovers from SQL errors, and chains
+\texttt{LIKE} predicates on the report column; with it the agent explores the
+schema, samples distinct column values, recovers from SQL errors, and chains
 multiple queries: for example, searching reports for a finding, extracting the
-matching accession numbers, then aggregating the corresponding metadata. This
-enables multi-hop queries that the single-shot pipeline could not resolve.
-Content-based image retrieval is exposed as a separate, deterministic endpoint
-rather than as an agent tool. All reasoning executes locally on the selected
-Qwen3 model.
+matching accession numbers, then aggregating the corresponding metadata. The
+second is a chart-rendering tool: when a question calls for a visualization
+(``plot'', ``distribution'', ``trend'', ``over time'', \ldots), the agent first
+retrieves the underlying rows with the SQL tool, then invokes the chart tool
+with a compact specification---chart type (bar, line, pie/doughnut, or
+horizontal bar), title, and aligned category and value lists---which is streamed
+to the browser and drawn client-side. Together these enable multi-hop
+queries---and, where appropriate, their visual summaries---that a single-shot
+pipeline cannot resolve. Content-based image retrieval is exposed as a
+separate, deterministic endpoint rather than as an agent tool. All reasoning
+executes locally on the selected Qwen3 model.
 
 \paragraph{Implementation and availability.}
 The stack comprises Python, Flask, a dependency-free vanilla-JavaScript frontend
@@ -238,7 +248,7 @@ Supplementary Table~S1 summarizes all components.
 
 \section{Use Cases}
 
-Two representative scenarios illustrate the system's workflow; both are
+Three representative scenarios illustrate the system's workflow; all are
 supported by the architecture in Figure~\ref{fig:arch}.
 
 \paragraph{Use case 1: multi-step cohort assembly.}
@@ -257,6 +267,13 @@ each result is enriched with metadata
 and a report excerpt---surfacing comparable cases that structured queries alone
 would not identify, while all processing remains within the institutional
 network.
+
+\paragraph{Use case 3: visual summarization.}
+An investigator asks: \emph{``Plot the number of studies acquired each year.''}
+The agent runs a grouped SQL query, then calls the chart tool with the resulting
+years and counts; a bar chart is streamed back and shown alongside the text
+answer in the same result card. An aggregate query thus becomes an immediately
+interpretable figure without exporting data to external plotting software.
 
 \section{Results}
 
@@ -280,7 +297,10 @@ render a heterogeneous angiography archive queryable through both natural
 language and image similarity. Grounding LLM output in executed queries and
 retrieved metadata constitutes a form of
 RAG~\cite{lewis2020rag} that mitigates hallucination in clinical LLM
-applications~\cite{thirunavukarasu2023llmmed,weinert2025rag}. The transition
+applications~\cite{thirunavukarasu2023llmmed,weinert2025rag}. Because the agent
+can additionally turn an aggregate query into a chart on request, common
+descriptive analyses are completed entirely within the interface, without
+exporting data to external plotting tools. The transition
 from single-shot generation to an agentic
 loop~\cite{huggingface2025smolagents,yao2023react} extends capabilities to
 complex, multi-hop queries. The choice of RAD-DINO over general-purpose
@@ -350,7 +370,8 @@ their own DICOM data without modifying the core pipeline.
   interface; pixel data are decoded on demand from the original DICOM files
   (\texttt{source\_path}). An agentic orchestrator (smolagents) drives a locally
   hosted Qwen3 model (Ollama; selectable, Qwen3-1.7B by default) through
-  iterative reason--act--observe loops over a single read-only SQL tool. The
+  iterative reason--act--observe loops over a read-only SQL tool and a
+  chart-rendering tool. The
   selected image encoder---RAD-DINO by default, or a general-purpose ViT-B/16
   baseline---is used identically at ingestion and query time, with one ChromaDB
   collection per encoder. All inference executes on a single GPU-equipped Linux
@@ -395,8 +416,8 @@ Multi-frame extraction, uint8 RGB normalization, CLS embedding
 collection per encoder; resumable, single-process &
 pydicom, NumPy, Pillow, RAD-DINO / ViT-B, ChromaDB \\[0.4em]
 Agentic query interface &
-Multi-step reason--act--observe loop over a single read-only SQL tool spanning
-metadata and free-text reports; SSE streaming &
+Multi-step reason--act--observe loop over a read-only SQL tool (metadata +
+free-text reports) and a chart-rendering tool; SSE streaming &
 Flask, smolagents, Ollama (Qwen3 family), SQLite \\[0.4em]
 Image-similarity interface &
 Embed query image via the selected encoder; per-encoder ChromaDB top-$k$; group
@@ -408,7 +429,7 @@ multi-frame handling &
 Flask, pydicom, NumPy, Pillow \\[0.4em]
 Frontend &
 Vanilla JS (HTML/CSS/JS, no build step); progressive loading; lightbox;
-accession-level deduplication &
+self-contained \texttt{<canvas>} chart rendering; accession-level deduplication &
 JavaScript \\
 \bottomrule
 \end{tabularx}
