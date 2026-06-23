@@ -111,6 +111,12 @@
         <span class="chip image" onclick="promptImageUpload('Find cases similar to this image and show their radiology reports.')">Upload → with reports</span>
         <span class="chip image" onclick="promptImageUpload('What accession numbers are most visually similar to this DSA frame?')">Upload → accessions</span>
       </div>
+      <div class="chip-group">
+        <span class="chip-group-label">Charts</span>
+        <span class="chip" onclick="fillQ('Plot a bar chart of the number of studies per year.')">Studies/year (bar)</span>
+        <span class="chip" onclick="fillQ('Show a pie chart of the share of instances by modality.')">Modality share (pie)</span>
+        <span class="chip" onclick="fillQ('Plot the top 10 manufacturers by number of instances as a horizontal bar chart.')">Top manufacturers</span>
+      </div>
     </div>
 
     <!-- Image preview bar (shown when image is attached) -->

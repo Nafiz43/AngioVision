@@ -4,8 +4,11 @@ Agentic NL→SQL pipeline (smolagents).
 A smolagents ToolCallingAgent can call the `sql_query` tool as many times as it
 needs — exploring the schema, checking real column values, recovering from SQL
 errors, and refining its query — before producing a final natural-language
-answer. The agent talks to whichever local Ollama model is selected in the UI,
-via Ollama's OpenAI-compatible endpoint.
+answer. When the user asks for a visual, it can also call the `render_chart`
+tool to draw a bar / line / pie chart in the browser (streamed to the frontend
+as a `chart` SSE event and rendered by a self-contained canvas renderer). The
+agent talks to whichever local Ollama model is selected in the UI, via Ollama's
+OpenAI-compatible endpoint.
 """
 
 import re
@@ -110,6 +113,171 @@ class SQLQueryTool(Tool):
         return json.dumps(payload, default=str)
 
 
+# ── Chart / graph rendering tool ─────────────────────────────────────────────
+ALLOWED_CHART_TYPES = {"bar", "horizontal_bar", "line", "pie", "doughnut"}
+
+
+def _coerce_list(x: Any) -> List[Any]:
+    """Best-effort coercion of a tool argument into a Python list.
+
+    Smaller models sometimes pass a JSON string (e.g. "[1, 2, 3]") or a plain
+    comma-separated string instead of a real array — accept all of these.
+    """
+    if x is None:
+        return []
+    if isinstance(x, list):
+        return x
+    if isinstance(x, tuple):
+        return list(x)
+    if isinstance(x, (str, bytes)):
+        s = x.decode() if isinstance(x, bytes) else x
+        s = s.strip()
+        if not s:
+            return []
+        try:
+            parsed = json.loads(s)
+            return parsed if isinstance(parsed, list) else [parsed]
+        except Exception:
+            return [p.strip() for p in s.split(",") if p.strip() != ""]
+    return [x]
+
+
+class ChartTool(Tool):
+    """A smolagents Tool that renders a chart in the user's browser.
+
+    The tool does not draw anything itself: it validates a compact chart
+    specification and pushes it to the frontend through a callback (an SSE
+    ``chart`` event). The browser renders it with a self-contained canvas
+    chart renderer. Use it only when the user asks for a visual (plot, graph,
+    chart, distribution, trend, breakdown, …); fetch the data with sql_query
+    first, then call this with aligned ``labels`` and ``values``.
+    """
+
+    name = "render_chart"
+    description = (
+        "Render a chart/graph in the user's browser to visualize data. Call this "
+        "ONLY when the user asks to plot, graph, chart, visualize, or see a "
+        "distribution / trend / breakdown / histogram. Workflow: first get the data "
+        "with sql_query (usually a GROUP BY giving one category + one number per "
+        "row), then call render_chart with `labels` and `values` of EQUAL length and "
+        "in the same order. Choose chart_type: 'bar' (counts by category), 'line' "
+        "(trend over an ordered x such as year), 'pie' or 'doughnut' (share of a "
+        "whole), or 'horizontal_bar' (many or long category names). After it "
+        "returns, call final_answer with a short plain-text summary. Example: "
+        "render_chart(chart_type='bar', title='Studies per year', "
+        "labels=['2009','2010','2011'], values=[120, 156, 143], series_label='Studies')."
+    )
+    inputs = {
+        "chart_type": {
+            "type": "string",
+            "description": "One of: bar, horizontal_bar, line, pie, doughnut.",
+        },
+        "title": {
+            "type": "string",
+            "description": "Short, descriptive chart title.",
+        },
+        "labels": {
+            "type": "array",
+            "description": (
+                "Category label for each data point (x-axis tick or pie slice), as a "
+                "list of strings. Must be the same length as values and in the same order."
+            ),
+        },
+        "values": {
+            "type": "array",
+            "description": (
+                "Numeric value for each label, as a list of numbers. Must be the same "
+                "length as labels and in the same order."
+            ),
+        },
+        "series_label": {
+            "type": "string",
+            "description": "What the numbers represent (axis / legend caption), e.g. 'Studies'.",
+            "nullable": True,
+        },
+    }
+    output_type = "string"
+
+    def __init__(
+        self,
+        on_chart_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        max_points: int = 40,
+    ) -> None:
+        """
+        Args:
+            on_chart_callback: callback(spec) invoked with the validated chart spec
+                               so the server can stream a `chart` SSE event.
+            max_points: hard cap on the number of plotted data points.
+        """
+        super().__init__()
+        self.on_chart_callback = on_chart_callback
+        self.max_points = max_points
+
+    def forward(
+        self,
+        chart_type: str,
+        title: str,
+        labels: Any,
+        values: Any,
+        series_label: Optional[str] = None,
+    ) -> str:
+        """Validate a chart spec and push it to the frontend."""
+        ctype = str(chart_type or "bar").strip().lower().replace("-", "_").replace(" ", "_")
+        if ctype in ("hbar", "barh", "horizontalbar", "horizontal"):
+            ctype = "horizontal_bar"
+        if ctype == "donut":
+            ctype = "doughnut"
+        if ctype not in ALLOWED_CHART_TYPES:
+            ctype = "bar"
+
+        labels_l = _coerce_list(labels)
+        values_l = _coerce_list(values)
+
+        norm_vals: List[float] = []
+        for v in values_l:
+            try:
+                norm_vals.append(float(str(v).replace(",", "").strip()))
+            except Exception:
+                norm_vals.append(0.0)
+
+        n = min(len(labels_l), len(norm_vals))
+        if n == 0:
+            return (
+                "CHART ERROR: labels and values must be non-empty lists of equal "
+                "length. Run sql_query to get the data first (one category and one "
+                "number per row), then pass labels=[...] and values=[...] of the "
+                "same length to render_chart."
+            )
+
+        str_labels = [str(x) for x in labels_l[:n]]
+        norm_vals = norm_vals[:n]
+
+        truncated = 0
+        if n > self.max_points:
+            truncated = n - self.max_points
+            str_labels = str_labels[: self.max_points]
+            norm_vals = norm_vals[: self.max_points]
+
+        spec: Dict[str, Any] = {
+            "chart_type":   ctype,
+            "title":        str(title or "Chart"),
+            "labels":       str_labels,
+            "values":       norm_vals,
+            "series_label": str(series_label) if series_label else "",
+        }
+        if self.on_chart_callback:
+            self.on_chart_callback(spec)
+
+        msg = (
+            f"Chart rendered in the UI: a {ctype.replace('_', ' ')} titled "
+            f"'{spec['title']}' with {len(str_labels)} data points. Now call "
+            f"final_answer with a 1-2 sentence plain-text summary of what the chart shows."
+        )
+        if truncated:
+            msg += f" (Only the first {self.max_points} of {n} points were plotted.)"
+        return msg
+
+
 def get_smolagents_model(model_name: str) -> "OpenAIServerModel":
     """Build a smolagents model that talks to the local Ollama server via its
     OpenAI-compatible API, so the agent uses whatever model is selected in the UI."""
@@ -162,6 +330,34 @@ def build_agent_task(question: str, think: bool) -> str:
    This two-step approach (reports → accessions → sequences) is the correct
    workflow for any clinical finding query.
 
+4. VISUALIZATION / CHART REQUESTS:
+   If the user asks to "plot", "graph", "chart", "visualize", "draw", or to see
+   a "distribution", "trend", "breakdown", "histogram", something "over time",
+   or a "bar/line/pie chart":
+
+   Step 1 -- GET DATA: run sql_query to return rows of (category, number) --
+     usually a GROUP BY with a COUNT/SUM/AVG and an ORDER BY. Example:
+       SELECT SUBSTR(study_date, 1, 4) AS yr,
+              COUNT(DISTINCT study_instance_uid) AS n
+       FROM dicom_files
+       WHERE parse_error IS NULL AND study_date IS NOT NULL
+       GROUP BY yr ORDER BY yr
+
+   Step 2 -- DRAW: call render_chart with
+       chart_type   : 'bar' (counts by category), 'line' (trend over an ordered
+                      x such as year), 'pie'/'doughnut' (share of a whole), or
+                      'horizontal_bar' (many or long category names)
+       title        : a short descriptive title
+       labels       : the category for each row, as a list (e.g. the yr values)
+       values       : the matching number for each row, as a list (e.g. the n values)
+       series_label : what the numbers represent (e.g. 'Studies')
+
+   labels and values MUST be the same length and in the same order. Keep it to
+   ~30 categories or fewer; if there could be more, add ORDER BY <number> DESC
+   LIMIT 30 and chart the top ones. After render_chart succeeds, call
+   final_answer with a 1-2 sentence summary. Do NOT call render_chart for
+   ordinary questions -- only when the user asks for a visual.
+
 ==============================
 
 {SCHEMA_CONTEXT}
@@ -194,6 +390,8 @@ def run_nl_query_agent(question: str, think: bool, model_name: str) -> Any:
         agent_start   — agent is initializing (model, max_steps)
         agent_step    — one sql_query tool call completed (step#, sql,
                         row_count, error, max_steps)
+        chart         — the agent rendered a chart (spec: {chart_type, title,
+                        labels, values, series_label})
 
     Original events (preserved for frontend compatibility):
         sql_done / sql_repaired, exec_start, exec_done,
@@ -233,6 +431,10 @@ def run_nl_query_agent(question: str, think: bool, model_name: str) -> Any:
             "row_count": row_count,
         })
 
+    def on_chart(spec: Dict[str, Any]) -> None:
+        """Callback invoked when the agent renders a chart — emits a `chart` event."""
+        event_queue.put({"event": "chart", "spec": spec})
+
     result_holder: Dict[str, Optional[str]] = {"answer": None, "error": None}
 
     def worker() -> None:
@@ -245,10 +447,12 @@ def run_nl_query_agent(question: str, think: bool, model_name: str) -> Any:
                 "max_steps": state.agent_max_steps,
             })
 
-            model = get_smolagents_model(model_name)
-            tool  = SQLQueryTool(on_step_callback=on_query_step)
+            model      = get_smolagents_model(model_name)
+            sql_tool   = SQLQueryTool(on_step_callback=on_query_step)
+            chart_tool = ChartTool(on_chart_callback=on_chart)
             agent = ToolCallingAgent(
-                tools=[tool], model=model, max_steps=state.agent_max_steps,
+                tools=[sql_tool, chart_tool], model=model,
+                max_steps=state.agent_max_steps,
             )
             task = build_agent_task(question, think)
 

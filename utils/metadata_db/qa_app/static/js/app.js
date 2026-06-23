@@ -455,6 +455,7 @@ async function handleTextSend(question){
   let sql='',rows=[],rowCount=0,answer='',elapsed=0;
   let agentSteps=[];   // ← NEW: track every tool call
   let allSql=[];       // ← NEW: track every SQL the agent tried
+  let charts=[];       // ← NEW: chart specs emitted by render_chart
   try{
     const resp=await fetch(`${API}/api/query`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,think,model}),signal:_abortController.signal});
 
@@ -489,6 +490,10 @@ async function handleTextSend(question){
               thinkTxt.textContent=`Step ${evt.step}/${evt.max_steps}: ${evt.row_count} row${evt.row_count!==1?'s':''} returned`;
             }
             break;
+          case 'chart':
+            charts.push(evt.spec);
+            thinkTxt.textContent='Rendering chart…';
+            break;
 
           /* ── Original events ── */
           case 'sql_start':    thinkTxt.textContent='Agent is thinking…';break;
@@ -508,9 +513,14 @@ async function handleTextSend(question){
     }
     thinkEl.remove();
     const id='rc'+Date.now(),elapsedSec=(elapsed/1000).toFixed(1);
+    const hasChart=charts.length>0;
     let tabs='',panes='';
-    tabs+=`<button class="rc-tab active" onclick="switchRcTab(this,'${id}-ans')">Answer</button>`;
-    panes+=`<div class="rc-pane active" id="${id}-ans"><div class="answer-body">${esc(answer)}</div></div>`;
+    tabs+=`<button class="rc-tab${hasChart?'':' active'}" onclick="switchRcTab(this,'${id}-ans')">Answer</button>`;
+    panes+=`<div class="rc-pane${hasChart?'':' active'}" id="${id}-ans"><div class="answer-body">${esc(answer)}</div></div>`;
+    if(hasChart){
+      tabs+=`<button class="rc-tab active" onclick="switchRcTab(this,'${id}-chart')">Chart <span style="font-size:9px;opacity:.7">${charts.length}</span></button>`;
+      panes+=`<div class="rc-pane active" id="${id}-chart"><div class="chart-wrap" id="${id}-charts"></div></div>`;
+    }
     tabs+=`<button class="rc-tab" onclick="switchRcTab(this,'${id}-sql')">SQL</button>`;
     panes+=`<div class="rc-pane" id="${id}-sql"><div class="sql-block">${colorSQL(sql)}</div></div>`;
     tabs+=`<button class="rc-tab" onclick="switchRcTab(this,'${id}-tbl')">Table <span style="font-size:9px;opacity:.7">${rowCount}</span></button>`;
@@ -521,6 +531,7 @@ async function handleTextSend(question){
     panes+=`<div class="rc-pane" id="${id}-steps">${renderSteps(agentSteps)}</div>`;
 
     addMsg('msg-bot',`<div class="result-card"><div class="rc-tabs">${tabs}<div class="rc-meta"><span>${elapsedSec}s</span></div></div>${panes}</div>`);
+    if(hasChart) renderCharts(`${id}-charts`, charts);
     addHistory(question,rowCount,elapsed,false);
     setStatus('ready','ready');
   }catch(e){
@@ -779,5 +790,185 @@ function copySQL(id){
   navigator.clipboard.writeText(code.textContent.trim()).then(()=>{
     const btn=document.querySelector(`[onclick="copySQL('${id}')"]`);
     if(btn){btn.textContent='copied!';setTimeout(()=>btn.textContent='copy SQL',1500);}
+  });
+}
+
+// ════════════════════════════════════════════════
+// CHART RENDERER  (self-contained <canvas>; no external libraries)
+// Renders the spec emitted by the agent's render_chart tool.
+// spec = { chart_type, title, labels:[], values:[], series_label }
+// ════════════════════════════════════════════════
+const CHART_PALETTE=['#58a6ff','#3fb950','#d29922','#a371f7','#f85149','#ec6cb9','#39c5cf','#7ee787','#ffa657','#ff7b72','#79c0ff','#d2a8ff'];
+
+function cssVar(name,fallback){
+  const v=getComputedStyle(document.documentElement).getPropertyValue(name);
+  return (v&&v.trim())||fallback;
+}
+function chTrunc(s,n){s=String(s);return s.length>n?s.slice(0,n-1)+'…':s;}
+function chFmt(v){
+  if(!isFinite(v))return '';
+  const a=Math.abs(v);
+  if(a>=1e6)return (v/1e6).toFixed(1).replace(/\.0$/,'')+'M';
+  if(a>=1e3)return (v/1e3).toFixed(1).replace(/\.0$/,'')+'k';
+  if(Number.isInteger(v))return String(v);
+  return String(Math.round(v*100)/100);
+}
+function chNiceMax(v){
+  if(!(v>0))return 1;
+  const exp=Math.floor(Math.log10(v)),f=v/Math.pow(10,exp);
+  const nf=f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10;
+  return nf*Math.pow(10,exp);
+}
+
+function renderCharts(wrapId,charts){
+  const wrap=document.getElementById(wrapId);
+  if(!wrap)return;
+  wrap.innerHTML='';
+  (charts||[]).forEach(spec=>{
+    const fig=document.createElement('div');fig.className='chart-fig';
+    const cv=document.createElement('canvas');cv.className='chart-canvas';
+    fig.appendChild(cv);wrap.appendChild(fig);
+    try{drawChart(cv,spec||{});}
+    catch(e){fig.innerHTML=`<div class="chart-err">Could not render chart: ${esc(String(e))}</div>`;}
+  });
+}
+
+function drawChart(canvas,spec){
+  const ctype=String(spec.chart_type||'bar');
+  const labels=(spec.labels||[]).map(String);
+  const values=(spec.values||[]).map(v=>{const n=Number(v);return isFinite(n)?n:0;});
+  const title=spec.title||'';
+  const series=spec.series_label||'';
+  const isPie=ctype==='pie'||ctype==='doughnut';
+  const isH=ctype==='horizontal_bar';
+
+  // Fixed backing-store size so drawing works even while the tab is hidden;
+  // CSS scales it responsively. Multiply by dpr for crisp output.
+  const W=isPie?440:760,H=420,dpr=Math.min(2,window.devicePixelRatio||1);
+  canvas.width=W*dpr;canvas.height=H*dpr;canvas.style.maxWidth=W+'px';
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+
+  const colText=cssVar('--text','#e6edf3');
+  const colSub =cssVar('--text3','#57636d');
+  const colGrid=cssVar('--border','#30363d');
+  const mono=cssVar('--mono','monospace');
+
+  if(title){
+    ctx.fillStyle=colText;ctx.font='600 15px '+cssVar('--sans','sans-serif');
+    ctx.textAlign='center';ctx.textBaseline='top';
+    ctx.fillText(chTrunc(title,64),W/2,12);
+  }
+  if(!labels.length){
+    ctx.fillStyle=colSub;ctx.font='12px '+mono;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('No data to chart.',W/2,H/2);
+    return;
+  }
+  if(isPie){drawPie(ctx,W,H,labels,values,ctype,colText);return;}
+
+  // ── Cartesian charts: bar / horizontal_bar / line ──
+  const top=title?46:22;
+  const padL=isH?Math.min(170,14+chMaxLabelW(ctx,labels)):58;
+  const padR=20,padB=62;
+  const plotW=W-padL-padR,plotH=H-top-padB;
+  const x0=padL,y0=top,x1=W-padR,y1=top+plotH;
+  const maxV=Math.max(0,...values),niceMax=chNiceMax(maxV);
+  const n=labels.length,ticks=5;
+
+  ctx.lineWidth=1;ctx.font='11px '+mono;
+  for(let i=0;i<=ticks;i++){
+    const val=niceMax*i/ticks;
+    if(!isH){
+      const yy=y1-plotH*i/ticks;
+      ctx.strokeStyle=colGrid;ctx.globalAlpha=.45;ctx.beginPath();ctx.moveTo(x0,yy);ctx.lineTo(x1,yy);ctx.stroke();ctx.globalAlpha=1;
+      ctx.fillStyle=colSub;ctx.textAlign='right';ctx.textBaseline='middle';ctx.fillText(chFmt(val),x0-8,yy);
+    }else{
+      const xx=x0+plotW*i/ticks;
+      ctx.strokeStyle=colGrid;ctx.globalAlpha=.45;ctx.beginPath();ctx.moveTo(xx,y0);ctx.lineTo(xx,y1);ctx.stroke();ctx.globalAlpha=1;
+      ctx.fillStyle=colSub;ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(chFmt(val),xx,y1+8);
+    }
+  }
+  ctx.strokeStyle=colGrid;ctx.globalAlpha=1;ctx.beginPath();ctx.moveTo(x0,y0);ctx.lineTo(x0,y1);ctx.lineTo(x1,y1);ctx.stroke();
+
+  if(ctype==='line'){
+    const step=n>1?plotW/(n-1):0;
+    const px=i=>x0+(n>1?step*i:plotW/2);
+    const py=v=>y1-plotH*(niceMax?v/niceMax:0);
+    ctx.strokeStyle=CHART_PALETTE[0];ctx.lineWidth=2;ctx.beginPath();
+    values.forEach((v,i)=>{const xx=px(i),yy=py(v);i?ctx.lineTo(xx,yy):ctx.moveTo(xx,yy);});
+    ctx.stroke();
+    values.forEach((v,i)=>{
+      const xx=px(i),yy=py(v);
+      ctx.fillStyle=CHART_PALETTE[0];ctx.beginPath();ctx.arc(xx,yy,3,0,Math.PI*2);ctx.fill();
+      chDrawXLabel(ctx,labels[i],xx,y1+8,colSub,mono,n>1?step:plotW);
+    });
+  }else if(isH){
+    const band=plotH/n,bh=Math.min(30,band*.66);
+    values.forEach((v,i)=>{
+      const cy=y0+band*i+band/2,bw=plotW*(niceMax?v/niceMax:0);
+      ctx.fillStyle=CHART_PALETTE[i%CHART_PALETTE.length];ctx.fillRect(x0,cy-bh/2,Math.max(0,bw),bh);
+      ctx.fillStyle=colSub;ctx.font='11px '+mono;ctx.textAlign='right';ctx.textBaseline='middle';
+      ctx.fillText(chTrunc(labels[i],20),x0-8,cy);
+      ctx.fillStyle=colText;ctx.textAlign='left';ctx.fillText(chFmt(v),x0+Math.max(0,bw)+6,cy);
+    });
+  }else{ // vertical bar
+    const band=plotW/n,bw=Math.min(54,band*.66);
+    values.forEach((v,i)=>{
+      const cx=x0+band*i+band/2,bh=plotH*(niceMax?v/niceMax:0);
+      ctx.fillStyle=CHART_PALETTE[i%CHART_PALETTE.length];ctx.fillRect(cx-bw/2,y1-bh,bw,Math.max(0,bh));
+      ctx.fillStyle=colText;ctx.font='10px '+mono;ctx.textAlign='center';ctx.textBaseline='bottom';
+      ctx.fillText(chFmt(v),cx,y1-bh-3);
+      chDrawXLabel(ctx,labels[i],cx,y1+8,colSub,mono,band);
+    });
+  }
+
+  if(series){
+    ctx.save();ctx.fillStyle=colSub;ctx.font='11px '+mono;
+    if(!isH){ctx.translate(15,(y0+y1)/2);ctx.rotate(-Math.PI/2);ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(chTrunc(series,28),0,0);}
+    else{ctx.textAlign='center';ctx.textBaseline='bottom';ctx.fillText(chTrunc(series,40),(x0+x1)/2,H-6);}
+    ctx.restore();
+  }
+}
+
+function chMaxLabelW(ctx,labels){
+  ctx.font='11px '+cssVar('--mono','monospace');
+  let m=0;labels.forEach(l=>{const w=ctx.measureText(chTrunc(l,20)).width;if(w>m)m=w;});
+  return m;
+}
+function chDrawXLabel(ctx,label,cx,y,col,mono,band){
+  ctx.fillStyle=col;ctx.font='10px '+mono;
+  const s=chTrunc(label,14),w=ctx.measureText(s).width;
+  if(w>band-4){
+    ctx.save();ctx.translate(cx,y);ctx.rotate(-Math.PI/4);ctx.textAlign='right';ctx.textBaseline='middle';ctx.fillText(s,0,0);ctx.restore();
+  }else{
+    ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(s,cx,y);
+  }
+}
+function drawPie(ctx,W,H,labels,values,ctype,colText){
+  const mono=cssVar('--mono','monospace');
+  const total=values.reduce((a,b)=>a+(b>0?b:0),0)||1;
+  const cx=W*0.33,cy=H*0.55,r=Math.min(W*0.27,H*0.34);
+  let a0=-Math.PI/2;
+  values.forEach((v,i)=>{
+    const a1=a0+((v>0?v:0)/total)*Math.PI*2;
+    ctx.beginPath();ctx.moveTo(cx,cy);ctx.arc(cx,cy,r,a0,a1);ctx.closePath();
+    ctx.fillStyle=CHART_PALETTE[i%CHART_PALETTE.length];ctx.fill();
+    a0=a1;
+  });
+  if(ctype==='doughnut'){
+    ctx.save();ctx.globalCompositeOperation='destination-out';
+    ctx.beginPath();ctx.arc(cx,cy,r*0.56,0,Math.PI*2);ctx.fill();ctx.restore();
+  }
+  const lx=cx+r+22,lh=20,ly0=Math.max(28,cy-r);
+  ctx.font='11px '+mono;ctx.textAlign='left';ctx.textBaseline='middle';
+  labels.forEach((l,i)=>{
+    const ly=ly0+lh*i;
+    if(ly>H-14)return;
+    ctx.fillStyle=CHART_PALETTE[i%CHART_PALETTE.length];ctx.fillRect(lx,ly-5,11,11);
+    ctx.fillStyle=colText;
+    const pct=Math.round((values[i]>0?values[i]:0)/total*100);
+    ctx.fillText(chTrunc(l,16)+'  '+pct+'%',lx+17,ly);
   });
 }
