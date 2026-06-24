@@ -18,7 +18,8 @@ def read_metadata_csv(csv_path: Path) -> dict | None:
     """
     try:
         df = pd.read_csv(csv_path)
-    except Exception:
+    except (OSError, pd.errors.ParserError) as exc:
+        print(f"[WARN] Could not read {csv_path}: {exc}", file=__import__('sys').stderr)
         return None
 
     # Wide format
@@ -33,7 +34,8 @@ def read_metadata_csv(csv_path: Path) -> dict | None:
             info = df["Information"].astype(str)
             val = df["Value"].astype(str)
             return dict(zip(info, val))
-        except Exception:
+        except (KeyError, TypeError, ValueError) as exc:
+            print(f"[WARN] Could not parse key-value format in {csv_path}: {exc}", file=__import__('sys').stderr)
             return None
 
     return None
@@ -100,7 +102,8 @@ def main():
                         "SeriesDescription": result["SeriesDescription"],
                     })
 
-            except Exception:
+            except Exception as exc:
+                print(f"[ERROR] Processing future result: {exc}", file=__import__('sys').stderr)
                 continue
 
     print("\n========== SUMMARY ==========")

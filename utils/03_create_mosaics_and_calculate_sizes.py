@@ -156,7 +156,8 @@ def _open_image_rgb(path: Path) -> Optional[Image.Image]:
         if img.mode != "RGB":
             img = img.convert("RGB")
         return img
-    except Exception:
+    except (OSError, ValueError) as exc:
+        print(f"[WARN] Could not open image {path}: {exc}", file=sys.stderr)
         return None
 
 

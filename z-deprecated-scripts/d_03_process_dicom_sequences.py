@@ -30,7 +30,7 @@ def is_dicom_file(path: Path) -> bool:
     try:
         pydicom.dcmread(path, stop_before_pixels=True, force=True)
         return True
-    except Exception:
+    except (pydicom.errors.InvalidDicomError, OSError, ValueError):
         return False
 
 def is_nullish(v) -> bool:
@@ -46,7 +46,7 @@ def safe_str(x: object) -> str:
     """Force safe UTF-8 string for CSV."""
     try:
         return str(x)
-    except Exception:
+    except (TypeError, ValueError, UnicodeDecodeError):
         return NA_VALUE
 
 def normalize_value(value) -> str:

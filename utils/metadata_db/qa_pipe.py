@@ -701,7 +701,7 @@ class SQLQueryTool(Tool):
             try:
                 json.dumps(v)
                 return v
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 return str(v)
 
         clean_rows = [{k: serialize_value(v) for k, v in row.items()} for row in rows]
@@ -1565,7 +1565,7 @@ def api_run_sql() -> Dict[str, Any]:
             try:
                 json.dumps(v)
                 return v
-            except Exception:
+            except (TypeError, ValueError, OverflowError):
                 return str(v)
 
         clean_rows = [{k: serialize_value(v) for k, v in row.items()} for row in rows]

@@ -67,7 +67,7 @@ def normalize_binary(x):
 
     try:
         return 1 if float(x_norm) == 1 else 0
-    except Exception:
+    except (ValueError, TypeError):
         return 0
 
 

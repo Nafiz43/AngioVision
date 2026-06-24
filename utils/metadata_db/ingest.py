@@ -361,7 +361,8 @@ def safe_str(ds, tag_name: str) -> str:
         if hasattr(val, "__iter__") and not isinstance(val, str):
             return str(val).strip()
         return str(val).strip()
-    except Exception:
+    except (AttributeError, TypeError, ValueError) as exc:
+        log.debug(f"Could not read DICOM tag {tag_name!r}: {exc}")
         return ""
 
 
@@ -428,7 +429,7 @@ def parse_dicom_file(path_str: str) -> Optional[dict]:
 
     try:
         frame_count = int(ds.NumberOfFrames)
-    except Exception:
+    except (AttributeError, ValueError, TypeError):
         frame_count = 1
 
     return {
@@ -1066,8 +1067,8 @@ def ingest_images_to_chromadb(
                     stale_ids = [f"{seq_id}_f{i:06d}" for i in range(prev_n)]
                     try:
                         collection.delete(ids=stale_ids)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.debug(f"Could not delete stale ChromaDB entries for {seq_id}: {exc}")
 
                 # Embed and add in batches — model already loaded, no reload
                 frames_added = 0

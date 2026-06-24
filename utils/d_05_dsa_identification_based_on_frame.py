@@ -87,7 +87,8 @@ def frame_stats(img_path_str: str) -> dict | None:
             "std":         float(np.std(arr)),
             "bright_frac": float(np.sum(arr > 220)) / arr.size,
         }
-    except Exception:
+    except (OSError, ValueError) as exc:
+        print(f"[WARN] Could not compute frame stats for {img_path_str}: {exc}", file=__import__('sys').stderr)
         return None
 
 
@@ -243,7 +244,7 @@ def is_mask_frame(img_path_str: str, thresholds: dict) -> bool:
             and std_val     <= thresholds["MASK_MAX_STD"]
             and bright_frac <= thresholds["MASK_MAX_BRIGHT_FRAC"]
         )
-    except Exception:
+    except (OSError, ValueError):
         return False
 
 

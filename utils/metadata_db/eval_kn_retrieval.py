@@ -523,7 +523,8 @@ def create_ephemeral_collection():
     # in-memory store persists across calls in the same process.
     # Delete the collection first so each fold always starts with an empty one.
     try: client.delete_collection(CHROMA_COLLECTION)
-    except Exception: pass   # doesn't exist yet on first call — fine
+    except (ValueError, Exception) as exc:
+        log.debug(f"Collection deletion skipped (expected on first call): {exc}")
     collection = client.create_collection(name=CHROMA_COLLECTION, metadata={"hnsw:space": "cosine"})
     log.info("In-memory ChromaDB collection created (no disk I/O)")
     return collection

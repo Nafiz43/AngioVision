@@ -106,7 +106,8 @@ def is_eligible(sequence_dir: Path, min_frames: int) -> Tuple[bool, str, Dict[st
 
     try:
         metadata = load_metadata_kv(metadata_csv)
-    except Exception:
+    except (OSError, ValueError, KeyError) as exc:
+        details["error"] = str(exc)
         return False, "metadata_error", details
 
     rs = normalize_value(metadata.get("RadiationSetting")).upper()
@@ -129,7 +130,8 @@ def is_eligible(sequence_dir: Path, min_frames: int) -> Tuple[bool, str, Dict[st
     try:
         n_frames = count_valid_frames(frames_dir)
         details["FrameCount"] = str(n_frames)
-    except Exception:
+    except (OSError, ValueError) as exc:
+        details["error"] = str(exc)
         return False, "frame_count_error", details
 
     if n_frames <= min_frames:

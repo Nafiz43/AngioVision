@@ -67,7 +67,7 @@ def parse_args():
 def safe_int(v):
     try:
         return int(str(v).strip())
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 

@@ -47,7 +47,7 @@ def path_to_file_url(p: Path) -> str:
 def count_files_in_dir(d: Path) -> int:
     try:
         return sum(1 for x in d.iterdir() if x.is_file())
-    except Exception:
+    except (OSError, PermissionError):
         return 0
 
 
