@@ -1,8 +1,10 @@
 # config.py
 # Neo4j connection settings for the DICOM metadata ingestion pipeline.
-# Update NEO4J_PASSWORD to whatever you set via cypher-shell.
+# Set NEO4J_PASSWORD as an environment variable or update here for local-only dev.
 
-NEO4J_URI      = "bolt://localhost:7687"
-NEO4J_USER     = "neo4j"
-NEO4J_PASSWORD = "neo4j-admin"   # ← change this
-NEO4J_DATABASE = "neo4j"
+import os
+
+NEO4J_URI      = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER     = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")  # set via environment variable
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")

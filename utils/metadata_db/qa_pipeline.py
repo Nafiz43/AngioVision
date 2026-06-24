@@ -16,6 +16,7 @@ Usage:
     python3 dicom_query_server.py --model qwen3:14b --no-think
 """
 
+import os
 import re
 import sys
 import json
@@ -295,7 +296,8 @@ Key rules:
 
 # ── Global state ──────────────────────────────────────────────────────────────
 app   = Flask(__name__, static_folder=None)
-CORS(app)
+_cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:*")
+CORS(app, origins=_cors_origins.split(","))
 
 _db_path  : Path          = DEFAULT_DB
 _ollama   : Optional[ChatOllama] = None
@@ -559,13 +561,21 @@ def api_set_model():
     return jsonify({"ok": True, "model": model})
 
 
+_SQL_BLOCKED_KEYWORDS = re.compile(
+    r"\b(DROP|ALTER|CREATE|INSERT|UPDATE|DELETE|REPLACE|ATTACH|DETACH|REINDEX|VACUUM)\b",
+    re.IGNORECASE,
+)
+
+
 @app.route("/api/sql", methods=["POST"])
 def api_run_sql():
-    """Run arbitrary SQL directly (for advanced users)."""
+    """Run read-only SQL directly. Only SELECT/PRAGMA allowed."""
     data = request.get_json(force=True)
     sql  = data.get("sql", "").strip()
     if not sql:
         return jsonify({"error": "sql required"}), 400
+    if _SQL_BLOCKED_KEYWORDS.search(sql):
+        return jsonify({"error": "only SELECT queries are allowed"}), 403
     try:
         rows = run_sql_query(sql)
         def serialise(v):
@@ -581,7 +591,12 @@ def api_run_sql():
 @app.route("/", methods=["GET"])
 def index():
     """Serve the single-page UI."""
-    return HTML_PAGE
+    creds_json = os.environ.get("ANGIOVISION_USERS", "[]")
+    try:
+        json.loads(creds_json)
+    except (json.JSONDecodeError, TypeError):
+        creds_json = "[]"
+    return HTML_PAGE.replace("__CREDENTIALS_PLACEHOLDER__", creds_json)
 
 
 # ── HTML UI ───────────────────────────────────────────────────────────────────
@@ -1112,12 +1127,10 @@ textarea.nl-input::placeholder{color:var(--text3)}
 // ════════════════════════════════════════════════
 // LOGIN LOGIC
 // ════════════════════════════════════════════════
-const CREDENTIALS = [
-  { user: 'goldman',  pass: 'xK9#mQ2$vL5@pN8!' },
-  { user: 'vfilkov',    pass: 'ChangeMe#001!'     },
-  // Add more entries here as needed:
-  // { user: 'username', pass: 'password' },
-];
+// Credentials are injected server-side from environment variables.
+// Set ANGIOVISION_USERS as a JSON array, e.g.:
+//   export ANGIOVISION_USERS='[{"user":"admin","pass":"changeme"}]'
+const CREDENTIALS = __CREDENTIALS_PLACEHOLDER__;
 const MAX_ATTEMPTS = 5;
 let loginAttempts = 0;
 let lockoutTimer  = null;

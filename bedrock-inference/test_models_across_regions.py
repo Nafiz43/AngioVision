@@ -31,10 +31,11 @@ INCLUDE_HAIKU_45 = True
 
 # Explicit known profile mappings
 # Add more here if you later discover them from the console.
+_AWS_ACCOUNT_ID = os.getenv("AWS_ACCOUNT_ID", "")
 EXPLICIT_INFERENCE_PROFILES = {
     "anthropic.claude-sonnet-4-6": {
         "profile_id": "global.anthropic.claude-sonnet-4-6",
-        "profile_arn": "arn:aws:bedrock:us-west-2:944446239581:inference-profile/global.anthropic.claude-sonnet-4-6",
+        "profile_arn": f"arn:aws:bedrock:us-west-2:{_AWS_ACCOUNT_ID}:inference-profile/global.anthropic.claude-sonnet-4-6",
     }
 }
 
