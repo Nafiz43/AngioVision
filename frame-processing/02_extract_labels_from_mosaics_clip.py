@@ -23,18 +23,18 @@ Notes:
 
 import argparse
 import json
+import os
 import sys
 import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 import numpy as np
-import pandas as pd
 import torch
 from PIL import Image
 from tqdm import tqdm
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 try:
     import clip  # from openai/CLIP
@@ -43,118 +43,22 @@ except ImportError:
     print("  pip install git+https://github.com/openai/CLIP.git")
     sys.exit(1)
 
-# -----------------------------
-# Questions and answer options
-# -----------------------------
-QUESTIONS_WITH_OPTIONS = [
-    {
-        "question": "Which artery is catheterized?",
-        "options": [
-            "No catheter visible",
-            "Femoral artery",
-            "Radial artery",
-            "Brachial artery",
-            "Carotid artery",
-            "Vertebral artery",
-            "Coronary artery",
-            "Renal artery",
-            "Mesenteric artery",
-            "Iliac artery",
-            "Unclear or other artery",
-        ],
-    },
-    {
-        "question": "Is variant anatomy present?",
-        "options": [
-            "No variant anatomy visible",
-            "Yes, variant anatomy present",
-            "Unclear if variant anatomy present",
-        ],
-    },
-    {
-        "question": "Is there evidence of hemorrhage or contrast extravasation in this sequence?",
-        "options": [
-            "No hemorrhage or extravasation",
-            "Yes, hemorrhage present",
-            "Yes, contrast extravasation present",
-            "Yes, both hemorrhage and extravasation present",
-            "Unclear",
-        ],
-    },
-    {
-        "question": "Is there evidence of arterial or venous dissection?",
-        "options": [
-            "No dissection visible",
-            "Yes, arterial dissection present",
-            "Yes, venous dissection present",
-            "Unclear if dissection present",
-        ],
-    },
-    {
-        "question": "Is stenosis present in any visualized vessel?",
-        "options": [
-            "No stenosis visible",
-            "Yes, mild stenosis present",
-            "Yes, moderate stenosis present",
-            "Yes, severe stenosis present",
-            "Unclear if stenosis present",
-        ],
-    },
-    {
-        "question": "Is an endovascular stent visible in this sequence?",
-        "options": [
-            "No stent visible",
-            "Yes, stent visible",
-            "Unclear if stent present",
-        ],
-    },
-]
+from shared.csv_helpers import append_csv_row, ensure_csv_header
+from shared.prompts import QUESTIONS_WITH_OPTIONS
+from shared.sequence_utils import SequenceMosaicInfo, find_sequence_dirs, load_mosaics
+from shared.text_utils import utc_timestamp
 
 # -----------------------------
 # Defaults
 # -----------------------------
 DEFAULT_BASE_PATH = Path("/data/Deep_Angiography/DICOM_Sequence_Processed")
-DEFAULT_CLIP_MODEL = "ViT-B/32"  # common + lightweight
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+DEFAULT_CLIP_MODEL = "ViT-B/32"
 
-# -----------------------------
-# CSV helpers (append-only)
-# -----------------------------
-def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
-    if out_path.exists() and out_path.stat().st_size > 0:
-        return
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(columns=columns).to_csv(out_path, index=False)
-
-def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
-    ordered = {c: row.get(c) for c in columns}
-    pd.DataFrame([ordered]).to_csv(out_path, mode="a", header=False, index=False)
-
-# -----------------------------
-# Directory discovery
-# -----------------------------
-def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
-    seq_dirs: List[Path] = []
-    for d in base_path.rglob("*"):
-        if not d.is_dir():
-            continue
-        frames_dir = d / frames_subdir
-        if not frames_dir.exists():
-            continue
-        try:
-            if any(p.suffix.lower() in IMAGE_EXTS for p in frames_dir.iterdir()):
-                seq_dirs.append(d)
-        except PermissionError:
-            continue
-    return sorted(seq_dirs, key=lambda p: p.as_posix())
 
 # -----------------------------
 # CLIP Model Loading
 # -----------------------------
-def load_clip_model(
-    model_name: str,
-    device: Optional[str] = None,
-) -> Tuple[Any, Any, torch.device]:
+def load_clip_model(model_name, device=None):
     if device is None:
         dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -163,38 +67,24 @@ def load_clip_model(
     print(f"Loading CLIP model: {model_name} on {dev}")
     model, preprocess = clip.load(model_name, device=dev)
     model.eval()
-    print("✓ CLIP model loaded successfully")
+    print("CLIP model loaded successfully")
     return model, preprocess, dev
+
 
 # -----------------------------
 # CLIP Inference
 # -----------------------------
-def clip_classify(
-    image_path: Path,
-    question: str,
-    options: List[str],
-    model: Any,
-    preprocess: Any,
-    device: torch.device,
-) -> Dict[str, Any]:
-    """
-    Zero-shot multiple choice using CLIP:
-      - build prompts from (question + option)
-      - compute image-text similarity
-      - softmax over options -> confidence
-    """
+def clip_classify(image_path, question, options, model, preprocess, device):
     try:
         img = Image.open(image_path).convert("RGB")
         image_input = preprocess(img).unsqueeze(0).to(device)
 
-        # Simple prompt format; you can tweak wording here if needed
         prompts = [f"{question} {opt}" for opt in options]
         text_tokens = clip.tokenize(prompts, truncate=True).to(device)
 
         with torch.no_grad():
-            # logits_per_image: [1, N]
             logits_per_image, _ = model(image_input, text_tokens)
-            scores = logits_per_image.squeeze(0)  # [N]
+            scores = logits_per_image.squeeze(0)
             probs = torch.softmax(scores, dim=0).detach().cpu().numpy()
 
         best_idx = int(np.argmax(probs))
@@ -212,7 +102,6 @@ def clip_classify(
             "all_scores": all_scores,
             "notes": "CLIP zero-shot classification",
         }
-
     except Exception as e:
         return {
             "answer": "Error",
@@ -222,50 +111,11 @@ def clip_classify(
             "notes": f"CLIP error: {str(e)[:200]}",
         }
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def utc_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-@dataclass
-class SequenceMosaicInfo:
-    seq_dir: Path
-    seq_rel: str
-    mosaic_path: Path
-    ok: bool
-    error: Optional[str] = None
-
-def load_mosaics(seq_dirs: List[Path], base_path: Path, mosaic_name: str) -> List[SequenceMosaicInfo]:
-    infos: List[SequenceMosaicInfo] = []
-    for d in seq_dirs:
-        rel = d.relative_to(base_path).as_posix()
-        mp = d / mosaic_name
-        exists = mp.exists()
-        infos.append(
-            SequenceMosaicInfo(
-                seq_dir=d,
-                seq_rel=rel,
-                mosaic_path=mp,
-                ok=exists,
-                error=None if exists else "Missing mosaic",
-            )
-        )
-    return infos
 
 # -----------------------------
 # Main processing loop
 # -----------------------------
-def run_clip_analysis(
-    infos: List[SequenceMosaicInfo],
-    out_path: Path,
-    columns: List[str],
-    model: Any,
-    preprocess: Any,
-    device: torch.device,
-    model_name: str,
-    delay: float = 0.0,
-) -> None:
+def run_clip_analysis(infos, out_path, columns, model, preprocess, device, model_name, delay=0.0):
     total = len(infos) * len(QUESTIONS_WITH_OPTIONS)
 
     with tqdm(total=total, desc="Analyzing mosaics with CLIP", unit="q") as pbar:
@@ -282,14 +132,12 @@ def run_clip_analysis(
                 }
 
                 if not info.ok:
-                    row.update(
-                        {
-                            "answer": "Not stated",
-                            "confidence": 0,
-                            "evidence": "[]",
-                            "notes": info.error,
-                        }
-                    )
+                    row.update({
+                        "answer": "Not stated",
+                        "confidence": 0,
+                        "evidence": "[]",
+                        "notes": info.error,
+                    })
                 else:
                     result = clip_classify(
                         image_path=info.mosaic_path,
@@ -299,14 +147,12 @@ def run_clip_analysis(
                         preprocess=preprocess,
                         device=device,
                     )
-                    row.update(
-                        {
-                            "answer": result["answer"],
-                            "confidence": result["confidence"],
-                            "evidence": json.dumps(result["evidence"]),
-                            "notes": result["notes"],
-                        }
-                    )
+                    row.update({
+                        "answer": result["answer"],
+                        "confidence": result["confidence"],
+                        "evidence": json.dumps(result["evidence"]),
+                        "notes": result["notes"],
+                    })
 
                 append_csv_row(out_path, row, columns)
                 pbar.update(1)
@@ -314,54 +160,21 @@ def run_clip_analysis(
                 if delay:
                     time.sleep(delay)
 
+
 # -----------------------------
 # Entrypoint
 # -----------------------------
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(
         description="Extract labels from angiography mosaics using OpenAI CLIP"
     )
-    parser.add_argument(
-        "--base_path",
-        type=Path,
-        default=DEFAULT_BASE_PATH,
-        help="Base path to DICOM sequences",
-    )
-    parser.add_argument(
-        "--clip_model",
-        type=str,
-        default=DEFAULT_CLIP_MODEL,
-        help="CLIP model name (e.g., 'ViT-B/32', 'ViT-L/14')",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Device to use: 'cuda', 'cpu', or None for auto",
-    )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=0.0,
-        help="Delay between analyses (seconds)",
-    )
-    parser.add_argument(
-        "--frames_subdir",
-        default="frames",
-        help="Subdirectory name containing frames",
-    )
-    parser.add_argument(
-        "--mosaic_name",
-        default="mosaic.png",
-        help="Mosaic filename to analyze",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Limit number of sequences to process",
-    )
-
+    parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
+    parser.add_argument("--clip_model", type=str, default=DEFAULT_CLIP_MODEL)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--delay", type=float, default=0.0)
+    parser.add_argument("--frames_subdir", default="frames")
+    parser.add_argument("--mosaic_name", default="mosaic.png")
+    parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
 
     seq_dirs = find_sequence_dirs(args.base_path, args.frames_subdir)
@@ -374,14 +187,8 @@ def main() -> None:
     out_csv = output_root / "mosaics_extracted_labels_clip.csv"
 
     columns = [
-        "Timestamp",
-        "Model Name",
-        "sequence_dir",
-        "question",
-        "answer",
-        "confidence",
-        "evidence",
-        "notes",
+        "Timestamp", "Model Name", "sequence_dir", "question",
+        "answer", "confidence", "evidence", "notes",
     ]
     ensure_csv_header(out_csv, columns)
 
@@ -392,17 +199,13 @@ def main() -> None:
     model, preprocess, device = load_clip_model(args.clip_model, args.device)
 
     run_clip_analysis(
-        infos=infos,
-        out_path=out_csv,
-        columns=columns,
-        model=model,
-        preprocess=preprocess,
-        device=device,
-        model_name=args.clip_model,
-        delay=args.delay,
+        infos=infos, out_path=out_csv, columns=columns,
+        model=model, preprocess=preprocess, device=device,
+        model_name=args.clip_model, delay=args.delay,
     )
 
-    print("Done ✔ Incremental results preserved.")
+    print("Done. Incremental results preserved.")
+
 
 if __name__ == "__main__":
     try:

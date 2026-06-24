@@ -6,51 +6,41 @@ Stage 2: For each sequence directory containing frames/, process EACH frame imag
 with a video-language model (via Ollama) to extract visual information as text,
 then aggregate all per-frame outputs into a final per-sequence summary.
 
-REQUIREMENTS MET
-1) Pass each frame to a VLM: qwen-3-vl:8b (default)
-2) Ask model to extract visual info from the image in textual format; treat as sequence;
-   process each image independently.
-3) After each image is processed, run another LLM call to aggregate all textual outputs.
-4) Save all intermediate (per-frame) responses AND final aggregated response in CSV.
-5) Create a separate CSV per sequence.
-
 OUTPUT LAYOUT
 <base_path>_Output/<sequence_rel>/sequence_summary.csv
 
 CSV IS APPEND-ONLY PER SEQUENCE (never rewrites; preserves partial progress)
-
-PROGRESS/LOADER
-- Outer tqdm: sequences
-- Inner tqdm: frames per sequence
 """
 
 import argparse
-import base64
 import json
+import os
 import re
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
-import requests
 from tqdm import tqdm
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from shared.csv_helpers import append_csv_row, ensure_csv_header
+from shared.image_utils import encode_image_base64
+from shared.ollama_client import ollama_chat
+from shared.sequence_utils import IMAGE_EXTS, find_sequence_dirs
+from shared.text_utils import safe_parse_json, utc_timestamp
 
 # -----------------------------
 # Defaults
 # -----------------------------
-# ✅ Updated default base path to your Validation dataset location
 DEFAULT_BASE_PATH = Path(
     "/data/Deep_Angiography/Validation_Data/Validation_Data_2026_02_01/DICOM_Sequence_Processed"
 )
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_MODEL_NAME = "qwen3-vl:8b"
 DEFAULT_TIMEOUT_S = 180
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 FRAMES_SUBDIR_DEFAULT = "frames"
 
 # -----------------------------
@@ -106,95 +96,12 @@ Return a single JSON object with:
 """
 
 # -----------------------------
-# CSV helpers (append-only)
+# CSV columns
 # -----------------------------
 CSV_COLUMNS = [
-    "Timestamp",
-    "Model Name",
-    "sequence_dir",
-    "row_type",          # FRAME or AGGREGATED
-    "frame_index",
-    "frame_file",
-    "raw_response",
-    "parsed_json",
-    "notes",
+    "Timestamp", "Model Name", "sequence_dir", "row_type",
+    "frame_index", "frame_file", "raw_response", "parsed_json", "notes",
 ]
-
-
-def ensure_csv_header(out_path: Path, columns: List[str]) -> None:
-    if out_path.exists() and out_path.stat().st_size > 0:
-        return
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(columns=columns).to_csv(out_path, index=False)
-
-
-def append_csv_row(out_path: Path, row: Dict[str, Any], columns: List[str]) -> None:
-    ordered = {c: row.get(c) for c in columns}
-    pd.DataFrame([ordered]).to_csv(out_path, mode="a", header=False, index=False)
-
-
-# -----------------------------
-# Directory discovery
-# -----------------------------
-def find_sequence_dirs(base_path: Path, frames_subdir: str) -> List[Path]:
-    """
-    A "sequence dir" is any directory under base_path that contains:
-      - <frames_subdir>/ with at least one image file.
-    """
-    seq_dirs: List[Path] = []
-    for d in base_path.rglob("*"):
-        if not d.is_dir():
-            continue
-        frames_dir = d / frames_subdir
-        if not frames_dir.exists() or not frames_dir.is_dir():
-            continue
-        if any(p.is_file() and p.suffix.lower() in IMAGE_EXTS for p in frames_dir.iterdir()):
-            seq_dirs.append(d)
-    return sorted(seq_dirs, key=lambda p: p.as_posix())
-
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def utc_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def b64_image(path: Path) -> str:
-    return base64.b64encode(path.read_bytes()).decode("utf-8")
-
-
-def safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
-    if text is None:
-        return None
-    t = text.strip()
-    try:
-        return json.loads(t)
-    except Exception:
-        start, end = t.find("{"), t.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(t[start : end + 1])
-            except Exception:
-                return None
-        return None
-
-
-def ollama_chat(prompt: str, model: str, url: str, timeout: int, images_b64: Optional[List[str]] = None) -> str:
-    msg: Dict[str, Any] = {"role": "user", "content": prompt}
-    if images_b64:
-        msg["images"] = images_b64
-
-    payload = {
-        "model": model,
-        "messages": [msg],
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-
-    r = requests.post(url, json=payload, timeout=timeout)
-    r.raise_for_status()
-    return r.json()["message"]["content"]
 
 
 def list_frame_files(frames_dir: Path) -> List[Path]:
@@ -221,15 +128,7 @@ class SeqInfo:
 # -----------------------------
 # Main processing
 # -----------------------------
-def process_sequence(
-    info: SeqInfo,
-    out_csv: Path,
-    model: str,
-    url: str,
-    timeout: int,
-    delay: float,
-    max_frames: Optional[int],
-) -> None:
+def process_sequence(info, out_csv, model, url, timeout, delay, max_frames):
     ensure_csv_header(out_csv, CSV_COLUMNS)
 
     frame_files = list_frame_files(info.frames_dir)
@@ -238,14 +137,8 @@ def process_sequence(
 
     per_frame_jsons: List[Dict[str, Any]] = []
 
-    # ✅ Inner loader: per-frame progress for THIS sequence
     for idx, frame_path in enumerate(
-        tqdm(
-            frame_files,
-            desc=f"Frames | {info.seq_rel}",
-            unit="frame",
-            leave=False,
-        )
+        tqdm(frame_files, desc=f"Frames | {info.seq_rel}", unit="frame", leave=False)
     ):
         row = {
             "Timestamp": utc_timestamp(),
@@ -258,38 +151,17 @@ def process_sequence(
 
         try:
             raw = ollama_chat(
-                prompt=FRAME_PROMPT,
-                model=model,
-                url=url,
-                timeout=timeout,
-                images_b64=[b64_image(frame_path)],
+                prompt=FRAME_PROMPT, model=model, url=url, timeout=timeout,
+                images_b64=[encode_image_base64(frame_path)],
             )
             parsed = safe_parse_json(raw)
             if parsed is None:
-                row.update(
-                    {
-                        "raw_response": raw,
-                        "parsed_json": "",
-                        "notes": "Non-JSON response",
-                    }
-                )
+                row.update({"raw_response": raw, "parsed_json": "", "notes": "Non-JSON response"})
             else:
                 per_frame_jsons.append(parsed)
-                row.update(
-                    {
-                        "raw_response": raw,
-                        "parsed_json": json.dumps(parsed, ensure_ascii=False),
-                        "notes": "",
-                    }
-                )
+                row.update({"raw_response": raw, "parsed_json": json.dumps(parsed, ensure_ascii=False), "notes": ""})
         except Exception as e:
-            row.update(
-                {
-                    "raw_response": "",
-                    "parsed_json": "",
-                    "notes": f"ERROR: {str(e)[:200]}",
-                }
-            )
+            row.update({"raw_response": "", "parsed_json": "", "notes": f"ERROR: {str(e)[:200]}"})
 
         append_csv_row(out_csv, row, CSV_COLUMNS)
 
@@ -307,13 +179,7 @@ def process_sequence(
     }
 
     if not per_frame_jsons:
-        agg_row.update(
-            {
-                "raw_response": "",
-                "parsed_json": "",
-                "notes": "No valid per-frame JSON outputs; aggregation skipped",
-            }
-        )
+        agg_row.update({"raw_response": "", "parsed_json": "", "notes": "No valid per-frame JSON outputs; aggregation skipped"})
         append_csv_row(out_csv, agg_row, CSV_COLUMNS)
         return
 
@@ -321,43 +187,19 @@ def process_sequence(
         frames_blob = json.dumps(per_frame_jsons, ensure_ascii=False)
         agg_input = AGGREGATION_PROMPT + "\n\nPER-FRAME OUTPUTS (JSON LIST):\n" + frames_blob
 
-        raw_agg = ollama_chat(
-            prompt=agg_input,
-            model=model,
-            url=url,
-            timeout=timeout,
-            images_b64=None,
-        )
+        raw_agg = ollama_chat(prompt=agg_input, model=model, url=url, timeout=timeout, images_b64=None)
         parsed_agg = safe_parse_json(raw_agg)
         if parsed_agg is None:
-            agg_row.update(
-                {
-                    "raw_response": raw_agg,
-                    "parsed_json": "",
-                    "notes": "Non-JSON aggregation response",
-                }
-            )
+            agg_row.update({"raw_response": raw_agg, "parsed_json": "", "notes": "Non-JSON aggregation response"})
         else:
-            agg_row.update(
-                {
-                    "raw_response": raw_agg,
-                    "parsed_json": json.dumps(parsed_agg, ensure_ascii=False),
-                    "notes": "",
-                }
-            )
+            agg_row.update({"raw_response": raw_agg, "parsed_json": json.dumps(parsed_agg, ensure_ascii=False), "notes": ""})
     except Exception as e:
-        agg_row.update(
-            {
-                "raw_response": "",
-                "parsed_json": "",
-                "notes": f"ERROR: {str(e)[:200]}",
-            }
-        )
+        agg_row.update({"raw_response": "", "parsed_json": "", "notes": f"ERROR: {str(e)[:200]}"})
 
     append_csv_row(out_csv, agg_row, CSV_COLUMNS)
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_path", type=Path, default=DEFAULT_BASE_PATH)
     parser.add_argument("--frames_subdir", type=str, default=FRAMES_SUBDIR_DEFAULT)
@@ -365,8 +207,8 @@ def main() -> None:
     parser.add_argument("--url", type=str, default=DEFAULT_OLLAMA_URL)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--delay", type=float, default=0.0)
-    parser.add_argument("--limit_seqs", type=int, default=None, help="Process only first N sequences")
-    parser.add_argument("--max_frames", type=int, default=None, help="Process only first N frames per sequence")
+    parser.add_argument("--limit_seqs", type=int, default=None)
+    parser.add_argument("--max_frames", type=int, default=None)
     args = parser.parse_args()
 
     seq_dirs = find_sequence_dirs(args.base_path, args.frames_subdir)
@@ -385,25 +227,20 @@ def main() -> None:
         rel = d.relative_to(args.base_path).as_posix()
         infos.append(SeqInfo(seq_dir=d, seq_rel=rel, frames_dir=d / args.frames_subdir))
 
-    # ✅ Outer loader: sequence progress
     with tqdm(total=len(infos), desc="Processing sequences", unit="seq") as pbar:
         for info in infos:
             safe_rel = sanitize_relpath(info.seq_rel)
             out_csv = output_root / safe_rel / "sequence_summary.csv"
 
             process_sequence(
-                info=info,
-                out_csv=out_csv,
-                model=args.model,
-                url=args.url,
-                timeout=args.timeout,
-                delay=args.delay,
+                info=info, out_csv=out_csv, model=args.model,
+                url=args.url, timeout=args.timeout, delay=args.delay,
                 max_frames=args.max_frames,
             )
 
             pbar.update(1)
 
-    print("Done ✔ Per-sequence CSVs written (append-only).")
+    print("Done. Per-sequence CSVs written (append-only).")
 
 
 if __name__ == "__main__":
