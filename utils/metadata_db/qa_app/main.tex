@@ -136,9 +136,7 @@ answers via retrieval-augmented generation
 iterative, tool-using reasoning~\cite{yao2023react,wang2024codeact}. Third,
 lightweight vector databases with ANN indexes make embedding-based retrieval
 practical on commodity hardware. Although developed on an angiography archive,
-the architecture is modality-agnostic: any radiologist, irrespective of
-subspecialty or programming expertise, can deploy the system over their own
-DICOM data.
+the architecture is modality-agnostic.
 
 \section{Objectives}
 
@@ -236,8 +234,7 @@ separate, deterministic endpoint rather than as an agent tool. All reasoning
 executes locally on the selected Qwen3 model.
 
 \paragraph{Implementation and availability.}
-The stack comprises Python, Flask, a dependency-free vanilla-JavaScript frontend
-(HTML/CSS/JS, no build step), pydicom, NumPy, Pillow, ChromaDB, the HuggingFace
+The stack comprises Python, Flask, a vanilla-JavaScript frontend, pydicom, NumPy, Pillow, ChromaDB, the HuggingFace
 \texttt{transformers}/PyTorch image encoders (RAD-DINO and a ViT-B/16 baseline),
 Ollama serving the Qwen3 family, smolagents, and SQLite, deployed on a single
 GPU-equipped Linux server. Command-line entry points (\texttt{run\_ingest.py} for
@@ -277,7 +274,7 @@ interpretable figure without exporting data to external plotting software.
 
 \section{Results}
 
-AngioVision constitutes data infrastructure rather than a predictive model;
+AngioVision is data infrastructure, not a predictive model;
 accordingly, Table~\ref{tab:eval} defines 15 representative evaluation queries
 spanning four categories: metadata (M), report text (R), complex multi-step (C),
 and image similarity (I). Each query is paired with expected behavior and blank
@@ -299,8 +296,7 @@ retrieved metadata constitutes a form of
 RAG~\cite{lewis2020rag} that mitigates hallucination in clinical LLM
 applications~\cite{thirunavukarasu2023llmmed,weinert2025rag}. Because the agent
 can additionally turn an aggregate query into a chart on request, common
-descriptive analyses are completed entirely within the interface, without
-exporting data to external plotting tools. The transition
+descriptive analyses are completed entirely within the interface. The transition
 from single-shot generation to an agentic
 loop~\cite{huggingface2025smolagents,yao2023react} extends capabilities to
 complex, multi-hop queries. The choice of RAD-DINO over general-purpose
@@ -322,7 +318,7 @@ commercial suites such as mPower add enterprise-scale analytics. None offers
 natural-language metadata querying, agentic multi-step reasoning, or
 embedding-based image retrieval. AngioVision is designed as a complementary
 query layer over data such archives already manage well. Its deliberate omission
-of 3D/MPR rendering constitutes the principal trade-off; pairing with OHIF
+of 3D/MPR rendering is the principal trade-off; pairing with OHIF
 addresses this limitation.
 
 \paragraph{Generalizability.}
@@ -333,9 +329,8 @@ ingestion pipelines, the embedding encoders, nor the query interface contain
 angiography-specific logic. Replacing the data source requires only re-running
 ingestion on a new DICOM root. RAD-DINO, trained on a broad radiographic
 corpus, generalizes across modalities~\cite{perezgarcia2024raddino}; and because
-the image encoder is user-selectable with each model indexed in its own
-collection, alternative encoders can be benchmarked head-to-head on the same
-archive without re-architecting the system.
+the image encoder is user-selectable, alternative encoders can be substituted
+without re-architecting the system.
 
 \paragraph{Limitations.}
 Image ingestion is constrained to single-process execution. Referential
