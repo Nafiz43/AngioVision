@@ -21,6 +21,9 @@ class AppState:
         self.think: bool          = True
         self.ollama_host: str     = config.DEFAULT_OLLAMA_HOST
         self.agent_max_steps: int = config.DEFAULT_AGENT_MAX_STEPS
+        # Heavy-endpoint concurrency gate (see qa_app/concurrency.py)
+        self.max_concurrency: int = config.DEFAULT_MAX_CONCURRENCY
+        self.max_queue: int       = config.DEFAULT_MAX_QUEUE
 
         # ── Concurrency ──────────────────────────────────────────────────────
         self.lock: threading.Lock = threading.Lock()

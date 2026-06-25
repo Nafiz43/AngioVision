@@ -45,3 +45,9 @@ N_SIMILAR_OVERFETCH    = 40     # frames fetched from ChromaDB before grouping
 
 DEFAULT_OLLAMA_HOST     = "http://localhost:11434"
 DEFAULT_AGENT_MAX_STEPS = 10    # max sql_query tool calls the NL→SQL agent may make per question
+
+# ── Heavy-endpoint concurrency gate (/api/query + /api/image-query) ───────────
+# Both endpoints share ONE Ollama server/GPU + the embedding model, so only a
+# few may run at once; overflow requests queue FIFO (see qa_app/concurrency.py).
+DEFAULT_MAX_CONCURRENCY = 1     # heavy jobs allowed to run simultaneously
+DEFAULT_MAX_QUEUE       = 20    # waiting requests beyond this are rejected with "busy"

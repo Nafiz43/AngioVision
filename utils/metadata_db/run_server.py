@@ -92,6 +92,20 @@ Examples:
             f"question before it must answer (default: {config.DEFAULT_AGENT_MAX_STEPS})"
         ),
     )
+    parser.add_argument(
+        "--max-concurrency", type=int, default=config.DEFAULT_MAX_CONCURRENCY,
+        help=(
+            f"Max heavy jobs (/api/query + /api/image-query combined) that may "
+            f"run at once; the rest queue FIFO (default: {config.DEFAULT_MAX_CONCURRENCY})"
+        ),
+    )
+    parser.add_argument(
+        "--max-queue", type=int, default=config.DEFAULT_MAX_QUEUE,
+        help=(
+            f"Max requests allowed to wait in the queue before new ones are "
+            f"rejected with a 'busy' message (default: {config.DEFAULT_MAX_QUEUE})"
+        ),
+    )
     args = parser.parse_args()
 
     # ── Configure shared runtime state ───────────────────────────────────────
@@ -100,6 +114,8 @@ Examples:
     state.think           = not args.no_think
     state.ollama_host     = args.ollama_host.rstrip("/")
     state.agent_max_steps = args.agent_max_steps
+    state.max_concurrency = max(1, args.max_concurrency)
+    state.max_queue       = max(0, args.max_queue)
 
     if not state.db_path.exists():
         log.warning(f"DB not found at {state.db_path} — stats will error until DB is reachable")
@@ -138,6 +154,7 @@ Examples:
     log.info(f"  Model      : {args.model}")
     log.info(f"  Thinking   : {'ON' if state.think else 'OFF'}")
     log.info(f"  Embeddings : RAD-DINO (if available)")
+    log.info(f"  Concurrency: {state.max_concurrency} heavy job(s) at once, queue up to {state.max_queue}")
     log.info(f"  Open       : http://localhost:{args.port}")
 
     app.run(host=args.host, port=args.port, debug=False, threaded=True)

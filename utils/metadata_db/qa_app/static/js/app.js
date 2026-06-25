@@ -404,6 +404,15 @@ function sampleFrameIndices(count, max){
 // ════════════════════════════════════════════════
 // MESSAGE HELPERS
 // ════════════════════════════════════════════════
+// Build the in-queue banner text from a queued / queue_update event.
+function formatQueueMsg(evt){
+  const pos=evt.position||0;
+  const total=evt.total_waiting||pos;
+  const ahead=(evt.ahead!=null)?evt.ahead:Math.max(0,pos-1);
+  if(ahead<=0) return `You're next in line — your request will start the moment the server frees up.`;
+  return `You're in the queue — position ${pos} of ${total} (${ahead} ahead of you). Your request will start automatically when the server frees up.`;
+}
+
 function addMsg(cls,html){
   const es=document.getElementById('emptyState');
   if(es)es.remove();
@@ -477,6 +486,23 @@ async function handleTextSend(question){
         if(!line.startsWith('data: '))continue;
         let evt;try{evt=JSON.parse(line.slice(6));}catch{continue;}
         switch(evt.event){
+
+          /* ── NEW: concurrency queue events (sent before the pipeline starts) ── */
+          case 'queued':
+          case 'queue_update':
+            thinkEl.classList.add('queued');
+            thinkTxt.textContent=formatQueueMsg(evt);
+            setStatus('busy',`queued #${evt.position}`);
+            break;
+          case 'slot_acquired':
+            thinkEl.classList.remove('queued');
+            thinkTxt.textContent='Starting…';
+            setStatus('busy','starting…');
+            break;
+          case 'busy':
+            thinkEl.remove();
+            addMsg('msg-bot',`<div class="bubble-notice">${esc(evt.message||'Server is at capacity, please retry shortly.')}</div>`);
+            setLoading(false);setStatus('ready','ready');return;
 
           /* ── NEW: agent lifecycle events ── */
           case 'agent_start':
@@ -593,6 +619,22 @@ async function handleImageSend(question){
         if(!line.startsWith('data: '))continue;
         let evt;try{evt=JSON.parse(line.slice(6));}catch{continue;}
         switch(evt.event){
+          /* ── NEW: concurrency queue events (sent before the pipeline starts) ── */
+          case 'queued':
+          case 'queue_update':
+            thinkEl.classList.add('queued');
+            thinkTxt.textContent=formatQueueMsg(evt);
+            setStatus('busy',`queued #${evt.position}`);
+            break;
+          case 'slot_acquired':
+            thinkEl.classList.remove('queued');
+            thinkTxt.textContent='Starting…';
+            setStatus('busy','starting…');
+            break;
+          case 'busy':
+            thinkEl && thinkEl.parentNode && thinkEl.remove();
+            addMsg('msg-bot',`<div class="bubble-notice">${esc(evt.message||'Server is at capacity, please retry shortly.')}</div>`);
+            setLoading(false);setStatus('ready','ready');return;
           case 'decode_start':  thinkTxt.textContent='Decoding image…';break;
           case 'decode_done':   thinkTxt.textContent=`Querying ChromaDB (${evt.width}×${evt.height} px)…`;break;
           case 'chroma_start':  thinkTxt.textContent=`Searching vector database (${shortModelLabel(getSelectedEmbedModel())})…`;break;

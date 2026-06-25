@@ -10,6 +10,7 @@ from flask import Blueprint, request, jsonify, Response, render_template
 from . import config
 from .deps import IMAGE_DEPS_OK, SMOLAGENTS_OK, base64
 from .state import state
+from .concurrency import gated
 from .db import get_db_stats, run_sql_query, open_db
 from .agent import run_nl_query_agent
 from .embeddings import get_embedding_model
@@ -158,12 +159,12 @@ def api_query() -> Response:
             "error": "smolagents is not installed on the server. Run: pip install 'smolagents[openai]'"
         }), 503
 
-    def generate():
+    def emit(obj: Dict[str, Any]) -> str:
+        return "data: " + json.dumps(obj) + "\n\n"
+
+    def _pipeline():
+        # Heavy section: runs only once a concurrency slot has been acquired.
         t0 = time.time()
-
-        def emit(obj: Dict[str, Any]) -> str:
-            return "data: " + json.dumps(obj) + "\n\n"
-
         yield emit({"event": "sql_start"})
 
         had_error = False
@@ -176,6 +177,11 @@ def api_query() -> Response:
         if not had_error:
             elapsed = int((time.time() - t0) * 1000)
             yield emit({"event": "done", "elapsed_ms": elapsed})
+
+    # Gate the heavy section behind the global FIFO semaphore shared with
+    # /api/image-query; emits queued/queue_update/slot_acquired (or busy) first.
+    def generate():
+        yield from gated(emit, _pipeline)
 
     return Response(
         generate(),
@@ -214,11 +220,12 @@ def api_image_query() -> Response:
             )
         }), 503
 
-    def generate():
-        t0 = time.time()
+    def emit(obj: dict) -> str:
+        return "data: " + json.dumps(obj) + "\n\n"
 
-        def emit(obj: dict) -> str:
-            return "data: " + json.dumps(obj) + "\n\n"
+    def _pipeline():
+        # Heavy section: runs only once a concurrency slot has been acquired.
+        t0 = time.time()
 
         # ── Step 1: Decode image ─────────────────────────────────────────────
         yield emit({"event": "decode_start"})
@@ -376,6 +383,11 @@ def api_image_query() -> Response:
         elapsed = int((time.time() - t0) * 1000)
         yield emit({"event": "answer",  "text": answer})
         yield emit({"event": "done",    "elapsed_ms": elapsed})
+
+    # Gate the heavy section behind the global FIFO semaphore shared with
+    # /api/query; emits queued/queue_update/slot_acquired (or busy) first.
+    def generate():
+        yield from gated(emit, _pipeline)
 
     return Response(
         generate(),
