@@ -24,6 +24,7 @@ from .deps import SMOLAGENTS_OK, Tool, ToolCallingAgent, OpenAIServerModel
 from .state import state
 from .db import run_sql_query, clean_sql
 from .prompts import SCHEMA_CONTEXT, SYNTHESIS_SYSTEM
+from .clarify import assess_clarification
 
 log = logging.getLogger(__name__)
 
@@ -391,7 +392,9 @@ response described above.
 """
 
 
-def run_nl_query_agent(question: str, think: bool, model_name: str) -> Any:
+def run_nl_query_agent(
+    question: str, think: bool, model_name: str, clarify_enabled: bool = True,
+) -> Any:
     """
     Run a smolagents ToolCallingAgent for NL→SQL query resolution.
 
@@ -410,6 +413,28 @@ def run_nl_query_agent(question: str, think: bool, model_name: str) -> Any:
         sql_done / sql_repaired, exec_start, exec_done,
         synth_start, answer, error
     """
+    # ── Pre-flight clarification gate ────────────────────────────────────────
+    # Before running ANY tool, decide whether the request is too ambiguous to
+    # answer confidently. If so, emit a single `clarification` event (with
+    # selectable options) and stop — the frontend collects the user's choice and
+    # re-submits the augmented question with skip_clarify=True, so this runs at
+    # most once per question and the execution pipeline below stays untouched.
+    if clarify_enabled:
+        yield {"event": "clarify_check"}
+        clar = assess_clarification(question)
+        if clar:
+            log.info(
+                f"Clarification requested (q={question!r:.80}): {clar['question']!r}"
+            )
+            yield {
+                "event":        "clarification",
+                "question":     clar["question"],
+                "options":      clar["options"],
+                "allow_custom": True,
+                "reason":       clar.get("reason", ""),
+            }
+            return
+
     event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
     call_count = {"n": 0}
 

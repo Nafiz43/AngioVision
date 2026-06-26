@@ -148,6 +148,13 @@ def api_query() -> Response:
     question = data.get("question", "").strip()
     think = data.get("think", state.think)
     model = (data.get("model") or config.DEFAULT_MODEL).strip()
+    # Clarification gate: on by default (overridable per request via "clarify"),
+    # and always bypassed when the client re-submits an already-clarified
+    # question ("skip_clarify"), so the agent runs at most one clarify round.
+    clarify_enabled = (
+        bool(data.get("clarify", state.clarify_enabled))
+        and not bool(data.get("skip_clarify", False))
+    )
 
     if not question:
         log.warning("POST /api/query: missing 'question' parameter")
@@ -168,7 +175,7 @@ def api_query() -> Response:
         yield emit({"event": "sql_start"})
 
         had_error = False
-        for evt in run_nl_query_agent(question, think, model):
+        for evt in run_nl_query_agent(question, think, model, clarify_enabled=clarify_enabled):
             yield emit(evt)
             if evt.get("event") == "error":
                 had_error = True

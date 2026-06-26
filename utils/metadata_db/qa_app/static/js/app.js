@@ -451,11 +451,16 @@ async function handleSend(){
 // ════════════════════════════════════════════════
 // TEXT QUERY (NL → SQL → synthesis)
 // ════════════════════════════════════════════════
-async function handleTextSend(question){
+async function handleTextSend(question, opts){
+  opts = opts || {};
+  const skipClarify = !!opts.skipClarify;                 // re-submit after a clarification
+  const displayQuestion = opts.displayQuestion || question; // shown in the user bubble
+  const clarifyEl = document.getElementById('clarifyToggle');
+  const clarify = clarifyEl ? clarifyEl.checked : true;
   _abortController = new AbortController();
   setLoading(true);
   inp.value=''; inp.style.height='auto';
-  addMsg('msg-user',`<div class="bubble bubble-user">${esc(question)}</div>`);
+  addMsg('msg-user',`<div class="bubble bubble-user">${esc(displayQuestion)}</div>`);
   const thinkEl=addMsg('msg-bot',`<div class="thinking"><div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div><span id="thinkTxt">Initializing agent…</span></div>`);
   const thinkTxt=thinkEl.querySelector('#thinkTxt');
   setStatus('busy','thinking…');
@@ -466,7 +471,7 @@ async function handleTextSend(question){
   let allSql=[];       // ← NEW: track every SQL the agent tried
   let charts=[];       // ← NEW: chart specs emitted by render_chart
   try{
-    const resp=await fetch(`${API}/api/query`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,think,model}),signal:_abortController.signal});
+    const resp=await fetch(`${API}/api/query`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question,think,model,clarify,skip_clarify:skipClarify}),signal:_abortController.signal});
 
     /* ── NEW: catch non-SSE error responses (503, 400, etc.) ── */
     if(!resp.ok){
@@ -521,6 +526,16 @@ async function handleTextSend(question){
             thinkTxt.textContent='Rendering chart…';
             break;
 
+          /* ── NEW: pre-flight clarification gate ── */
+          case 'clarify_check':
+            thinkTxt.textContent='Checking if clarification is needed…';
+            break;
+          case 'clarification':
+            thinkEl.remove();
+            renderClarification(evt, question);   // `question` is the original here
+            setLoading(false); setStatus('ready','ready');
+            return;
+
           /* ── Original events ── */
           case 'sql_start':    thinkTxt.textContent='Agent is thinking…';break;
           case 'sql_done':     sql=evt.sql;allSql.push(evt.sql);thinkTxt.textContent='Executing query…';break;
@@ -558,7 +573,7 @@ async function handleTextSend(question){
 
     addMsg('msg-bot',`<div class="result-card"><div class="rc-tabs">${tabs}<div class="rc-meta"><span>${elapsedSec}s</span></div></div>${panes}</div>`);
     if(hasChart) renderCharts(`${id}-charts`, charts);
-    addHistory(question,rowCount,elapsed,false);
+    addHistory(displayQuestion,rowCount,elapsed,false);
     setStatus('ready','ready');
   }catch(e){
     if(e.name==='AbortError'){
@@ -571,6 +586,87 @@ async function handleTextSend(question){
     }
   }
   setLoading(false);inp.focus();
+}
+
+// ════════════════════════════════════════════════
+// CLARIFICATION  (pre-flight ambiguity gate)
+// Renders a focused question with selectable options + an "Other" free-text
+// option, then re-submits the ORIGINAL question augmented with the answer so
+// the agent keeps full context. skip_clarify guarantees only one round.
+// ════════════════════════════════════════════════
+function renderClarification(evt, baseQuestion){
+  const cid='clar'+Date.now()+Math.floor(Math.random()*1000);
+  const q=evt.question||'Could you clarify your request?';
+  const opts=Array.isArray(evt.options)?evt.options:[];
+  let optsHtml=opts.map(o=>
+    `<button type="button" class="clarify-opt" data-val="${esc(o)}" onclick="chooseClarifyOption('${cid}',this,false)">${esc(o)}</button>`
+  ).join('');
+  optsHtml+=`<button type="button" class="clarify-opt clarify-other" onclick="chooseClarifyOption('${cid}',this,true)">Other (specify)…</button>`;
+  const reason=evt.reason?`<div class="clarify-reason">${esc(evt.reason)}</div>`:'';
+  const html=`
+    <div class="clarify-card" id="${cid}" data-base="${esc(baseQuestion)}" data-q="${esc(q)}">
+      <div class="clarify-hdr">
+        <svg class="clarify-ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span>Need a bit more detail</span>
+      </div>
+      <div class="clarify-q">${esc(q)}</div>
+      ${reason}
+      <div class="clarify-opts">${optsHtml}</div>
+      <div class="clarify-other-wrap" id="${cid}-otherwrap" style="display:none">
+        <input type="text" class="clarify-other-input" id="${cid}-other" placeholder="Type your answer…"
+               oninput="document.getElementById('${cid}-send').disabled=!this.value.trim();"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();submitClarification('${cid}');}">
+      </div>
+      <div class="clarify-actions">
+        <span class="clarify-hint">Pick an option or choose “Other”.</span>
+        <button class="clarify-send" id="${cid}-send" onclick="submitClarification('${cid}')" disabled>Send</button>
+      </div>
+    </div>`;
+  addMsg('msg-bot', html);
+}
+
+function chooseClarifyOption(cid, btn, isOther){
+  const card=document.getElementById(cid);
+  if(!card || card.classList.contains('answered')) return;
+  card.querySelectorAll('.clarify-opt').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  const otherWrap=document.getElementById(cid+'-otherwrap');
+  const sendBtn=document.getElementById(cid+'-send');
+  if(isOther){
+    otherWrap.style.display='block';
+    const inp=document.getElementById(cid+'-other');
+    card.dataset.choice='__other__';
+    if(sendBtn) sendBtn.disabled=!(inp && inp.value.trim());
+    if(inp) inp.focus();
+  } else {
+    otherWrap.style.display='none';
+    card.dataset.choice=btn.dataset.val||'';
+    if(sendBtn) sendBtn.disabled=false;
+  }
+}
+
+function submitClarification(cid){
+  const card=document.getElementById(cid);
+  if(!card || card.classList.contains('answered')) return;
+  const base=card.dataset.base||'';
+  const clarQ=card.dataset.q||'';
+  let answer=card.dataset.choice||'';
+  if(answer==='__other__' || !answer){
+    const inp=document.getElementById(cid+'-other');
+    answer=(inp && inp.value.trim())||'';
+    if(!answer){ if(inp) inp.focus(); return; }
+  }
+  // Lock the card so it cannot be answered twice.
+  card.classList.add('answered');
+  card.querySelectorAll('.clarify-opt').forEach(b=>{
+    b.disabled=true;
+    if(b.dataset.val===answer) b.classList.add('selected');
+  });
+  const otherInp=document.getElementById(cid+'-other'); if(otherInp) otherInp.disabled=true;
+  const sendBtn=document.getElementById(cid+'-send'); if(sendBtn){sendBtn.disabled=true;sendBtn.textContent='Sent';}
+  // Re-issue the original question + the clarification as one augmented turn.
+  const augmented=`${base}\n\n[Clarification]\nQ: ${clarQ}\nA: ${answer}`;
+  handleTextSend(augmented, {skipClarify:true, displayQuestion:answer});
 }
 
 // ════════════════════════════════════════════════

@@ -24,6 +24,9 @@ class AppState:
         # Heavy-endpoint concurrency gate (see qa_app/concurrency.py)
         self.max_concurrency: int = config.DEFAULT_MAX_CONCURRENCY
         self.max_queue: int       = config.DEFAULT_MAX_QUEUE
+        # Pre-flight clarification gate (see qa_app/clarify.py); per-request
+        # flags ("clarify"/"skip_clarify") may still override this default.
+        self.clarify_enabled: bool = config.CLARIFY_ENABLED
 
         # ── Concurrency ──────────────────────────────────────────────────────
         self.lock: threading.Lock = threading.Lock()

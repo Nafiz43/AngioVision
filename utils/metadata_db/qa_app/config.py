@@ -46,6 +46,12 @@ N_SIMILAR_OVERFETCH    = 40     # frames fetched from ChromaDB before grouping
 DEFAULT_OLLAMA_HOST     = "http://localhost:11434"
 DEFAULT_AGENT_MAX_STEPS = 10    # max sql_query tool calls the NL→SQL agent may make per question
 
+# ── Clarification gate ────────────────────────────────────────────────────────
+# When enabled, /api/query runs a quick pre-flight check that asks the user a
+# focused clarifying question (with selectable options) when the request is
+# genuinely ambiguous, instead of guessing. Per-request flags can override this.
+CLARIFY_ENABLED = True
+
 # ── Heavy-endpoint concurrency gate (/api/query + /api/image-query) ───────────
 # Both endpoints share ONE Ollama server/GPU + the embedding model, so only a
 # few may run at once; overflow requests queue FIFO (see qa_app/concurrency.py).

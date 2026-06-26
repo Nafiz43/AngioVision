@@ -345,3 +345,29 @@ textarea.nl-input::placeholder{color:var(--text3)}
 .messages.drag-over{outline:2px dashed var(--violet-light);outline-offset:-12px;background:rgba(124,58,237,.04)}
 
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+/* ══ CLARIFICATION CARD (pre-flight disambiguation) ══ */
+.clarify-card{background:var(--bg2);border:1px solid var(--border2);border-left:3px solid var(--amber);border-radius:10px;padding:14px 16px;max-width:580px;animation:fadeIn .25s ease}
+.clarify-hdr{display:flex;align-items:center;gap:7px;font-size:10.5px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.5px;color:var(--amber);margin-bottom:9px}
+.clarify-ic{width:14px;height:14px;stroke:var(--amber);fill:none;stroke-width:2;flex-shrink:0}
+.clarify-q{font-size:14px;font-weight:600;color:var(--text);margin-bottom:13px;line-height:1.45}
+.clarify-opts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:11px}
+.clarify-opt{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12.5px;font-family:var(--sans);color:var(--text2);cursor:pointer;transition:border-color .15s,background .15s,color .15s}
+.clarify-opt:hover:not(:disabled){border-color:var(--accent);color:var(--text);background:var(--accent-bg)}
+.clarify-opt.selected{border-color:var(--accent);background:var(--accent-bg);color:var(--accent);font-weight:600}
+.clarify-opt:disabled{cursor:default;opacity:.55}
+.clarify-opt.clarify-other{border-style:dashed}
+.clarify-reason{font-size:11px;font-family:var(--mono);color:var(--text3);margin:-3px 0 11px}
+.clarify-other-wrap{margin-bottom:11px}
+.clarify-other-input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:13px;font-family:var(--sans);color:var(--text);outline:none;transition:border-color .15s,box-shadow .15s}
+.clarify-other-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+.clarify-other-input::placeholder{color:var(--text3)}
+.clarify-actions{display:flex;align-items:center;gap:12px;justify-content:flex-end}
+.clarify-hint{margin-right:auto;font-size:10.5px;font-family:var(--mono);color:var(--text3)}
+.clarify-card.answered .clarify-hint{visibility:hidden}
+.clarify-send{background:var(--accent2);border:none;border-radius:8px;padding:8px 20px;font-size:12.5px;font-family:var(--sans);font-weight:700;color:#fff;cursor:pointer;transition:background .15s,opacity .15s}
+.clarify-send:hover:not(:disabled){background:var(--accent)}
+.clarify-send:disabled{opacity:.45;cursor:not-allowed}
+.clarify-card.answered{opacity:.85}
+.clarify-card.answered .clarify-hdr{color:var(--text3)}
+.clarify-card.answered{border-left-color:var(--green)}

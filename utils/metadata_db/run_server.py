@@ -106,6 +106,13 @@ Examples:
             f"rejected with a 'busy' message (default: {config.DEFAULT_MAX_QUEUE})"
         ),
     )
+    parser.add_argument(
+        "--no-clarify", action="store_true",
+        help=(
+            "Disable the pre-flight clarification gate; answer directly even when "
+            "the request is ambiguous (default: clarification enabled)"
+        ),
+    )
     args = parser.parse_args()
 
     # ── Configure shared runtime state ───────────────────────────────────────
@@ -116,6 +123,7 @@ Examples:
     state.agent_max_steps = args.agent_max_steps
     state.max_concurrency = max(1, args.max_concurrency)
     state.max_queue       = max(0, args.max_queue)
+    state.clarify_enabled = not args.no_clarify
 
     if not state.db_path.exists():
         log.warning(f"DB not found at {state.db_path} — stats will error until DB is reachable")
