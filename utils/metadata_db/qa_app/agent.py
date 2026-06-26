@@ -212,6 +212,7 @@ class ChartTool(Tool):
         super().__init__()
         self.on_chart_callback = on_chart_callback
         self.max_points = max_points
+        self._emitted = False  # render only the first chart per question
 
     def forward(
         self,
@@ -265,8 +266,20 @@ class ChartTool(Tool):
             "values":       norm_vals,
             "series_label": str(series_label) if series_label else "",
         }
+        # One chart per question: smaller models sometimes call render_chart
+        # repeatedly in their reasoning loop (often with a second, mislabeled
+        # query), which stacked duplicate charts under the same title. Emit the
+        # first valid chart only and steer the agent to finish.
+        if self._emitted:
+            return (
+                "A chart has ALREADY been rendered for this question. Do NOT call "
+                "render_chart again. Call final_answer now with a 1-2 sentence "
+                "plain-text summary of what the chart shows."
+            )
+
         if self.on_chart_callback:
             self.on_chart_callback(spec)
+        self._emitted = True
 
         msg = (
             f"Chart rendered in the UI: a {ctype.replace('_', ' ')} titled "
