@@ -3,6 +3,7 @@
 import json
 import time
 import logging
+import urllib.request
 from typing import Any, Dict, Optional
 
 from flask import Blueprint, request, jsonify, Response, render_template
@@ -453,6 +454,40 @@ def api_frame() -> Response:
     else:
         log.debug(f"GET /api/frame: frame not extracted [{path}:{frame_index}]")
         return Response(status=404)
+
+
+@bp.route("/api/models", methods=["GET"])
+def api_models():
+    """
+    GET /api/models — list the LLM models actually installed on the configured
+    Ollama server (queried live via Ollama's /api/tags), together with the
+    configured default model.
+
+    Returns {"models": [..names..], "default": "<DEFAULT_MODEL>"}. The dropdown
+    is populated from this list so it reflects what Ollama can actually serve
+    rather than a hardcoded set. If Ollama is unreachable the list comes back
+    empty (with an "error" field) so the UI can fall back to the default.
+    """
+    url = f"{state.ollama_host.rstrip('/')}/api/tags"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        names = sorted(
+            {
+                (m.get("name") or m.get("model") or "").strip()
+                for m in payload.get("models", [])
+            }
+        )
+        models = [n for n in names if n]
+        return jsonify({"models": models, "default": config.DEFAULT_MODEL})
+    except Exception as exc:
+        log.warning(f"GET /api/models: could not reach Ollama at {url}: {exc}")
+        return jsonify({
+            "models":  [],
+            "default": config.DEFAULT_MODEL,
+            "error":   f"Could not reach Ollama at {state.ollama_host}: {exc}",
+        })
 
 
 @bp.route("/api/model", methods=["POST"])

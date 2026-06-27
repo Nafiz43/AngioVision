@@ -7,7 +7,7 @@ from pathlib import Path
 DEFAULT_DB        = Path("/data/Deep_Angiography/AngioVision/dicom_staging.db")
 DEFAULT_CHROMADB  = Path("/data/Deep_Angiography/AngioVision/chromadb")
 CHROMA_COLLECTION = "dicom_images"   # default (RAD-DINO) collection — kept for back-compat
-DEFAULT_MODEL     = "qwen3:1.7b"
+DEFAULT_MODEL     = "qwen3.6:35b"
 DEFAULT_PORT      = 5050
 
 # ── Image-embedding model registry ───────────────────────────────────────────

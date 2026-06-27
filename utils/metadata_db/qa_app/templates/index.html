@@ -55,13 +55,10 @@
     <span class="hdr-sub">NL → SQL · Image RAG (<span id="hdrEmbedModel">RAD-DINO</span>)</span>
     <div class="hdr-right">
       <div class="status-pill"><span class="status-dot"></span><span id="statusTxt">connecting…</span></div>
+      <!-- Options are populated at runtime from the live Ollama model list (GET /api/models);
+           the default below is shown only until that fetch completes / if Ollama is offline. -->
       <select class="model-select" id="modelSelect" onchange="onModelChange()">
-        <option>qwen3:1.7b</option>
-        <option>qwen3:8b</option>
-        <option>qwen3:14b</option>
-        <option>qwen3:32b</option>
-        <option>qwen3:35b</option>
-        <option>llama3.2:latest</option>
+        <option value="qwen3.6:35b">qwen3.6:35b</option>
       </select>
       <a class="theme-toggle about-link" href="{{ url_for('api.guide') }}" target="_blank" rel="noopener" title="How to use the query engine — guide (opens in new tab)">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>

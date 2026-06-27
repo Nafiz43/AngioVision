@@ -27,7 +27,7 @@ function handleLogin(){
     document.getElementById('sessionUser').textContent=u;
     document.getElementById('loginOverlay').classList.add('hidden');
     document.getElementById('appWrapper').classList.add('visible');
-    loadStats(); loadEmbeddingModels();
+    loadStats(); loadEmbeddingModels(); loadModels();
     document.getElementById('nlInput').focus();
   } else {
     loginAttempts++;
@@ -187,6 +187,34 @@ function onModelChange(){
   const m=document.getElementById('modelSelect').value;
   fetch(`${API}/api/model`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:m})})
     .then(r=>r.json()).then(d=>{if(d.ok)setStatus('ready',m);});
+}
+
+// Populate the model dropdown from the models actually installed on the Ollama
+// server (GET /api/models) instead of a hardcoded list. Defaults the selection
+// to qwen3.6:35b when Ollama serves it; otherwise picks the first available
+// model. Falls back to showing just the default if Ollama is unreachable.
+async function loadModels(){
+  const sel=document.getElementById('modelSelect');
+  if(!sel) return;
+  try{
+    const r=await fetch(`${API}/api/models`);
+    const d=await r.json();
+    const models=d.models||[];
+    const def=d.default||'qwen3.6:35b';
+    if(models.length){
+      const initial=models.includes(def)?def:models[0];
+      sel.innerHTML=models.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('');
+      sel.value=initial;
+      // Sync the backend silently to the model shown as selected.
+      fetch(`${API}/api/model`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:initial})}).catch(()=>{});
+    } else {
+      // Ollama unreachable / no models installed — show the configured default only.
+      sel.innerHTML=`<option value="${esc(def)}">${esc(def)}</option>`;
+      sel.value=def;
+    }
+  }catch(e){
+    sel.innerHTML='<option value="qwen3.6:35b">qwen3.6:35b</option>';
+  }
 }
 
 // ════════════════════════════════════════════════
