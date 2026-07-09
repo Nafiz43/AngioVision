@@ -14,7 +14,7 @@ Each worker is fully self-sufficient:
     2. For every DICOM file found:
         a. Read the header (stop_before_pixels=True).
         b. Apply eligibility filter  (RadiationSetting / SeriesDescription /
-           PositionerMotion / NumberOfFrames).
+           PositionerMotion / NumberOfFrames — see --mode below).
         c. Construct the destination path  output_root/AccessionNumber/SOPInstanceUID/
            and stat-check whether it already exists  (O(1) filesystem lookup).
         d. If it passes the filter AND the destination is empty → extract frames
@@ -23,6 +23,24 @@ Each worker is fully self-sufficient:
 
 After all workers finish, the main process merges stats and writes a
 detailed final report covering every file seen at every stage.
+
+Filter modes  (--mode)
+-----------------------
+strict (default)
+    4-step eligibility filter:
+        1. RadiationSetting  == "GR"
+        2. SeriesDescription contains "DSA" or "CO 2"
+        3. PositionerMotion  == "STATIC"
+        4. NumberOfFrames    >  min_frames
+    Writes directly to --output_root (default: OUTPUT_ROOT from config.py).
+
+relaxed
+    Same filter with step 2 (SeriesDescription) removed — recovers sequences
+    that were rejected ONLY because of SeriesDescription. Writes to a
+    separate destination (--output_root, default NEW_OUTPUT_ROOT) so strict
+    output is never touched. --skip_check_root (default: OUTPUT_ROOT) is
+    consulted as an EXTRA read-only "already processed" check, so sequences
+    already extracted by a strict run are never duplicated here.
 
 Race-condition safety
 ---------------------
@@ -35,6 +53,10 @@ Race-condition safety
   completed output and skips it.
 - metadata.csv is written atomically (tmp → os.replace) so a partially
   written file is never mistaken for a completed one.
+- Pixel data is read BEFORE the frames/ directory is created, and any
+  processing failure removes the whole per-DICOM destination directory
+  (shutil.rmtree) — no empty/half-written skeleton dirs survive a failed
+  attempt, so a re-run does not get stuck skipping a broken destination.
 
 Output structure
 ----------------
@@ -49,7 +71,7 @@ Output structure
 Logs  (always written to LOG_DIR)
 ------
     LOG_DIR/
-        run_<YYYYMMDD_HHMMSS>/
+        run_<mode>_<YYYYMMDD_HHMMSS>/
             summary.md          ← full human-readable report
             errors.csv          ← one row per file that raised an exception
             filtered.csv        ← one row per file rejected by eligibility filter
@@ -57,8 +79,14 @@ Logs  (always written to LOG_DIR)
 
 Tips
 ----
-- --workers      number of processing workers  (default: cpu_count - 1)
-- --min_frames   reject DICOMs with NumberOfFrames <= this  (default: 2)
+- --mode            strict | relaxed  (default: strict)
+- --workers         number of processing workers  (default: cpu_count - 1)
+- --min_frames      reject DICOMs with NumberOfFrames <= this  (default: 2)
+- --output_root     where extracted sequences are written
+                    (default: OUTPUT_ROOT for strict, NEW_OUTPUT_ROOT for relaxed)
+- --skip_check_root extra dest-root consulted for the already-exists skip
+                    check, on top of --output_root (relaxed mode only;
+                    default: OUTPUT_ROOT)
 """
 
 import csv
@@ -66,10 +94,11 @@ import datetime
 import gc
 import os
 import re
+import shutil
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -108,6 +137,12 @@ REQUIRED_POSITIONER_MOTION  = "STATIC"
 SERIES_DESCRIPTION_KEYWORDS = ("DSA", "CO 2")
 DEFAULT_MIN_FRAMES          = 2
 
+# Default destination for --mode relaxed (kept separate from strict output so
+# a relaxed run never overwrites/duplicates a strict run's results)
+NEW_OUTPUT_ROOT = Path(
+    "/data/Deep_Angiography/DICOM_Sequence_Processed/00_sequence_to_check"
+)
+
 # All logs go here, never mixed with DICOM output
 LOG_DIR = Path("/data/Deep_Angiography/DICOM-metadata-stats")
 
@@ -134,7 +169,7 @@ class WorkerStats:
 
     # filter breakdown
     bad_radiation:  int = 0
-    bad_series:     int = 0
+    bad_series:     int = 0  # only populated in strict mode
     bad_motion:     int = 0
     too_few_frames: int = 0
     filter_error:   int = 0   # exception inside filter evaluation
@@ -261,14 +296,18 @@ def dest_already_exists(
 # =========================================================
 # Eligibility filter
 # =========================================================
-def passes_eligibility_filter(ds, min_frames: int) -> Tuple[bool, str]:
+def passes_eligibility_filter(ds, min_frames: int, mode: str) -> Tuple[bool, str]:
     """
     Returns (True, "ok") or (False, reason_string).
-    Evaluation order matches filter_sequence_dirs_by_metadata_and_frames.py:
+
+    strict  (mode == "strict"):
         1. RadiationSetting  == "GR"
         2. SeriesDescription contains "DSA" or "CO 2"
         3. PositionerMotion  == "STATIC"
         4. NumberOfFrames    >  min_frames
+
+    relaxed (mode == "relaxed"):
+        Same as above with step 2 (SeriesDescription) removed.
     """
     def _get(tag: str) -> str:
         val = getattr(ds, tag, None)
@@ -281,9 +320,10 @@ def passes_eligibility_filter(ds, min_frames: int) -> Tuple[bool, str]:
     if _get("RadiationSetting") != REQUIRED_RADIATION_SETTING:
         return False, "bad_radiation"
 
-    sd = _get("SeriesDescription")
-    if not any(kw.upper() in sd for kw in SERIES_DESCRIPTION_KEYWORDS):
-        return False, "bad_series"
+    if mode == "strict":
+        sd = _get("SeriesDescription")
+        if not any(kw.upper() in sd for kw in SERIES_DESCRIPTION_KEYWORDS):
+            return False, "bad_series"
 
     if _get("PositionerMotion") != REQUIRED_POSITIONER_MOTION:
         return False, "bad_motion"
@@ -329,7 +369,12 @@ def to_uint8_windowed(arr: np.ndarray, ds) -> np.ndarray:
 
 
 def save_frames(ds, frames_dir: Path, base_name: str) -> int:
+    # Access pixel_array BEFORE creating any directory.
+    # If this raises, no empty dir is left on disk.
     px = ds.pixel_array
+
+    # Only create the directory once we know pixel data is readable.
+    frames_dir.mkdir(parents=True, exist_ok=True)
 
     def _save(img, idx):
         Image.fromarray(img, mode="L").save(
@@ -367,10 +412,12 @@ def collect_leaf_dirs(root_dir: Path) -> List[Path]:
 # Worker
 # =========================================================
 def _process_leaf_dirs(
-    leaf_dir_strs:   List[str],
-    output_root_str: str,
-    min_frames:      int,
-    skip_existing:   bool,
+    leaf_dir_strs:        List[str],
+    output_root_str:      str,
+    skip_check_root_str:  Optional[str],
+    min_frames:           int,
+    skip_existing:        bool,
+    mode:                 str,
 ) -> WorkerStats:
     """
     Process all DICOM files found directly inside the given leaf directories.
@@ -378,18 +425,23 @@ def _process_leaf_dirs(
     Pipeline per file:
         1. Read header  (stop_before_pixels=True)
         2. Extract SOPInstanceUID + AccessionNumber
-        3. Eligibility filter
-        4. O(1) dest-exists check
-        5. Extract frames + write metadata  (atomic)
+        3. Skip if already present under output_root
+        4. (relaxed mode only) Skip if already present under skip_check_root
+           — this is the strict run's output, consulted read-only so a
+           relaxed run never duplicates sequences a strict run already kept.
+        5. Eligibility filter (mode-dependent — see passes_eligibility_filter)
+        6. Extract frames + write metadata  (atomic; failed attempts are
+           cleaned up via shutil.rmtree so no partial dirs remain)
 
     Returns a WorkerStats with full accounting of every decision.
 
     GC hygiene: explicit del ds + nudge every GC_NUDGE_INTERVAL files.
     """
     GC_NUDGE_INTERVAL = 10_000
-    output_root = Path(output_root_str)
-    stats       = WorkerStats()
-    file_count  = 0
+    output_root     = Path(output_root_str)
+    skip_check_root = Path(skip_check_root_str) if skip_check_root_str else None
+    stats           = WorkerStats()
+    file_count      = 0
 
     for leaf_str in leaf_dir_strs:
         leaf = Path(leaf_str)
@@ -418,9 +470,37 @@ def _process_leaf_dirs(
             uid = get_tag_str(ds, "SOPInstanceUID") or None
             acc = get_tag_str(ds, "AccessionNumber")
 
-            # ── 3. Eligibility filter ──────────────────────────────────────
+            # ── 3. Skip if already in output_root ──────────────────────────
+            if skip_existing and uid and \
+                    dest_already_exists(output_root, acc, uid):
+                stats.skipped_done += 1
+                stats.skipped_rows.append({
+                    "file":             str(f),
+                    "accession_number": acc,
+                    "sop_instance_uid": uid,
+                    "dest":             str(output_dir_for(output_root, acc, uid)),
+                    "skip_reason":      "already_in_output",
+                })
+                del ds
+                continue
+
+            # ── 4. (relaxed) Skip if already in skip_check_root ───────────
+            if skip_existing and uid and skip_check_root is not None and \
+                    dest_already_exists(skip_check_root, acc, uid):
+                stats.skipped_done += 1
+                stats.skipped_rows.append({
+                    "file":             str(f),
+                    "accession_number": acc,
+                    "sop_instance_uid": uid,
+                    "dest":             str(output_dir_for(skip_check_root, acc, uid)),
+                    "skip_reason":      "already_in_skip_check_root",
+                })
+                del ds
+                continue
+
+            # ── 5. Eligibility filter ──────────────────────────────────────
             try:
-                ok, reason = passes_eligibility_filter(ds, min_frames)
+                ok, reason = passes_eligibility_filter(ds, min_frames, mode)
             except Exception as fe:
                 ok     = False
                 reason = "filter_error"
@@ -448,44 +528,20 @@ def _process_leaf_dirs(
                 del ds
                 continue
 
-            # ── 4. O(1) dest-exists check ──────────────────────────────────
-            if skip_existing and uid and \
-                    dest_already_exists(output_root, acc, uid):
-                stats.skipped_done += 1
-                stats.skipped_rows.append({
-                    "file":             str(f),
-                    "accession_number": acc,
-                    "sop_instance_uid": uid,
-                    "dest":             str(output_dir_for(output_root, acc, uid)),
-                })
-                del ds
-                continue
-
-            # ── 5. Extract frames + write metadata ─────────────────────────
+            # ── 6. Extract frames + write metadata ─────────────────────────
             per_dicom_dir = output_dir_for(output_root, acc, uid or "NO_UID")
             frames_dir    = per_dicom_dir / "frames"
             metadata_csv  = per_dicom_dir / "metadata.csv"
             metadata_tmp  = per_dicom_dir / "metadata.csv.tmp"
 
             try:
-                frames_dir.mkdir(parents=True, exist_ok=True)
-
-                # Full read for pixel data
-                ds_full = pydicom.dcmread(f, force=True)
-
+                # Full pixel read + save_frames are one atomic step — no
+                # partial "frames dir exists but pixel read failed" state.
+                ds_full   = pydicom.dcmread(f, force=True)
                 base_name = uid if uid else sanitize_dirname(f.stem)
-                try:
-                    frame_count = save_frames(ds_full, frames_dir, base_name)
-                except Exception as fe:
-                    frame_count = NA_VALUE
-                    stats.error_rows.append({
-                        "file":   str(f),
-                        "stage":  "frame_extraction",
-                        "reason": f"{type(fe).__name__}: {fe}",
-                    })
+                frame_count = save_frames(ds_full, frames_dir, base_name)
                 del ds_full
 
-                # Metadata
                 metadata_rows = extract_metadata_pairs(ds)
                 metadata_rows.extend([
                     {"Information": "source_file",      "Value": safe_str(f.name)},
@@ -493,6 +549,7 @@ def _process_leaf_dirs(
                     {"Information": "frame_count",      "Value": safe_str(frame_count)},
                     {"Information": "accession_number", "Value": safe_str(acc)},
                     {"Information": "sop_instance_uid", "Value": safe_str(uid)},
+                    {"Information": "filter_mode",       "Value": safe_str(mode)},
                 ])
 
                 df = pd.DataFrame(metadata_rows)
@@ -512,6 +569,13 @@ def _process_leaf_dirs(
                     "stage":  "processing",
                     "reason": f"{type(e).__name__}: {e}",
                 })
+                # Remove the whole per-DICOM dir on failure so no empty
+                # skeleton dirs are left behind, and a re-run doesn't get
+                # stuck skipping a half-created destination forever.
+                try:
+                    shutil.rmtree(per_dicom_dir, ignore_errors=True)
+                except Exception:
+                    pass
                 try:
                     metadata_tmp.unlink(missing_ok=True)
                 except Exception:
@@ -548,16 +612,18 @@ def _merge_stats(all_stats: List[WorkerStats]) -> WorkerStats:
 # Report writing
 # =========================================================
 def _write_reports(
-    run_dir:       Path,
-    stats:         WorkerStats,
-    run_ts:        str,
-    input_root:    Path,
-    output_root:   Path,
-    n_workers:     int,
-    min_frames:    int,
-    skip_existing: bool,
-    leaf_dir_count: int,
-    elapsed_sec:   float,
+    run_dir:          Path,
+    stats:            WorkerStats,
+    run_ts:           str,
+    mode:             str,
+    input_root:       Path,
+    output_root:      Path,
+    skip_check_root:  Optional[Path],
+    n_workers:        int,
+    min_frames:       int,
+    skip_existing:    bool,
+    leaf_dir_count:   int,
+    elapsed_sec:      float,
 ) -> None:
     """
     Write four files into run_dir:
@@ -593,7 +659,8 @@ def _write_reports(
         sp = run_dir / "skipped.csv"
         with sp.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=[
-                "file", "accession_number", "sop_instance_uid", "dest",
+                "file", "accession_number", "sop_instance_uid",
+                "dest", "skip_reason",
             ])
             w.writeheader(); w.writerows(stats.skipped_rows)
 
@@ -601,15 +668,24 @@ def _write_reports(
     md = run_dir / "summary.md"
     with md.open("w", encoding="utf-8") as f:
 
-        f.write("# DICOM Processing Run Summary\n\n")
+        f.write(f"# DICOM Processing Run Summary  —  mode: {mode}\n\n")
         f.write(f"**Run timestamp:** {dt}  \n")
         f.write(f"**Elapsed:** {elapsed_sec:.1f} s  \n")
         f.write(f"**Input root:** `{input_root}`  \n")
         f.write(f"**Output root:** `{output_root}`  \n")
+        if skip_check_root is not None:
+            f.write(f"**Extra skip-check root:** `{skip_check_root}` "
+                    f"(read-only — used only to avoid duplicating a prior "
+                    f"strict run's output)  \n")
         f.write(f"**Workers:** {n_workers}  \n")
         f.write(f"**Min frames threshold:** {min_frames}  \n")
         f.write(f"**Skip existing:** {skip_existing}  \n")
         f.write(f"**Leaf directories scanned:** {leaf_dir_count}  \n\n")
+        if mode == "relaxed":
+            f.write("> **Filter change:** `SeriesDescription` check has been "
+                    "**removed**. Only `RadiationSetting == GR`, "
+                    "`PositionerMotion == STATIC`, and `NumberOfFrames > "
+                    f"{min_frames}` are applied.\n\n")
         f.write("---\n\n")
 
         # Overall counts
@@ -630,9 +706,10 @@ def _write_reports(
         f.write("|--------|-------|---------|\n")
         f.write(f"| `bad_radiation`  | **{stats.bad_radiation}** "
                 f"| RadiationSetting ≠ `{REQUIRED_RADIATION_SETTING}` |\n")
-        f.write(f"| `bad_series`     | **{stats.bad_series}** "
-                f"| SeriesDescription does not contain "
-                f"`{'` or `'.join(SERIES_DESCRIPTION_KEYWORDS)}` |\n")
+        if mode == "strict":
+            f.write(f"| `bad_series`     | **{stats.bad_series}** "
+                    f"| SeriesDescription does not contain "
+                    f"`{'` or `'.join(SERIES_DESCRIPTION_KEYWORDS)}` |\n")
         f.write(f"| `bad_motion`     | **{stats.bad_motion}** "
                 f"| PositionerMotion ≠ `{REQUIRED_POSITIONER_MOTION}` |\n")
         f.write(f"| `too_few_frames` | **{stats.too_few_frames}** "
@@ -645,13 +722,14 @@ def _write_reports(
         # Skipped
         f.write("## Already-Existing Files\n\n")
         if stats.skipped_done == 0:
-            f.write("No files were skipped — destination was empty or "
+            f.write("No files were skipped — destination(s) were empty or "
                     "`--skip_existing false` was set.\n\n")
         else:
             f.write(f"{stats.skipped_done} file(s) were skipped because their "
                     f"destination (`AccessionNumber/SOPInstanceUID/`) already "
-                    f"contained `metadata.csv` and `frames/`.\n\n")
-            f.write(f"Full details: `skipped.csv` ({len(stats.skipped_rows)} rows)\n\n")
+                    f"contained `metadata.csv` and `frames/`.  \n")
+            f.write(f"See `skipped.csv` ({len(stats.skipped_rows)} rows) — "
+                    "column `skip_reason` distinguishes origin.\n\n")
 
         # Errors
         f.write("## Errors\n\n")
@@ -670,7 +748,7 @@ def _write_reports(
             f.write(f"\nFull details: `errors.csv` ({len(stats.error_rows)} rows)\n\n")
 
         f.write("---\n\n")
-        f.write("*Report generated by dicom_parallel_processor.py*\n")
+        f.write("*Report generated by 00_process_dicom_sequences_multi_thread.py*\n")
 
     print(f"\n{'='*60}")
     print(f"  Run summary written to: {run_dir}")
@@ -681,18 +759,23 @@ def _write_reports(
 # Main orchestrator
 # =========================================================
 def process_root_directory(
-    root_dir:      Path,
-    output_root:   Path,
-    workers:       int,
-    min_frames:    int,
-    skip_existing: bool,
+    root_dir:         Path,
+    output_root:      Path,
+    skip_check_root:  Optional[Path],
+    workers:          int,
+    min_frames:       int,
+    skip_existing:    bool,
+    mode:             str,
 ):
     run_ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = LOG_DIR / f"run_{run_ts}"
+    run_dir = LOG_DIR / f"run_{mode}_{run_ts}"
     t_start = datetime.datetime.now()
 
+    print(f"Mode   : {mode}")
     print(f"Input  : {root_dir}")
     print(f"Output : {output_root}")
+    if skip_check_root is not None:
+        print(f"Extra skip-check root (read-only): {skip_check_root}")
     print(f"Logs   : {run_dir}")
     print(f"Workers: {workers}  |  min_frames: {min_frames}  "
           f"|  skip_existing: {skip_existing}\n")
@@ -708,7 +791,8 @@ def process_root_directory(
     print(f"Found {len(leaf_dirs)} leaf directories — "
           f"dividing across {n_workers} worker(s).\n")
 
-    output_root_str = str(output_root)
+    output_root_str     = str(output_root)
+    skip_check_root_str = str(skip_check_root) if skip_check_root is not None else None
 
     # ── Worker pool ───────────────────────────────────────────────────────────
     # One future per leaf directory so the bar ticks continuously as each
@@ -733,8 +817,10 @@ def process_root_directory(
                     _process_leaf_dirs,
                     [str(d)],          # single-element list — no worker change needed
                     output_root_str,
+                    skip_check_root_str,
                     min_frames,
                     skip_existing,
+                    mode,
                 ): str(d)
                 for d in leaf_dirs
             }
@@ -776,7 +862,8 @@ def process_root_directory(
     print(f"  Already existed : {merged.skipped_done}")
     print(f"  Filtered out    : {merged.skipped_filter}")
     print(f"    bad_radiation : {merged.bad_radiation}")
-    print(f"    bad_series    : {merged.bad_series}")
+    if mode == "strict":
+        print(f"    bad_series    : {merged.bad_series}")
     print(f"    bad_motion    : {merged.bad_motion}")
     print(f"    too_few_frames: {merged.too_few_frames}")
     print(f"    filter_error  : {merged.filter_error}")
@@ -785,16 +872,18 @@ def process_root_directory(
     print(f"{'='*60}")
 
     _write_reports(
-        run_dir        = run_dir,
-        stats          = merged,
-        run_ts         = run_ts,
-        input_root     = root_dir,
-        output_root    = output_root,
-        n_workers      = n_workers,
-        min_frames     = min_frames,
-        skip_existing  = skip_existing,
-        leaf_dir_count = len(leaf_dirs),
-        elapsed_sec    = elapsed_sec,
+        run_dir         = run_dir,
+        stats           = merged,
+        run_ts          = run_ts,
+        mode            = mode,
+        input_root      = root_dir,
+        output_root     = output_root,
+        skip_check_root = skip_check_root,
+        n_workers       = n_workers,
+        min_frames      = min_frames,
+        skip_existing   = skip_existing,
+        leaf_dir_count  = len(leaf_dirs),
+        elapsed_sec     = elapsed_sec,
     )
 
 
@@ -807,11 +896,36 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Process DSA DICOM directories — filter, extract frames + metadata. "
-            "Output: output_root / AccessionNumber / SOPInstanceUID /"
-        )
+            "Output: output_root / AccessionNumber / SOPInstanceUID / \n"
+            "\n"
+            "--mode strict (default): full 4-step filter including "
+            "SeriesDescription, writes to OUTPUT_ROOT.\n"
+            "--mode relaxed: SeriesDescription check removed, writes to a "
+            "separate destination, and additionally consults "
+            "--skip_check_root (read-only) so sequences already extracted "
+            "by a strict run are never duplicated."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--mode", choices=["strict", "relaxed"], default="strict",
+        help="Eligibility filter to apply (default: strict)",
     )
     parser.add_argument("--input_root",  type=Path, default=Path(INPUT_ROOT))
-    parser.add_argument("--output_root", type=Path, default=Path(OUTPUT_ROOT))
+    parser.add_argument(
+        "--output_root", type=Path, default=None,
+        help="Where extracted sequences are written. Defaults to "
+             "OUTPUT_ROOT (strict mode) or "
+             f"{NEW_OUTPUT_ROOT} (relaxed mode).",
+    )
+    parser.add_argument(
+        "--skip_check_root", type=Path, default=None,
+        help="Extra dest-root consulted (read-only) for the already-exists "
+             "skip check, on top of --output_root. Only meaningful in "
+             "relaxed mode — defaults to OUTPUT_ROOT there so a relaxed run "
+             "never duplicates a prior strict run's output. Ignored in "
+             "strict mode.",
+    )
     parser.add_argument(
         "--workers", type=int,
         default=max(1, (os.cpu_count() or 8) - 1),
@@ -829,13 +943,27 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    if args.output_root is None:
+        args.output_root = (
+            Path(OUTPUT_ROOT) if args.mode == "strict" else NEW_OUTPUT_ROOT
+        )
+
+    skip_check_root = args.skip_check_root
+    if args.mode == "relaxed" and skip_check_root is None:
+        skip_check_root = Path(OUTPUT_ROOT)
+    elif args.mode == "strict":
+        skip_check_root = None  # not used in strict mode
+
     args.output_root.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     process_root_directory(
-        root_dir      = args.input_root,
-        output_root   = args.output_root,
-        workers       = args.workers,
-        min_frames    = args.min_frames,
-        skip_existing = args.skip_existing,
+        root_dir        = args.input_root,
+        output_root     = args.output_root,
+        skip_check_root = skip_check_root,
+        workers         = args.workers,
+        min_frames      = args.min_frames,
+        skip_existing   = args.skip_existing,
+        mode            = args.mode,
     )

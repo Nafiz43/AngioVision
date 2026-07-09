@@ -1,0 +1,6 @@
+# All pipeline-generated metadata stays local to this directory and is never committed.
+runs/
+sample_data/
+config.local.json
+__pycache__/
+*.pyc
