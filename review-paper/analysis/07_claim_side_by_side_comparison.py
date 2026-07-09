@@ -253,11 +253,17 @@ def draw_comparison_plot(pre_rows, post_rows, n_pre, n_post, split_year, out_dir
         gridspec_kw={"wspace": 0.05},
     )
 
+    # Section names are already conveyed by the shared legend below, so the
+    # in-plot italic band labels are omitted on both panels to avoid
+    # overlapping with cluster rows (e.g. "Reproducibility & Transparency").
     _draw_panel(ax_l, pre_rows,  n_studies=n_pre,
-                show_ylabels=True, show_right_axis=False)
+                show_ylabels=True, show_right_axis=False, show_section_labels=False)
 
     _draw_panel(ax_r, post_rows, n_studies=n_post,
                 show_ylabels=False, show_right_axis=True, show_section_labels=False)
+
+    ax_l.set_title(f"≤{split_year}", fontsize=FS_X_LABEL + 2, pad=12)
+    ax_r.set_title(f">{split_year}", fontsize=FS_X_LABEL + 2, pad=12)
 
     # Vertical divider
     fig.add_artist(

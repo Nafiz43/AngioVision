@@ -32,18 +32,23 @@ dist/
 /fine-tuning/statistical-test-result
 /frame-processing/model_runs/
 /bedrock-inference/logs
-slr/articles
-slr/articles-processed
-slr/d_articles-processed
-slr/results
+review-paper/articles
+review-paper/articles-processed
+review-paper/d_articles-processed
+review-paper/results
 fine-tuning/d_checkpoints
 fine-tuning/gpt2
 fine-tuning/statistical-test-result-black
 utils/output
-/slr/analysis-results
-/slr/d-analysis-results
-/slr/figures
+/review-paper/analysis-results
+/review-paper/d-analysis-results
+/review-paper/figures
+# Nested standalone git repo (has its own .git) -- keep entirely out of the outer repo
+/review-paper/AngioVision_SLR
 /utils/to_transfer
+# Generated codebase-graph artifact (graphify) -- regenerate, don't commit
+graphify-out/
+**/graphify-out/
 dicom_staging.db-shm
 dicom_staging.db-wal
 /chromadb

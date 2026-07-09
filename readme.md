@@ -33,7 +33,8 @@ goal diagram.
 ├── text-report-processing/ # Parse reports → sequences, sequence-level QA generation
 ├── bedrock-inference/      # AWS Bedrock model inference & multi-region testing
 ├── fine-tuning/            # CLIP/SigLIP fine-tuning + custom temporal framework
-├── slr/                    # Systematic Literature Review tooling
+├── fine-tuning-paper/      # Dataset-characteristics table generator for the fine-tuning paper
+├── review-paper/           # Systematic Literature Review tooling
 ├── configs/                # Shared question bank + settings
 ├── md-files/               # Project documentation & notes
 ├── z-deprecated-scripts/   # Retired scripts kept for reference
@@ -108,9 +109,9 @@ multi-region model testing and single-frame probes.
 Fine-tune CLIP / SigLIP on mosaics (report-level and sequence-level) and train a
 **custom temporal multimodal framework** (time-aware training, generation, validation,
 scoring). `pipeline.py` is a minimal, dependency-free scaffold illustrating the
-architecture; see [`fine-tuning/readme.md`](./fine-tuning/readme.md).
+architecture; see [`fine-tuning/README_pipeline_scaffold.md`](./fine-tuning/README_pipeline_scaffold.md).
 
-### Systematic Literature Review — `slr/`
+### Systematic Literature Review — `review-paper/`
 
 End-to-end SLR tooling: PDF preprocessing, citation-network graph generation, paper
 fetching, two-stage screening / extraction, CLAIM-2024 checklist extraction, and

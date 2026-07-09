@@ -1,0 +1,3017 @@
+{
+  "reviewerA": [
+    {
+      "sample_id": 1,
+      "decision": "INCLUDE",
+      "rationale": "DSA head/neck vessel artifact-free image generation with deep learning and quantitative experimental results."
+    },
+    {
+      "sample_id": 2,
+      "decision": "EXCLUDE",
+      "rationale": "Clinical outcomes study of zero-fluoroscopy ablation navigation, not a computational image analysis method."
+    },
+    {
+      "sample_id": 3,
+      "decision": "EXCLUDE",
+      "rationale": "Scoping review without original computational contribution."
+    },
+    {
+      "sample_id": 4,
+      "decision": "EXCLUDE",
+      "rationale": "Uses ultra-widefield color fundus photography and FFA grading agreement study, not DSA/fluoroscopy temporal sequences."
+    },
+    {
+      "sample_id": 5,
+      "decision": "EXCLUDE",
+      "rationale": "Generic AutoML methods paper unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 6,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available, insufficient methodological detail to confirm computational approach."
+    },
+    {
+      "sample_id": 7,
+      "decision": "EXCLUDE",
+      "rationale": "Fluorescein angiography of the eye is a retinal imaging modality, not DSA or fluoroscopy of vasculature per inclusion criteria."
+    },
+    {
+      "sample_id": 8,
+      "decision": "INCLUDE",
+      "rationale": "Invasive coronary angiography lesion detection using YOLO with hyperparameter optimization and quantitative F1 results."
+    },
+    {
+      "sample_id": 9,
+      "decision": "INCLUDE",
+      "rationale": "DSA sequence-based deep learning classification of moyamoya disease stages with quantitative accuracy reported."
+    },
+    {
+      "sample_id": 10,
+      "decision": "EXCLUDE",
+      "rationale": "OCTA retinal microcirculation study, not DSA/fluoroscopy angiographic sequences."
+    },
+    {
+      "sample_id": 11,
+      "decision": "INCLUDE",
+      "rationale": "End-to-end deep learning detection of anastomosis from DSA sequences with quantitative AUC/sensitivity results."
+    },
+    {
+      "sample_id": 12,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning segmentation of stent graft on completion DSA with quantitative Dice scores."
+    },
+    {
+      "sample_id": 13,
+      "decision": "EXCLUDE",
+      "rationale": "OCTA retinal fluid segmentation validation, not DSA/fluoroscopy imaging."
+    },
+    {
+      "sample_id": 14,
+      "decision": "EXCLUDE",
+      "rationale": "OCTA-based diabetic retinopathy classification, not DSA/fluoroscopy modality."
+    },
+    {
+      "sample_id": 15,
+      "decision": "INCLUDE",
+      "rationale": "Semi-supervised deep learning segmentation of coronary DSA images with quantitative performance comparisons."
+    },
+    {
+      "sample_id": 16,
+      "decision": "INCLUDE",
+      "rationale": "Dual-task deep learning detection and classification of coronary lesions in invasive coronary angiography video sequences with quantitative metrics."
+    },
+    {
+      "sample_id": 17,
+      "decision": "EXCLUDE",
+      "rationale": "Erratum with no abstract/content and no original computational contribution described."
+    },
+    {
+      "sample_id": 18,
+      "decision": "EXCLUDE",
+      "rationale": "Unrelated to angiographic imaging; concerns digital signatures for model trust."
+    },
+    {
+      "sample_id": 19,
+      "decision": "INCLUDE",
+      "rationale": "Validates UniverSeg segmentation model on interventional fluoroscopic angiographic images with quantitative Dice and Hausdorff results."
+    },
+    {
+      "sample_id": 20,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT pulmonary angiography (CT modality), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 21,
+      "decision": "EXCLUDE",
+      "rationale": "This is a review of pericoronary fat attenuation on cardiac CT, not a DSA/fluoroscopy computational study (E1/E3)."
+    },
+    {
+      "sample_id": 22,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning segmentation of fenestration markers and graft body in intraoperative fluoroscopic images with quantitative validation."
+    },
+    {
+      "sample_id": 23,
+      "decision": "EXCLUDE",
+      "rationale": "Fluorescein angiography is retinal imaging, not DSA/fluoroscopic angiographic imaging (E1)."
+    },
+    {
+      "sample_id": 24,
+      "decision": "INCLUDE",
+      "rationale": "AI-enhanced coronary angiogram interpretation for CTO PCI with quantitative predictive performance metrics."
+    },
+    {
+      "sample_id": 25,
+      "decision": "EXCLUDE",
+      "rationale": "Uses multiphase CT angiography, not DSA or fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 26,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based segmentation of coronary angiography images with quantitative Dice/accuracy metrics."
+    },
+    {
+      "sample_id": 27,
+      "decision": "EXCLUDE",
+      "rationale": "Classifies static open-source angiogram images by anatomic pattern without describing temporally ordered sequences (E2)."
+    },
+    {
+      "sample_id": 28,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning quantitative analysis of ICG fluoroscopy videos during surgery, a temporally ordered fluoroscopic sequence task."
+    },
+    {
+      "sample_id": 29,
+      "decision": "INCLUDE",
+      "rationale": "Machine learning-based 3D guidewire localization from multiple intraoperative fluoroscopic images with quantitative accuracy results."
+    },
+    {
+      "sample_id": 30,
+      "decision": "INCLUDE",
+      "rationale": "Foundation model for X-ray/fluoroscopic image segmentation evaluated quantitatively on real X-ray images including interventional fluoroscopy."
+    },
+    {
+      "sample_id": 31,
+      "decision": "INCLUDE",
+      "rationale": "3D CNN applied to coronary angiography videos to detect stenosis with quantitative c-statistic results."
+    },
+    {
+      "sample_id": 32,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available and title suggests only a brief conference summary without methodological detail (E4)."
+    },
+    {
+      "sample_id": 33,
+      "decision": "EXCLUDE",
+      "rationale": "Narrative review on blockchain/AI/healthcare, unrelated to angiographic imaging and no original computational contribution (E3)."
+    },
+    {
+      "sample_id": 34,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT pulmonary angiography, a static CT-based modality, not DSA or fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 35,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns power system dynamic security assessment, unrelated to angiographic imaging (E1)."
+    },
+    {
+      "sample_id": 36,
+      "decision": "EXCLUDE",
+      "rationale": "Narrative review of AI applications in atherosclerotic disease without original computational methodology (E3)."
+    },
+    {
+      "sample_id": 37,
+      "decision": "EXCLUDE",
+      "rationale": "Review summarizing existing AI studies on coronary angiography rather than presenting original methodology (E3)."
+    },
+    {
+      "sample_id": 38,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract; title indicates a general commentary on AI in cardiology without original computational contribution (E3/E4)."
+    },
+    {
+      "sample_id": 39,
+      "decision": "EXCLUDE",
+      "rationale": "Analysis is based on CT myocardial perfusion imaging, not DSA or fluoroscopy sequences (E1)."
+    },
+    {
+      "sample_id": 40,
+      "decision": "EXCLUDE",
+      "rationale": "Study uses coronary CT angiography (CTA) and PET, not DSA or fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 41,
+      "decision": "EXCLUDE",
+      "rationale": "Uses hyperspectral tongue imaging for CAD prediction, not DSA/fluoroscopic angiographic sequences."
+    },
+    {
+      "sample_id": 42,
+      "decision": "INCLUDE",
+      "rationale": "Uses DSA images with YOLOv8 detection and EQUNet segmentation for coronary dissection with quantitative metrics reported."
+    },
+    {
+      "sample_id": 43,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract provided, insufficient methodological and quantitative detail to confirm inclusion criteria."
+    },
+    {
+      "sample_id": 44,
+      "decision": "EXCLUDE",
+      "rationale": "Registers a single intraoperative X-ray image to CT, not a temporally ordered sequence."
+    },
+    {
+      "sample_id": 45,
+      "decision": "EXCLUDE",
+      "rationale": "Uses cardiac CT and clinical data for unsupervised clustering, not DSA/fluoroscopy imaging."
+    },
+    {
+      "sample_id": 46,
+      "decision": "INCLUDE",
+      "rationale": "Proposes a temporal transformer network for guide-wire segmentation across X-ray fluoroscopy sequences with quantitative results."
+    },
+    {
+      "sample_id": 47,
+      "decision": "EXCLUDE",
+      "rationale": "Conference abstract without sufficient methodological detail (E4)."
+    },
+    {
+      "sample_id": 48,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on ultra-widefield OCT angiography image quality, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 49,
+      "decision": "EXCLUDE",
+      "rationale": "Analyzes fundus fluorescein angiogram videos (optical imaging), not DSA or X-ray fluoroscopy."
+    },
+    {
+      "sample_id": 50,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT curved-multiplanar reconstruction, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 51,
+      "decision": "EXCLUDE",
+      "rationale": "A narrative review of radiation safety practices without an original computational contribution."
+    },
+    {
+      "sample_id": 52,
+      "decision": "EXCLUDE",
+      "rationale": "Uses noncontrast static CT scans, not DSA/fluoroscopy or temporal sequences."
+    },
+    {
+      "sample_id": 53,
+      "decision": "INCLUDE",
+      "rationale": "Extracts temporal-spatial features from DSA videos using deep learning for AVM diagnosis with quantitative AUC results."
+    },
+    {
+      "sample_id": 54,
+      "decision": "EXCLUDE",
+      "rationale": "A narrative review of CAD screening strategies in diabetic patients without original computational methodology."
+    },
+    {
+      "sample_id": 55,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT angiography (single volumetric scan), not DSA/fluoroscopy temporal sequences."
+    },
+    {
+      "sample_id": 56,
+      "decision": "INCLUDE",
+      "rationale": "Proposes an improved U-Net for guidewire tip segmentation in X-ray fluoroscopy images with quantitative performance metrics."
+    },
+    {
+      "sample_id": 57,
+      "decision": "EXCLUDE",
+      "rationale": "Classifies lesions in fundus fluorescein angiography images (optical retinal imaging), not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 58,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns kidney transplant antibody-omics, unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 59,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract; concerns retinal circulation visualization, not DSA/fluoroscopy, with insufficient detail."
+    },
+    {
+      "sample_id": 60,
+      "decision": "EXCLUDE",
+      "rationale": "Predicts PCI success from tabular angiographic/clinical features via ML, not an image analysis task on angiographic sequences."
+    },
+    {
+      "sample_id": 61,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning coronary vessel segmentation on DSA images with quantitative evaluation."
+    },
+    {
+      "sample_id": 62,
+      "decision": "INCLUDE",
+      "rationale": "Cross-modality cerebrovascular segmentation network trained/evaluated using DSA image data with quantitative results."
+    },
+    {
+      "sample_id": 63,
+      "decision": "INCLUDE",
+      "rationale": "Machine learning (Random Forest) pipeline applied to pre/post-treatment DSA images with quantitative vascular pixel analysis."
+    },
+    {
+      "sample_id": 64,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning object detection on DSA imaging data used for clinical outcome prediction with quantitative metrics."
+    },
+    {
+      "sample_id": 65,
+      "decision": "INCLUDE",
+      "rationale": "Ensemble CNNs applied to biplane DSA-derived angiographic parametric imaging maps with quantitative reperfusion classification results."
+    },
+    {
+      "sample_id": 66,
+      "decision": "INCLUDE",
+      "rationale": "Machine learning-based segmentation and marker tracking across carotid angiography frames with quantitative registration accuracy."
+    },
+    {
+      "sample_id": 67,
+      "decision": "EXCLUDE",
+      "rationale": "Although using C-arm fluoroscopy, the task (pedicle screw segmentation/pose estimation) is unrelated to angiographic/vascular imaging analysis."
+    },
+    {
+      "sample_id": 68,
+      "decision": "EXCLUDE",
+      "rationale": "Retinal fundus image vessel segmentation is a static non-angiographic imaging modality, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 69,
+      "decision": "INCLUDE",
+      "rationale": "CNN classification of active bleeding in DSA images with quantitative diagnostic performance metrics."
+    },
+    {
+      "sample_id": 70,
+      "decision": "EXCLUDE",
+      "rationale": "Outcome prediction relies on computational fluid dynamics and morphological modeling rather than direct computational analysis of angiographic image sequences."
+    },
+    {
+      "sample_id": 71,
+      "decision": "EXCLUDE",
+      "rationale": "OCTA (optical coherence tomography angiography) is not DSA or fluoroscopy imaging."
+    },
+    {
+      "sample_id": 72,
+      "decision": "EXCLUDE",
+      "rationale": "Conference abstract with no available abstract text or methodological detail."
+    },
+    {
+      "sample_id": 73,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning artifact-removal network applied to DSA images with quantitative clinical outcome measures."
+    },
+    {
+      "sample_id": 74,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based catheter localization and segmentation in X-ray fluoroscopy sequences with quantitative accuracy results."
+    },
+    {
+      "sample_id": 75,
+      "decision": "INCLUDE",
+      "rationale": "Weakly-supervised CNN vessel segmentation in cerebral DSA with quantitative performance metrics."
+    },
+    {
+      "sample_id": 76,
+      "decision": "EXCLUDE",
+      "rationale": "Study uses OCTA retinal imaging, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 77,
+      "decision": "INCLUDE",
+      "rationale": "Aneurysm detection and rupture classification framework on DSA images with quantitative detection/classification metrics."
+    },
+    {
+      "sample_id": 78,
+      "decision": "INCLUDE",
+      "rationale": "End-to-end spatiotemporal deep neural network for aneurysm detection/segmentation on DSA sequences with quantitative results."
+    },
+    {
+      "sample_id": 79,
+      "decision": "EXCLUDE",
+      "rationale": "Study is based on coronary CT angiography (CCTA), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 80,
+      "decision": "EXCLUDE",
+      "rationale": "Fluoroscopic lung tumor tracking task is unrelated to angiographic (vascular contrast) imaging analysis."
+    },
+    {
+      "sample_id": 81,
+      "decision": "INCLUDE",
+      "rationale": "Uses DSA images with deep-learning vascular segmentation and quantitative metrics (Jaccard, F1, Accuracy) for PCI guidance."
+    },
+    {
+      "sample_id": 82,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is CT pulmonary angiography (CTPA), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 83,
+      "decision": "EXCLUDE",
+      "rationale": "3DRA is a reconstructed volumetric/tomographic image set, not a temporally ordered 2D image sequence, more akin to CT-like data."
+    },
+    {
+      "sample_id": 84,
+      "decision": "EXCLUDE",
+      "rationale": "Unrelated topic (dust source mapping via remote sensing), no angiographic imaging."
+    },
+    {
+      "sample_id": 85,
+      "decision": "EXCLUDE",
+      "rationale": "Detection is based on retinal fundus images and clinical indicators, not DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 86,
+      "decision": "EXCLUDE",
+      "rationale": "Uses static ultra-widefield fluorescein angiography radiomics, not temporally ordered DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 87,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is 3D TOF-MRA (MRI), excluded per E1."
+    },
+    {
+      "sample_id": 88,
+      "decision": "INCLUDE",
+      "rationale": "DSA image sequences with a deep learning multitask framework for anatomical localization, evaluated with quantitative metrics."
+    },
+    {
+      "sample_id": 89,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is optical coherence tomography, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 90,
+      "decision": "EXCLUDE",
+      "rationale": "Coronary CT angiography (CT), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 91,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract provided and focus is on AR navigation device comparison rather than a computational image analysis method with sufficient detail."
+    },
+    {
+      "sample_id": 92,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available, insufficient methodological detail to assess the computational approach."
+    },
+    {
+      "sample_id": 93,
+      "decision": "INCLUDE",
+      "rationale": "DSA-based Faster-RCNN deep learning vascular structure detection with quantitative accuracy results."
+    },
+    {
+      "sample_id": 94,
+      "decision": "EXCLUDE",
+      "rationale": "Dual-energy carotid CT angiography is a CT modality, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 95,
+      "decision": "EXCLUDE",
+      "rationale": "Study is a biomarker/lipid ratio clinical analysis, not an angiographic image analysis method."
+    },
+    {
+      "sample_id": 96,
+      "decision": "INCLUDE",
+      "rationale": "Uses coronary X-ray angiography sequences fused with OCT via a deep learning model (TransCAN) with quantitative alignment accuracy."
+    },
+    {
+      "sample_id": 97,
+      "decision": "EXCLUDE",
+      "rationale": "Detection based on non-contrast CT, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 98,
+      "decision": "EXCLUDE",
+      "rationale": "Uses coronary CT angiography and CT-FFR, a CT-based modality not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 99,
+      "decision": "EXCLUDE",
+      "rationale": "Myocardial CT late enhancement imaging is CT-based, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 100,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is single-energy CT pulmonary angiography, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 101,
+      "decision": "EXCLUDE",
+      "rationale": "Uses coronary CTA (CT-based), not DSA or fluoroscopic temporal sequences."
+    },
+    {
+      "sample_id": 102,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning guidewire segmentation on 2D X-ray fluoroscopy sequences with quantitative F1-score results."
+    },
+    {
+      "sample_id": 103,
+      "decision": "EXCLUDE",
+      "rationale": "Exposome/questionnaire-based epidemiological study with no angiographic imaging analysis."
+    },
+    {
+      "sample_id": 104,
+      "decision": "INCLUDE",
+      "rationale": "Multitask deep learning model detects and localizes endoleaks on DSA image sequences with quantitative metrics."
+    },
+    {
+      "sample_id": 105,
+      "decision": "EXCLUDE",
+      "rationale": "A review article on heart disease risk prediction, not an original computational study on angiographic sequences."
+    },
+    {
+      "sample_id": 106,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns an automated machine learning system unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 107,
+      "decision": "EXCLUDE",
+      "rationale": "Narrative review of cardiac imaging modalities without an original computational contribution."
+    },
+    {
+      "sample_id": 108,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning Bayesian filtering approach for catheter tip tracking in X-ray fluoroscopy sequences."
+    },
+    {
+      "sample_id": 109,
+      "decision": "EXCLUDE",
+      "rationale": "Fluoroscopy-based electrode localization for DBS surgery, not an angiographic imaging analysis task."
+    },
+    {
+      "sample_id": 110,
+      "decision": "EXCLUDE",
+      "rationale": "Clinical surgical outcomes report for aortic dissection repair with no computational image analysis."
+    },
+    {
+      "sample_id": 111,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based segmentation of GI bleeding on DSA image sequences with quantitative Dice/accuracy results."
+    },
+    {
+      "sample_id": 112,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning segmentation and stenosis detection on invasive coronary angiograms with quantitative evaluation."
+    },
+    {
+      "sample_id": 113,
+      "decision": "EXCLUDE",
+      "rationale": "Fluoroscopic pose estimation of knee implants is orthopedic biomechanics, not angiographic vessel imaging analysis."
+    },
+    {
+      "sample_id": 114,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning model generates DSA-like cerebral angiograms from dynamic sequences, evaluated quantitatively with PSNR/SSIM."
+    },
+    {
+      "sample_id": 115,
+      "decision": "INCLUDE",
+      "rationale": "nnUNet-based vascular territory segmentation on cerebral DSA with quantitative Dice/ASD evaluation."
+    },
+    {
+      "sample_id": 116,
+      "decision": "EXCLUDE",
+      "rationale": "Uses coronary CT angiography-derived FFR, a CT-based technique without DSA/fluoroscopic sequences."
+    },
+    {
+      "sample_id": 117,
+      "decision": "EXCLUDE",
+      "rationale": "Uses static CT pulmonary angiography images with YOLOv8 object detection, not DSA/fluoroscopic temporal sequences."
+    },
+    {
+      "sample_id": 118,
+      "decision": "INCLUDE",
+      "rationale": "Video diffusion-based data augmentation for guidewire segmentation in cardiac fluoroscopy videos with quantitative evaluation."
+    },
+    {
+      "sample_id": 119,
+      "decision": "EXCLUDE",
+      "rationale": "Machine learning model uses lab/clinical data only, no imaging involved."
+    },
+    {
+      "sample_id": 120,
+      "decision": "EXCLUDE",
+      "rationale": "Retinal vessel segmentation from fundus images, not DSA or fluoroscopic angiographic sequences."
+    },
+    {
+      "sample_id": 121,
+      "decision": "INCLUDE",
+      "rationale": "Coronary angiography stenosis detection/classification with deep learning and quantitative metrics reported."
+    },
+    {
+      "sample_id": 122,
+      "decision": "INCLUDE",
+      "rationale": "Bi-plane angiographic projections with deep segmentation for 3D vessel reconstruction, quantitatively validated."
+    },
+    {
+      "sample_id": 123,
+      "decision": "EXCLUDE",
+      "rationale": "Prediction model uses transcranial Doppler ultrasound time-series data, not DSA/fluoroscopic image analysis."
+    },
+    {
+      "sample_id": 124,
+      "decision": "INCLUDE",
+      "rationale": "Uses DSA imaging parameters fused with clinical data via deep learning to predict aneurysm treatment outcome, with quantitative evaluation."
+    },
+    {
+      "sample_id": 125,
+      "decision": "EXCLUDE",
+      "rationale": "MRI-based perfusion/angiography imaging, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 126,
+      "decision": "EXCLUDE",
+      "rationale": "Uses static cardiac CT angiography radiomics, not DSA/fluoroscopic sequences."
+    },
+    {
+      "sample_id": 127,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract and concerns coronary CT angiography, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 128,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available and modality is noncontrast CT, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 129,
+      "decision": "EXCLUDE",
+      "rationale": "Correction notice with no abstract, insufficient methodological detail available."
+    },
+    {
+      "sample_id": 130,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning image matching/correspondence method for coronary angiography images with quantitative improvement reported."
+    },
+    {
+      "sample_id": 131,
+      "decision": "INCLUDE",
+      "rationale": "Conditional GAN generating virtual 3D subtraction angiographies from contrast-enhanced angiography, with quantitative and reader-based evaluation."
+    },
+    {
+      "sample_id": 132,
+      "decision": "EXCLUDE",
+      "rationale": "Aortic aneurysm segmentation on static contrast/noncontrast CT scans, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 133,
+      "decision": "EXCLUDE",
+      "rationale": "Unsupervised clustering of clinical/lab variables for outcome prediction, not an image analysis task."
+    },
+    {
+      "sample_id": 134,
+      "decision": "EXCLUDE",
+      "rationale": "Videofluoroscopic swallowing study is fluoroscopy but not angiographic imaging (no vascular structures analyzed)."
+    },
+    {
+      "sample_id": 135,
+      "decision": "EXCLUDE",
+      "rationale": "Quality control on mixed CT/CTA slice montages, not DSA/fluoroscopic sequences."
+    },
+    {
+      "sample_id": 136,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning classification of DSA image sequences for thrombus detection in stroke, clinically tested with runtime/accuracy results."
+    },
+    {
+      "sample_id": 137,
+      "decision": "INCLUDE",
+      "rationale": "Dual-stage deep learning framework for stenosis detection in x-ray angiography with quantitative segmentation/detection metrics."
+    },
+    {
+      "sample_id": 138,
+      "decision": "EXCLUDE",
+      "rationale": "AI analysis of tongue images to predict coronary disease, not angiographic image analysis."
+    },
+    {
+      "sample_id": 139,
+      "decision": "EXCLUDE",
+      "rationale": "Carotid CT angiography reconstruction/dose comparison, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 140,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning multi-frame interpolation method for DSA image sequences with quantitative performance comparisons."
+    },
+    {
+      "sample_id": 141,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract; concerns lipid-rich necrotic core modulation in psoriasis, unrelated to DSA/fluoroscopic angiographic sequences."
+    },
+    {
+      "sample_id": 142,
+      "decision": "INCLUDE",
+      "rationale": "Deep CNN-based fluoroscopic image denoising with quantitative PSNR evaluation, directly on fluoroscopy imaging."
+    },
+    {
+      "sample_id": 143,
+      "decision": "INCLUDE",
+      "rationale": "Sparse-view 4D DSA reconstruction method with temporal attenuation voxels and quantitative PSNR evaluation."
+    },
+    {
+      "sample_id": 144,
+      "decision": "EXCLUDE",
+      "rationale": "OCTA retinal imaging study, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 145,
+      "decision": "EXCLUDE",
+      "rationale": "Neural network survival model built from EHR clinical/lab data post-angiography, not an image analysis task on angiographic sequences."
+    },
+    {
+      "sample_id": 146,
+      "decision": "EXCLUDE",
+      "rationale": "Deep learning classification on OCTA en-face static images, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 147,
+      "decision": "EXCLUDE",
+      "rationale": "AI-based aneurysm volume measurement from static 3D rotational angiography reconstructions, not temporally ordered 2D sequences."
+    },
+    {
+      "sample_id": 148,
+      "decision": "EXCLUDE",
+      "rationale": "Fluoroscopic segmentation for markerless tumor tracking, not angiographic imaging analysis."
+    },
+    {
+      "sample_id": 149,
+      "decision": "EXCLUDE",
+      "rationale": "Systematic review of radiogenomics/AI on cardiac CT/MR angiography, a review article on non-DSA modalities."
+    },
+    {
+      "sample_id": 150,
+      "decision": "EXCLUDE",
+      "rationale": "Power system Dynamic Security Assessment (DSA acronym coincidence) unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 151,
+      "decision": "EXCLUDE",
+      "rationale": "Deep learning stenosis detection performed on CT angiography images, not DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 152,
+      "decision": "EXCLUDE",
+      "rationale": "Radiomics-morphological classification model built on static CT angiography images of aneurysms."
+    },
+    {
+      "sample_id": 153,
+      "decision": "INCLUDE",
+      "rationale": "Reinforcement learning-based autonomous guidewire navigation using fluoroscopic image sequences with quantitative success-rate results."
+    },
+    {
+      "sample_id": 154,
+      "decision": "INCLUDE",
+      "rationale": "3D-CNN deep learning applied to cine coronary angiography sequences to detect RV dysfunction, with quantitative AUC/sensitivity results."
+    },
+    {
+      "sample_id": 155,
+      "decision": "EXCLUDE",
+      "rationale": "Catheter tracking performed on MRI images, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 156,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning background subtraction on multi-frame DSA angiographic sequences with quantitative RMSE/SSIM evaluation."
+    },
+    {
+      "sample_id": 157,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract; title indicates AI coronary plaque analysis typically from CT angiography, insufficient evidence of DSA/fluoroscopy sequence use."
+    },
+    {
+      "sample_id": 158,
+      "decision": "EXCLUDE",
+      "rationale": "ML-based WiFi real-time location system for hospital logistics, unrelated to angiographic image analysis."
+    },
+    {
+      "sample_id": 159,
+      "decision": "EXCLUDE",
+      "rationale": "Retinal vessel segmentation on static colour fundus photographs, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 160,
+      "decision": "EXCLUDE",
+      "rationale": "Fundus fluorescein angiography in mice uses optical fundus photography, not DSA/fluoroscopic X-ray imaging."
+    },
+    {
+      "sample_id": 161,
+      "decision": "EXCLUDE",
+      "rationale": "Mixed CT/MRI/radiography diagnostic study with limited technical detail on DSA/fluoroscopy computational methodology, functioning more as a clinical utility evaluation than a methods paper."
+    },
+    {
+      "sample_id": 162,
+      "decision": "EXCLUDE",
+      "rationale": "Vessel tree extraction is performed on CTA/CTP images, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 163,
+      "decision": "EXCLUDE",
+      "rationale": "Dataset is derived from CT angiography (CTA/CTP), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 164,
+      "decision": "EXCLUDE",
+      "rationale": "This is an editorial response letter with no abstract or original computational contribution."
+    },
+    {
+      "sample_id": 165,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on static dual-energy tomosynthesis/radiography images of the proximal femur, not temporally ordered DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 166,
+      "decision": "INCLUDE",
+      "rationale": "Uses CNN-based segmentation of femoropopliteal artery stents in digital fluoroscopy images with detailed methods and quantitative accuracy results."
+    },
+    {
+      "sample_id": 167,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning method for predicting optimal DSA/fluoroscopy viewing angles for intracranial aneurysm treatment, with detailed methodology and quantitative evaluation."
+    },
+    {
+      "sample_id": 168,
+      "decision": "EXCLUDE",
+      "rationale": "This is a commentary/editorial piece with no abstract or original computational method."
+    },
+    {
+      "sample_id": 169,
+      "decision": "EXCLUDE",
+      "rationale": "This is an opinion/commentary article with no abstract or original methodology."
+    },
+    {
+      "sample_id": 170,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning system for automated TICI scoring from DSA sequences with explicit temporal modeling and quantitative agreement results."
+    },
+    {
+      "sample_id": 171,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning network for real-time pose estimation/tracking of aortic stents in DSA/fluoroscopy video sequences with detailed methods and quantitative metrics."
+    },
+    {
+      "sample_id": 172,
+      "decision": "INCLUDE",
+      "rationale": "Topology-aware deep learning method for catheter segmentation/tip detection in cerebral fluoroscopy sequences with detailed methodology and quantitative results."
+    },
+    {
+      "sample_id": 173,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract is available, providing insufficient methodological or quantitative detail despite DSA-related title."
+    },
+    {
+      "sample_id": 174,
+      "decision": "INCLUDE",
+      "rationale": "3D CNN-based method for automated selection of dynamic coronary angiogram video clips with detailed methodology and quantitative performance metrics."
+    },
+    {
+      "sample_id": 175,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on brain MRI segmentation, not DSA or fluoroscopy imaging, and has no abstract."
+    },
+    {
+      "sample_id": 176,
+      "decision": "EXCLUDE",
+      "rationale": "Uses retinal fluorescein angiography images, not DSA/fluoroscopy vascular imaging, and analysis is on single static FFA images rather than temporal sequences."
+    },
+    {
+      "sample_id": 177,
+      "decision": "EXCLUDE",
+      "rationale": "Unrelated study on COVID-19 vaccine hesitancy; DSA here refers to a statistical algorithm, not angiographic imaging."
+    },
+    {
+      "sample_id": 178,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning framework for marker detection and C-arm pose estimation from fluoroscopy images with detailed methods and quantitative accuracy results."
+    },
+    {
+      "sample_id": 179,
+      "decision": "EXCLUDE",
+      "rationale": "This is a letter/response to the editor with no abstract or original computational methodology."
+    },
+    {
+      "sample_id": 180,
+      "decision": "EXCLUDE",
+      "rationale": "Method operates on a pair of static radiographs for instrument localization rather than a temporally ordered fluoroscopy sequence."
+    },
+    {
+      "sample_id": 181,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning framework for coronary artery stenosis detection on angiography images with detailed methodology and quantitative precision/recall/mAP metrics."
+    },
+    {
+      "sample_id": 182,
+      "decision": "EXCLUDE",
+      "rationale": "Editorial/opinion piece on AI in coronary angiography with no original computational contribution or abstract."
+    },
+    {
+      "sample_id": 183,
+      "decision": "EXCLUDE",
+      "rationale": "Uses fundus fluorescein angiography (ophthalmic) static images for diabetic retinopathy grading, not DSA/fluoroscopic vascular sequences."
+    },
+    {
+      "sample_id": 184,
+      "decision": "INCLUDE",
+      "rationale": "DSA-based 3D U-Net deep learning detection/segmentation of intracranial aneurysms with detailed methods and quantitative sensitivity/false-positive results."
+    },
+    {
+      "sample_id": 185,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning coronary artery segmentation applied to angiography image sequences over the cardiac cycle with quantitative distensibility analysis."
+    },
+    {
+      "sample_id": 186,
+      "decision": "INCLUDE",
+      "rationale": "Title indicates a technical method fusing biplane fluoroscopy sequences with sensor data for 3D catheter shape reconstruction, a core angiographic imaging task."
+    },
+    {
+      "sample_id": 187,
+      "decision": "EXCLUDE",
+      "rationale": "Editorial note introducing an issue, not an original computational study."
+    },
+    {
+      "sample_id": 188,
+      "decision": "EXCLUDE",
+      "rationale": "Multi-modal fundus/OCT imaging for AMD lesion detection, not DSA or fluoroscopic imaging."
+    },
+    {
+      "sample_id": 189,
+      "decision": "INCLUDE",
+      "rationale": "CNN/U-Net based CAD prediction and stenosis segmentation on X-ray angiography images with reported Dice/Jaccard metrics."
+    },
+    {
+      "sample_id": 190,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT coronary angiography (CT modality), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 191,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on skeletal landmark localization on single X-ray images for C-arm positioning, not angiographic vessel imaging or temporal sequences."
+    },
+    {
+      "sample_id": 192,
+      "decision": "EXCLUDE",
+      "rationale": "Ultra-widefield fundus photography and fluorescein angiography of the eye, an ophthalmic modality outside DSA/fluoroscopy scope."
+    },
+    {
+      "sample_id": 193,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT angiography (dynamic CTA), a CT-based modality rather than DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 194,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract and title suggests an editorial/commentary piece without evident original computational methodology."
+    },
+    {
+      "sample_id": 195,
+      "decision": "INCLUDE",
+      "rationale": "Title indicates a deep learning model for real-time catheter tracking directly from fluoroscopy sequences, a clear technical angiographic imaging task."
+    },
+    {
+      "sample_id": 196,
+      "decision": "EXCLUDE",
+      "rationale": "Uses coronary CT angiography (CCTA) and CT-derived FFR, a CT modality rather than DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 197,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on CT pulmonary angiography (CTPA), a CT-based modality outside DSA/fluoroscopy scope."
+    },
+    {
+      "sample_id": 198,
+      "decision": "EXCLUDE",
+      "rationale": "Analyzes stress echocardiography (ultrasound) images, not DSA or fluoroscopic angiography."
+    },
+    {
+      "sample_id": 199,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns sentiment analysis and generic image/text classification datasets unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 200,
+      "decision": "INCLUDE",
+      "rationale": "Machine learning and neural network segmentation on angiographic images to predict cerebral aneurysm treatment outcome, with detailed methods and quantitative accuracy/F1 results."
+    }
+  ],
+  "reviewerB": [
+    {
+      "sample_id": 1,
+      "decision": "INCLUDE",
+      "rationale": "DSA head/neck sequences with a deep-learning artifact-aware image generation method and quantitative comparison to state-of-the-art."
+    },
+    {
+      "sample_id": 2,
+      "decision": "EXCLUDE",
+      "rationale": "Clinical trial comparing zero-fluoroscopy vs conventional ablation outcomes; no computational image analysis task."
+    },
+    {
+      "sample_id": 3,
+      "decision": "EXCLUDE",
+      "rationale": "A scoping review of navigation technologies without an original computational contribution."
+    },
+    {
+      "sample_id": 4,
+      "decision": "EXCLUDE",
+      "rationale": "Assesses intergrader agreement on static ultra-widefield fundus/FFA images, not DSA/fluoroscopic temporal sequences."
+    },
+    {
+      "sample_id": 5,
+      "decision": "EXCLUDE",
+      "rationale": "Generic AutoML methods paper unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 6,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available and title suggests IVUS-based plaque analysis without sufficient methodological detail on DSA/fluoroscopy computational methods."
+    },
+    {
+      "sample_id": 7,
+      "decision": "EXCLUDE",
+      "rationale": "Uses fluorescein angiography (fundus) imaging, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 8,
+      "decision": "INCLUDE",
+      "rationale": "Hyperparameter optimization of YOLO detectors for invasive coronary angiography lesion detection with quantitative F1-score evaluation."
+    },
+    {
+      "sample_id": 9,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning (P3D ResNet) classification of moyamoya disease stages from DSA sequences with quantitative accuracy."
+    },
+    {
+      "sample_id": 10,
+      "decision": "EXCLUDE",
+      "rationale": "OCTA analysis of retinal microcirculation, not DSA/fluoroscopy imaging."
+    },
+    {
+      "sample_id": 11,
+      "decision": "INCLUDE",
+      "rationale": "End-to-end deep learning detection of uterine-ovarian artery anastomosis from DSA sequences with quantitative AUC/F1 metrics."
+    },
+    {
+      "sample_id": 12,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning U-Net segmentation of stent grafts on completion DSA during EVAR with quantitative Dice scores."
+    },
+    {
+      "sample_id": 13,
+      "decision": "EXCLUDE",
+      "rationale": "OCTA-based retinal fluid segmentation, unrelated to DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 14,
+      "decision": "EXCLUDE",
+      "rationale": "CNN classification of diabetic retinopathy using OCTA images, not DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 15,
+      "decision": "INCLUDE",
+      "rationale": "Semi-supervised deep learning segmentation of coronary vessels on X-ray DSA with quantitative performance comparison."
+    },
+    {
+      "sample_id": 16,
+      "decision": "INCLUDE",
+      "rationale": "Dual-task deep learning framework for detection/classification of coronary lesions in invasive coronary angiography with detailed quantitative metrics."
+    },
+    {
+      "sample_id": 17,
+      "decision": "EXCLUDE",
+      "rationale": "An erratum notice with no abstract or methodological content."
+    },
+    {
+      "sample_id": 18,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns digital signatures for trust in deep learning models, unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 19,
+      "decision": "INCLUDE",
+      "rationale": "Validates UniverSeg segmentation model on interventional abdominal fluoroscopic angiographic images with quantitative Dice/Hausdorff metrics."
+    },
+    {
+      "sample_id": 20,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT pulmonary angiography (CTPA), a static/volumetric CT modality, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 21,
+      "decision": "EXCLUDE",
+      "rationale": "This is a review of CT-based pericoronary fat attenuation, not DSA/fluoroscopy imaging."
+    },
+    {
+      "sample_id": 22,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning segmentation of fenestration markers and graft body in intraoperative fluoroscopic images with detailed methodology and quantitative results."
+    },
+    {
+      "sample_id": 23,
+      "decision": "EXCLUDE",
+      "rationale": "Fluorescein angiography of the retina is an optical imaging modality, not DSA/X-ray fluoroscopy."
+    },
+    {
+      "sample_id": 24,
+      "decision": "INCLUDE",
+      "rationale": "AI-enhanced coronary angiography image analysis for septal collateral assessment with quantitative predictive performance metrics."
+    },
+    {
+      "sample_id": 25,
+      "decision": "EXCLUDE",
+      "rationale": "Uses multiphase CT angiography, not DSA or fluoroscopy imaging."
+    },
+    {
+      "sample_id": 26,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based segmentation of coronary angiography images with quantitative accuracy, sensitivity, specificity and Dice metrics."
+    },
+    {
+      "sample_id": 27,
+      "decision": "EXCLUDE",
+      "rationale": "Uses static single angiogram images for classification rather than temporally ordered DSA/fluoroscopic sequences."
+    },
+    {
+      "sample_id": 28,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available and imaging modality is near-infrared indocyanine green fluorescence, not DSA/X-ray fluoroscopy."
+    },
+    {
+      "sample_id": 29,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on orthopaedic guidewire pose estimation from a couple of static fluoroscopic images, not angiographic temporal sequences."
+    },
+    {
+      "sample_id": 30,
+      "decision": "EXCLUDE",
+      "rationale": "General X-ray foundation model for segmentation, not specific to angiographic DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 31,
+      "decision": "INCLUDE",
+      "rationale": "3D CNN trained on coronary angiography videos to detect stenosis with reported quantitative c-statistics."
+    },
+    {
+      "sample_id": 32,
+      "decision": "EXCLUDE",
+      "rationale": "Conference late-breaking abstract with no available text describing methodology or results."
+    },
+    {
+      "sample_id": 33,
+      "decision": "EXCLUDE",
+      "rationale": "Narrative review on blockchain and AI in healthcare, unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 34,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT pulmonary angiography, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 35,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns power grid dynamic security assessment, unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 36,
+      "decision": "EXCLUDE",
+      "rationale": "A narrative review of AI applications across ASCVD imaging without original computational contribution."
+    },
+    {
+      "sample_id": 37,
+      "decision": "EXCLUDE",
+      "rationale": "A review summarizing prior AI studies on coronary angiography, not an original methodological study."
+    },
+    {
+      "sample_id": 38,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract; appears to be a general commentary on AI in cardiology without methodological detail."
+    },
+    {
+      "sample_id": 39,
+      "decision": "EXCLUDE",
+      "rationale": "Evaluates CT myocardial perfusion imaging, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 40,
+      "decision": "EXCLUDE",
+      "rationale": "Analyzes coronary CT angiography plaque burden, not DSA or fluoroscopy sequences."
+    },
+    {
+      "sample_id": 41,
+      "decision": "EXCLUDE",
+      "rationale": "Uses hyperspectral tongue imaging and microbiome data for CAD prediction; angiography is only used to define the patient cohort, not analyzed computationally."
+    },
+    {
+      "sample_id": 42,
+      "decision": "INCLUDE",
+      "rationale": "Uses DSA image sequences with YOLOv8 detection and EQUNet segmentation for coronary dissection with quantitative performance metrics."
+    },
+    {
+      "sample_id": 43,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available to confirm methodological detail or quantitative evaluation results as required by I3/I4."
+    },
+    {
+      "sample_id": 44,
+      "decision": "EXCLUDE",
+      "rationale": "Registers a single static fluoroscopic X-ray to a CT model rather than analyzing temporally ordered image sequences (E2)."
+    },
+    {
+      "sample_id": 45,
+      "decision": "EXCLUDE",
+      "rationale": "Unsupervised clustering on cardiac CT and clinical data, not DSA/fluoroscopic imaging (E1)."
+    },
+    {
+      "sample_id": 46,
+      "decision": "INCLUDE",
+      "rationale": "Proposes a temporal transformer network for guide-wire segmentation in X-ray fluoroscopy sequences with reported state-of-the-art results."
+    },
+    {
+      "sample_id": 47,
+      "decision": "EXCLUDE",
+      "rationale": "Conference abstract with no abstract text available, lacking sufficient methodological detail (E4)."
+    },
+    {
+      "sample_id": 48,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on optical coherence tomography angiography (OCTA) of the retina, not DSA or fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 49,
+      "decision": "EXCLUDE",
+      "rationale": "Analyzes fluorescein angiogram retinal videos, a non-DSA/fluoroscopic optical imaging modality (E1)."
+    },
+    {
+      "sample_id": 50,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT curved-multiplanar reconstruction images, not DSA or fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 51,
+      "decision": "EXCLUDE",
+      "rationale": "A narrative review of radiation safety practices without an original computational contribution (E3)."
+    },
+    {
+      "sample_id": 52,
+      "decision": "EXCLUDE",
+      "rationale": "Predicts LVO from noncontrast brain CT, not DSA or fluoroscopic imaging (E1)."
+    },
+    {
+      "sample_id": 53,
+      "decision": "INCLUDE",
+      "rationale": "Extracts temporal-spatial deep learning features from DSA videos for AVM diagnosis with reported AUC/accuracy metrics."
+    },
+    {
+      "sample_id": 54,
+      "decision": "EXCLUDE",
+      "rationale": "A narrative review discussing screening strategies for asymptomatic CAD in diabetes without an original computational method (E3)."
+    },
+    {
+      "sample_id": 55,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT angiography (CTA) static volumetric imaging, not DSA/fluoroscopy sequences (E1)."
+    },
+    {
+      "sample_id": 56,
+      "decision": "INCLUDE",
+      "rationale": "Proposes an improved U-Net for guidewire tip segmentation in X-ray fluoroscopy images used during PCI, with quantitative segmentation metrics reported."
+    },
+    {
+      "sample_id": 57,
+      "decision": "EXCLUDE",
+      "rationale": "Classifies lesions in fundus fluorescein angiography images, an ophthalmic camera-based modality, not DSA/fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 58,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns kidney transplant rejection using multiplexed antibody-omics imaging, unrelated to angiographic image sequences (E1)."
+    },
+    {
+      "sample_id": 59,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available and title indicates retinal circulation visualization (likely OCTA), not DSA/fluoroscopy (E1/E4)."
+    },
+    {
+      "sample_id": 60,
+      "decision": "EXCLUDE",
+      "rationale": "Predicts PCI success using machine learning on clinical/angiographic characteristics rather than a described computational image analysis method on angiographic image sequences (I3 not met)."
+    },
+    {
+      "sample_id": 61,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning segmentation of coronary vessels in DSA images with quantitative IoU/Dice/Hausdorff results."
+    },
+    {
+      "sample_id": 62,
+      "decision": "INCLUDE",
+      "rationale": "Cross-modality cerebrovascular segmentation network trained/evaluated on DSA-CTA paired data with quantitative performance."
+    },
+    {
+      "sample_id": 63,
+      "decision": "EXCLUDE",
+      "rationale": "Compares single pre- and post-treatment DSA images rather than analyzing temporally ordered angiographic sequences (E2)."
+    },
+    {
+      "sample_id": 64,
+      "decision": "INCLUDE",
+      "rationale": "Object detection deep learning models applied to DSA images with quantitative mAP/accuracy/AUC results for outcome prediction."
+    },
+    {
+      "sample_id": 65,
+      "decision": "INCLUDE",
+      "rationale": "CNN ensemble models on biplane DSA angiographic parametric imaging to classify reperfusion status, with detailed quantitative evaluation."
+    },
+    {
+      "sample_id": 66,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning segmentation and marker tracking across carotid angiography frames co-registered with OCT, with quantitative accuracy metrics."
+    },
+    {
+      "sample_id": 67,
+      "decision": "EXCLUDE",
+      "rationale": "Fluoroscopy-based deep learning for pedicle screw segmentation/pose estimation is unrelated to angiographic/vascular imaging tasks."
+    },
+    {
+      "sample_id": 68,
+      "decision": "EXCLUDE",
+      "rationale": "Retinal fundus image vessel segmentation, not DSA or fluoroscopy imaging (E1)."
+    },
+    {
+      "sample_id": 69,
+      "decision": "INCLUDE",
+      "rationale": "CNN classification of active bleeding in DSA angiography images with quantitative AUC/accuracy/sensitivity results."
+    },
+    {
+      "sample_id": 70,
+      "decision": "EXCLUDE",
+      "rationale": "Primary computational contribution is CFD-based hemodynamic/morphological modeling and ML prediction on derived features, not computational image analysis of DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 71,
+      "decision": "EXCLUDE",
+      "rationale": "OCT angiography (OCTA) anomaly detection, not DSA or fluoroscopy imaging (E1)."
+    },
+    {
+      "sample_id": 72,
+      "decision": "EXCLUDE",
+      "rationale": "Conference abstract with no available text/methodological detail (E4)."
+    },
+    {
+      "sample_id": 73,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning artifact-removal network applied to DSA images with quantitative clinical outcome comparisons."
+    },
+    {
+      "sample_id": 74,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based localization of catheter/marker across 2D X-ray fluoroscopy sequences with quantitative accuracy and timing results."
+    },
+    {
+      "sample_id": 75,
+      "decision": "INCLUDE",
+      "rationale": "Weakly-supervised CNN vessel segmentation on cerebral DSA with quantitative state-of-the-art segmentation results."
+    },
+    {
+      "sample_id": 76,
+      "decision": "EXCLUDE",
+      "rationale": "OCT angiography retinal microvasculature study, not DSA or fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 77,
+      "decision": "INCLUDE",
+      "rationale": "Hessian-filter detection and sparse representation classification of aneurysms on DSA with quantitative F1/accuracy/AUC results."
+    },
+    {
+      "sample_id": 78,
+      "decision": "INCLUDE",
+      "rationale": "Spatiotemporal deep neural network for aneurysm detection/segmentation across DSA sequences with quantitative sensitivity and Dice results."
+    },
+    {
+      "sample_id": 79,
+      "decision": "EXCLUDE",
+      "rationale": "Machine learning ischemia risk score based on coronary CT angiography (CCTA), not DSA or fluoroscopy (E1)."
+    },
+    {
+      "sample_id": 80,
+      "decision": "INCLUDE",
+      "rationale": "ConvLSTM deep learning tracking of lung tumors across 2D fluoroscopic image sequences with quantitative IOU/Dice/centroid metrics."
+    },
+    {
+      "sample_id": 81,
+      "decision": "INCLUDE",
+      "rationale": "Uses DSA image dataset for deep-learning vascular segmentation with quantitative metrics (Jaccard, F1, Accuracy)."
+    },
+    {
+      "sample_id": 82,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is CT pulmonary angiography (CT), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 83,
+      "decision": "EXCLUDE",
+      "rationale": "3D rotational angiography produces a reconstructed tomographic volume rather than a temporally ordered image sequence."
+    },
+    {
+      "sample_id": 84,
+      "decision": "EXCLUDE",
+      "rationale": "Unrelated topic (dust source mapping) with no abstract or angiographic imaging content."
+    },
+    {
+      "sample_id": 85,
+      "decision": "EXCLUDE",
+      "rationale": "Uses retinal fundus images, not DSA/fluoroscopic angiographic sequences."
+    },
+    {
+      "sample_id": 86,
+      "decision": "EXCLUDE",
+      "rationale": "Ultra-widefield fluorescein angiography of the retina is not DSA/fluoroscopic X-ray imaging."
+    },
+    {
+      "sample_id": 87,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is MRI (TOF-MRA), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 88,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning multitask framework for anatomical localization on DSA sequences with quantitative accuracy/precision/recall results."
+    },
+    {
+      "sample_id": 89,
+      "decision": "EXCLUDE",
+      "rationale": "Uses optical coherence tomography imaging, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 90,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is coronary CT angiography (CT), not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 91,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available and appears to be a navigation comparison phantom study without sufficient computational methodology or quantitative results described."
+    },
+    {
+      "sample_id": 92,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available; insufficient information to confirm DSA/fluoroscopic sequence imaging and quantitative evaluation."
+    },
+    {
+      "sample_id": 93,
+      "decision": "INCLUDE",
+      "rationale": "Faster-RCNN deep learning detection applied to DSA images with quantitative accuracy results per vascular structure."
+    },
+    {
+      "sample_id": 94,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is dual-energy CT angiography (CT), not DSA/fluoroscopy, and no abstract provided."
+    },
+    {
+      "sample_id": 95,
+      "decision": "EXCLUDE",
+      "rationale": "A biomarker/lipid ratio clinical study, not an image analysis task on angiographic sequences."
+    },
+    {
+      "sample_id": 96,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning model processes sequential 3D vessel contour data from coronary X-ray angiography with quantitative alignment error results."
+    },
+    {
+      "sample_id": 97,
+      "decision": "EXCLUDE",
+      "rationale": "Uses non-contrast CT imaging, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 98,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is cardiac/coronary CT, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 99,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is myocardial CT, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 100,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is single-energy CT pulmonary angiography (CT), not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 101,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is coronary CTA (CT), not DSA/fluoroscopy, so it fails the imaging modality criterion."
+    },
+    {
+      "sample_id": 102,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning guidewire segmentation on 2D X-ray fluoroscopy sequences with quantitative F1-score evaluation."
+    },
+    {
+      "sample_id": 103,
+      "decision": "EXCLUDE",
+      "rationale": "Questionnaire-based exposome study unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 104,
+      "decision": "INCLUDE",
+      "rationale": "Multitask deep learning for endoleak detection/localization on DSA sequences with quantitative metrics."
+    },
+    {
+      "sample_id": 105,
+      "decision": "EXCLUDE",
+      "rationale": "A review article without original computational contribution or angiographic sequence analysis."
+    },
+    {
+      "sample_id": 106,
+      "decision": "EXCLUDE",
+      "rationale": "Generic automated machine learning system unrelated to angiographic imaging (no abstract, off-topic title)."
+    },
+    {
+      "sample_id": 107,
+      "decision": "EXCLUDE",
+      "rationale": "Narrative review of cardiac imaging modalities, not an original computational method study."
+    },
+    {
+      "sample_id": 108,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning Bayesian filtering for catheter tip tracking in X-ray fluoroscopy sequences, a temporal image analysis task."
+    },
+    {
+      "sample_id": 109,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on ECoG electrode localization using CT/fluoroscopy, not an angiographic vascular imaging analysis task."
+    },
+    {
+      "sample_id": 110,
+      "decision": "EXCLUDE",
+      "rationale": "A surgical outcomes clinical study without a computational imaging methodology."
+    },
+    {
+      "sample_id": 111,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based GI bleeding detection/segmentation on DSA image sequences with quantitative accuracy and Dice metrics."
+    },
+    {
+      "sample_id": 112,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning segmentation and stenosis detection on invasive coronary angiograms with quantitative evaluation."
+    },
+    {
+      "sample_id": 113,
+      "decision": "EXCLUDE",
+      "rationale": "Fluoroscopic pose estimation of knee implants is unrelated to angiographic vascular imaging analysis."
+    },
+    {
+      "sample_id": 114,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning model generating DSA-like cerebral angiograms from dynamic angiography sequences, evaluated quantitatively."
+    },
+    {
+      "sample_id": 115,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning vascular territory segmentation on cerebral DSA with quantitative DSC/ASD evaluation."
+    },
+    {
+      "sample_id": 116,
+      "decision": "EXCLUDE",
+      "rationale": "Machine learning FFR derived from coronary CT angiography, a CT-based static modality, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 117,
+      "decision": "EXCLUDE",
+      "rationale": "CT pulmonary angiography (CTPA) is a CT-based modality without temporal DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 118,
+      "decision": "INCLUDE",
+      "rationale": "Video diffusion-based data augmentation for guidewire segmentation in cardiac fluoroscopy videos with quantitative evaluation."
+    },
+    {
+      "sample_id": 119,
+      "decision": "EXCLUDE",
+      "rationale": "Machine learning model built on laboratory and clinical record data, not imaging analysis."
+    },
+    {
+      "sample_id": 120,
+      "decision": "EXCLUDE",
+      "rationale": "Retinal vessel segmentation uses fundus imaging, not DSA/fluoroscopic angiographic sequences."
+    },
+    {
+      "sample_id": 121,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning detection/classification of coronary stenosis on angiography images with quantitative metrics (accuracy, F1, MAP)."
+    },
+    {
+      "sample_id": 122,
+      "decision": "INCLUDE",
+      "rationale": "Deep segmentation and tracking across bi-plane angiographic image sequences for 3D vessel reconstruction with quantitative validation."
+    },
+    {
+      "sample_id": 123,
+      "decision": "EXCLUDE",
+      "rationale": "Predicts angiographic vasospasm using transcranial Doppler and clinical time-series data, not computational analysis of DSA/fluoroscopic image sequences."
+    },
+    {
+      "sample_id": 124,
+      "decision": "INCLUDE",
+      "rationale": "Multimodal deep learning fusing DSA-derived angiographic parametric imaging with clinical data to predict aneurysm treatment outcome, with quantitative AUC evaluation."
+    },
+    {
+      "sample_id": 125,
+      "decision": "EXCLUDE",
+      "rationale": "Modality is MR angiography/MRI perfusion imaging, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 126,
+      "decision": "EXCLUDE",
+      "rationale": "Uses cardiac CT angiography radiomics and clinical clustering, not DSA/fluoroscopy sequences."
+    },
+    {
+      "sample_id": 127,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns coronary CT angiography prediction with no abstract or methodological detail; CT modality excluded."
+    },
+    {
+      "sample_id": 128,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on noncontrast CT, not DSA/fluoroscopy imaging."
+    },
+    {
+      "sample_id": 129,
+      "decision": "EXCLUDE",
+      "rationale": "A correction notice with no abstract or methodological detail provided."
+    },
+    {
+      "sample_id": 130,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning-based descriptor/correspondence matching across coronary angiography image pairs for 3D reconstruction, with quantitative performance improvement reported."
+    },
+    {
+      "sample_id": 131,
+      "decision": "INCLUDE",
+      "rationale": "Conditional GAN used to synthesize subtraction angiographies from contrast-enhanced angiography, evaluated quantitatively and by reader assessment."
+    },
+    {
+      "sample_id": 132,
+      "decision": "EXCLUDE",
+      "rationale": "Validates AI segmentation on contrast/noncontrast CT scans for aortic aneurysms, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 133,
+      "decision": "EXCLUDE",
+      "rationale": "Unsupervised clustering of clinical variables for MI/OHCA phenotyping; not an image analysis task on angiographic sequences."
+    },
+    {
+      "sample_id": 134,
+      "decision": "EXCLUDE",
+      "rationale": "Videofluoroscopic swallowing study is fluoroscopy but not angiographic (vascular) imaging, outside the review's scope."
+    },
+    {
+      "sample_id": 135,
+      "decision": "EXCLUDE",
+      "rationale": "Quality control on CT/CTA slice montages, not DSA/fluoroscopic temporal sequence analysis."
+    },
+    {
+      "sample_id": 136,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning classification of DSA image sequences for thrombus detection in stroke treatment, with reported clinical case results."
+    },
+    {
+      "sample_id": 137,
+      "decision": "INCLUDE",
+      "rationale": "Dual-stage deep learning segmentation and detection framework for borderline coronary stenosis on x-ray angiography with quantitative metrics."
+    },
+    {
+      "sample_id": 138,
+      "decision": "EXCLUDE",
+      "rationale": "Uses tongue image analysis to predict CAD, not analysis of angiographic imaging itself."
+    },
+    {
+      "sample_id": 139,
+      "decision": "EXCLUDE",
+      "rationale": "Compares CT reconstruction algorithms on carotid CT angiography, a CT-based modality rather than DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 140,
+      "decision": "INCLUDE",
+      "rationale": "Proposes a deep learning motion/structural modeling method for multi-frame interpolation in DSA image sequences with quantitative performance results."
+    },
+    {
+      "sample_id": 141,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract and title suggests coronary plaque imaging analysis (likely IVUS/OCT) unrelated to DSA/fluoroscopy with no methodological detail."
+    },
+    {
+      "sample_id": 142,
+      "decision": "INCLUDE",
+      "rationale": "Deep CNN-based denoising of fluoroscopic image sequences with quantitative PSNR evaluation."
+    },
+    {
+      "sample_id": 143,
+      "decision": "INCLUDE",
+      "rationale": "Sparse-view 4D DSA reconstruction method with detailed technical approach and quantitative PSNR results."
+    },
+    {
+      "sample_id": 144,
+      "decision": "EXCLUDE",
+      "rationale": "Uses OCTA of the retina, not DSA or fluoroscopy imaging."
+    },
+    {
+      "sample_id": 145,
+      "decision": "EXCLUDE",
+      "rationale": "Neural network survival prediction uses EHR clinical/lab data, not image analysis of angiographic sequences."
+    },
+    {
+      "sample_id": 146,
+      "decision": "EXCLUDE",
+      "rationale": "Uses OCTA retinal images, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 147,
+      "decision": "EXCLUDE",
+      "rationale": "Uses static 3D rotational angiography volume measurement rather than temporally ordered image sequences."
+    },
+    {
+      "sample_id": 148,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based real-time segmentation for markerless tumor tracking on kV X-ray fluoroscopic sequences with quantitative evaluation."
+    },
+    {
+      "sample_id": 149,
+      "decision": "EXCLUDE",
+      "rationale": "This is a systematic review without an original computational contribution."
+    },
+    {
+      "sample_id": 150,
+      "decision": "EXCLUDE",
+      "rationale": "Concerns power system dynamic security assessment, unrelated to medical angiographic imaging."
+    },
+    {
+      "sample_id": 151,
+      "decision": "EXCLUDE",
+      "rationale": "Automated stenosis detection is performed on CT angiography images, not DSA or fluoroscopy sequences."
+    },
+    {
+      "sample_id": 152,
+      "decision": "EXCLUDE",
+      "rationale": "Radiomics-morphological classification is based on CT angiography, not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 153,
+      "decision": "INCLUDE",
+      "rationale": "Deep reinforcement learning for autonomous guidewire navigation using fluoroscopic image sequences with quantitative success-rate evaluation."
+    },
+    {
+      "sample_id": 154,
+      "decision": "INCLUDE",
+      "rationale": "3D-CNN deep learning applied to cine coronary angiography image sequences to detect RV dysfunction, with quantitative AUC results."
+    },
+    {
+      "sample_id": 155,
+      "decision": "EXCLUDE",
+      "rationale": "Catheter tracking is performed using MRI, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 156,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning multi-frame background subtraction on cerebral DSA image series with quantitative RMSE/SSIM evaluation."
+    },
+    {
+      "sample_id": 157,
+      "decision": "EXCLUDE",
+      "rationale": "No abstract available and insufficient technical detail to determine modality and computational approach."
+    },
+    {
+      "sample_id": 158,
+      "decision": "EXCLUDE",
+      "rationale": "WiFi-based real-time location system for hospital logistics, not an image analysis task."
+    },
+    {
+      "sample_id": 159,
+      "decision": "EXCLUDE",
+      "rationale": "Segmentation of retinal vessels in colour fundus photographs, not DSA/fluoroscopy imaging."
+    },
+    {
+      "sample_id": 160,
+      "decision": "EXCLUDE",
+      "rationale": "Fundus fluorescein angiography of mouse retina is a different modality than DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 161,
+      "decision": "EXCLUDE",
+      "rationale": "A cross-sectional clinical utility study spanning CT/MRI/radiography and endovascular procedures without sufficient technical detail on a specific computational image-analysis method for DSA/fluoroscopic sequences."
+    },
+    {
+      "sample_id": 162,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CTA/CTP volumetric imaging rather than DSA/fluoroscopy temporal sequences."
+    },
+    {
+      "sample_id": 163,
+      "decision": "EXCLUDE",
+      "rationale": "Benchmark dataset is derived from CT angiography/CTP, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 164,
+      "decision": "EXCLUDE",
+      "rationale": "A response/letter with no abstract or methodological content."
+    },
+    {
+      "sample_id": 165,
+      "decision": "EXCLUDE",
+      "rationale": "Focuses on dual-energy tomosynthesis of the proximal femur, not DSA/fluoroscopic angiographic sequences."
+    },
+    {
+      "sample_id": 166,
+      "decision": "INCLUDE",
+      "rationale": "CNN-based stent segmentation in digital fluoroscopy images with quantitative accuracy results."
+    },
+    {
+      "sample_id": 167,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning method for predicting DSA/fluoroscopy working angles in aneurysm treatment with quantitative evaluation against expert ground truth."
+    },
+    {
+      "sample_id": 168,
+      "decision": "EXCLUDE",
+      "rationale": "An editorial with no abstract or original computational contribution."
+    },
+    {
+      "sample_id": 169,
+      "decision": "EXCLUDE",
+      "rationale": "Appears to be a commentary/opinion piece with no abstract or methodological detail."
+    },
+    {
+      "sample_id": 170,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning system for automated TICI scoring from DSA sequences with quantitative agreement metrics."
+    },
+    {
+      "sample_id": 171,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning pose estimation/tracking network for aortic stents in DSA/fluoroscopy with detailed methodology and quantitative metrics."
+    },
+    {
+      "sample_id": 172,
+      "decision": "INCLUDE",
+      "rationale": "Geometric deep learning method for catheter segmentation in cerebral angiography fluoroscopy with quantitative Dice and tip-distance results."
+    },
+    {
+      "sample_id": 173,
+      "decision": "INCLUDE",
+      "rationale": "Title indicates a deep learning model for stroke subtype identification based on DSA imaging, meeting modality and technical criteria."
+    },
+    {
+      "sample_id": 174,
+      "decision": "INCLUDE",
+      "rationale": "3D CNN-based classification of coronary angiogram video quality using temporal DSA sequences with quantitative performance metrics."
+    },
+    {
+      "sample_id": 175,
+      "decision": "EXCLUDE",
+      "rationale": "Brain MRI segmentation study unrelated to DSA/fluoroscopic angiography."
+    },
+    {
+      "sample_id": 176,
+      "decision": "EXCLUDE",
+      "rationale": "Uses fundus fluorescein angiography (ophthalmic), not DSA or fluoroscopic imaging."
+    },
+    {
+      "sample_id": 177,
+      "decision": "EXCLUDE",
+      "rationale": "A COVID-19 vaccine hesitancy study unrelated to angiographic imaging."
+    },
+    {
+      "sample_id": 178,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning marker detection in fluoroscopy for C-arm pose estimation with quantitative accuracy results."
+    },
+    {
+      "sample_id": 179,
+      "decision": "EXCLUDE",
+      "rationale": "A letter response with no abstract or original computational methodology."
+    },
+    {
+      "sample_id": 180,
+      "decision": "EXCLUDE",
+      "rationale": "Uses a static pair of fluoroscopic radiographs rather than temporally ordered image sequences."
+    },
+    {
+      "sample_id": 181,
+      "decision": "INCLUDE",
+      "rationale": "Coronary angiography-based deep learning stenosis detection with quantitative performance metrics."
+    },
+    {
+      "sample_id": 182,
+      "decision": "EXCLUDE",
+      "rationale": "Appears to be an editorial/commentary piece on AI in coronary angiography without original computational methodology."
+    },
+    {
+      "sample_id": 183,
+      "decision": "EXCLUDE",
+      "rationale": "Uses fluorescein angiography fundus images for classification, not DSA/fluoroscopic temporally ordered sequences."
+    },
+    {
+      "sample_id": 184,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning 3D U-Net detection/segmentation of cerebral aneurysms on DSA images with quantitative sensitivity results."
+    },
+    {
+      "sample_id": 185,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning coronary artery segmentation on angiography image sequences to quantify distensibility over the cardiac cycle, with quantitative results."
+    },
+    {
+      "sample_id": 186,
+      "decision": "INCLUDE",
+      "rationale": "Fluoroscopy-based catheter shape reconstruction combined with sensor fusion, a computational image analysis task on fluoroscopic sequences."
+    },
+    {
+      "sample_id": 187,
+      "decision": "EXCLUDE",
+      "rationale": "Editor's choice commentary summarizing other articles, not an original computational study."
+    },
+    {
+      "sample_id": 188,
+      "decision": "EXCLUDE",
+      "rationale": "Multi-modal fundus/OCT imaging for AMD lesion detection, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 189,
+      "decision": "INCLUDE",
+      "rationale": "CNN/U-Net based coronary stenosis segmentation on X-ray angiography with quantitative Dice/Jaccard metrics."
+    },
+    {
+      "sample_id": 190,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT coronary angiography, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 191,
+      "decision": "EXCLUDE",
+      "rationale": "Static X-ray skeletal landmark localization for C-arm control, not temporally ordered angiographic sequences."
+    },
+    {
+      "sample_id": 192,
+      "decision": "EXCLUDE",
+      "rationale": "Uses ultra-widefield fundus photographs, not DSA/fluoroscopy imaging."
+    },
+    {
+      "sample_id": 193,
+      "decision": "EXCLUDE",
+      "rationale": "Uses dynamic CT angiography (CTA) of cerebral vessels, not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 194,
+      "decision": "EXCLUDE",
+      "rationale": "Titled as a commentary ('helps us decide') with no abstract or evidence of original computational methodology."
+    },
+    {
+      "sample_id": 195,
+      "decision": "INCLUDE",
+      "rationale": "Deep learning model for real-time catheter tracking from fluoroscopy, a clear temporal fluoroscopic image analysis task."
+    },
+    {
+      "sample_id": 196,
+      "decision": "EXCLUDE",
+      "rationale": "Relies on coronary CT angiography (CCTA), not DSA or fluoroscopy."
+    },
+    {
+      "sample_id": 197,
+      "decision": "EXCLUDE",
+      "rationale": "Uses CT pulmonary angiography (CTPA) static/volumetric scans, not DSA or fluoroscopy sequences."
+    },
+    {
+      "sample_id": 198,
+      "decision": "EXCLUDE",
+      "rationale": "Analysis is based on stress echocardiography (ultrasound), not DSA/fluoroscopy."
+    },
+    {
+      "sample_id": 199,
+      "decision": "EXCLUDE",
+      "rationale": "Unrelated to angiographic imaging; concerns sentiment analysis text/image classification models."
+    },
+    {
+      "sample_id": 200,
+      "decision": "INCLUDE",
+      "rationale": "Machine learning and neural network segmentation applied to angiographic images to predict cerebral aneurysm treatment outcomes, with quantitative accuracy/F1 results."
+    }
+  ],
+  "agreedCount": 193,
+  "disagreedCount": 7,
+  "finalDecisions": [
+    {
+      "sample_id": 1,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 2,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 3,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 4,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 5,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 6,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 7,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 8,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 9,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 10,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 11,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 12,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 13,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 14,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 15,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 16,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 17,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 18,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 19,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 20,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 21,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 22,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 23,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 24,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 25,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 26,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 27,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 31,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 32,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 33,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 34,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 35,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 36,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 37,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 38,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 39,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 40,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 41,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 42,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 43,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 44,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 45,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 46,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 47,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 48,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 49,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 50,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 51,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 52,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 53,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 54,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 55,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 56,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 57,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 58,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 59,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 60,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 61,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 62,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 64,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 65,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 66,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 67,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 68,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 69,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 70,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 71,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 72,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 73,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 74,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 75,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 76,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 77,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 78,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 79,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 81,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 82,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 83,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 84,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 85,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 86,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 87,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 88,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 89,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 90,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 91,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 92,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 93,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 94,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 95,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 96,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 97,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 98,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 99,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 100,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 101,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 102,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 103,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 104,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 105,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 106,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 107,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 108,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 109,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 110,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 111,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 112,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 113,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 114,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 115,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 116,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 117,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 118,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 119,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 120,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 121,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 122,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 123,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 124,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 125,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 126,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 127,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 128,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 129,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 130,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 131,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 132,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 133,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 134,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 135,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 136,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 137,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 138,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 139,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 140,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 141,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 142,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 143,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 144,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 145,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 146,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 147,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 149,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 150,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 151,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 152,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 153,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 154,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 155,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 156,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 157,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 158,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 159,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 160,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 161,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 162,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 163,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 164,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 165,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 166,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 167,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 168,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 169,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 170,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 171,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 172,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 174,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 175,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 176,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 177,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 178,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 179,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 180,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 181,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 182,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 183,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 184,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 185,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 186,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 187,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 188,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 189,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 190,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 191,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 192,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 193,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 194,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 195,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 196,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 197,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 198,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 199,
+      "final_decision": "EXCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 200,
+      "final_decision": "INCLUDE",
+      "resolution": "agreement"
+    },
+    {
+      "sample_id": 28,
+      "final_decision": "EXCLUDE",
+      "resolution": "adjudicated",
+      "rationale": "The title indicates the imaging modality is indocyanine green (ICG) near-infrared fluorescence imaging used during robotic surgery to assess ureter perfusion, not DSA or X-ray fluoroscopy. Despite the word \"fluoroscopy\" appearing, this is a fluorescence-guided surgical video technique, which is a fundamentally different imaging modality than the angiographic DSA/fluoroscopic X-ray sequences targeted by I1. This fails I1 (and falls under E1, as it is a non-DSA/fluoroscopy modality). Additionally, no abstract is available, leaving no way to confirm methodological detail (I3) or quantitative evaluation (I4), reinforcing exclusion under E4. Reviewer B's rationale is correct; Reviewer A's inference that \"fluoroscopy\" in the title implies DSA/X-ray fluoroscopy is a misreading of the modality."
+    },
+    {
+      "sample_id": 29,
+      "final_decision": "EXCLUDE",
+      "resolution": "adjudicated",
+      "rationale": "Reviewer B has the stronger reading of the criteria. Although the study uses machine-learning-based segmentation/detection on fluoroscopic images with quantitative results, it does not involve DSA angiography or temporally ordered image sequences (I1 fails, E2 applies): the method works from \"as little as two fluoroscopic images\" (pairs from different gantry angles for stereo/3D triangulation), not a temporal sequence of frames tracking contrast flow or vessel dynamics. The application domain is orthopaedic guidewire/implant placement, not angiographic (vascular) imaging analysis, so it is not relevant to a systematic review of AI methods for DSA/fluoroscopic angiographic sequences. This is a case of static/multi-view (not temporal) fluoroscopy in an unrelated clinical domain, which falls under exclusion criterion E2 (no temporally ordered sequence) and arguably E1 (not angiographic imaging)."
+    },
+    {
+      "sample_id": 30,
+      "final_decision": "EXCLUDE",
+      "resolution": "adjudicated",
+      "rationale": "FluoroSAM is a general-purpose language-promptable segmentation foundation model trained on 3M synthetic X-ray images spanning many anatomies and X-ray subtypes (diagnostic chest X-ray to interventional fluoroscopy), not specifically on DSA/angiographic sequences. Critically, the model operates on individual X-ray images for organ/tool segmentation and there is no indication it processes temporally ordered image sequences (a defining feature of angiographic imaging per I1, and explicitly excluded by E2 if only static images are analyzed). While it is evaluated quantitatively and has sufficient methodological detail (satisfying I3/I4), it does not meet I1/I2 in the angiography-specific sense the review requires, and is more accurately characterized as a general X-ray segmentation tool rather than a study of angiographic image sequence analysis. Reviewer B's rationale is more consistent with the criteria: the work is not specific to angiographic DSA/fluoroscopy sequences, and Reviewer A's inclusion overlooks the lack of temporal sequence analysis central to I1/E2."
+    },
+    {
+      "sample_id": 63,
+      "final_decision": "EXCLUDE",
+      "resolution": "adjudicated",
+      "rationale": "The study uses WEKA/Random Forest segmentation on \"pre- and postoperative DSA image pairs\" - i.e., single representative static images captured before and after treatment, compared at two discrete timepoints rather than analyzing the temporally ordered frame sequence within a DSA run (contrast bolus propagation). This is fundamentally a static image comparison task (segmentation and pixel-count comparison between two snapshots), not temporal sequence analysis. This matches exclusion criterion E2 (analyzes only static images, no temporally ordered sequence), despite otherwise satisfying I2-I4 (ML segmentation task, described methodology, quantitative p-value results). Reviewer A's inclusion rationale overlooks that \"pre vs post\" is not the same as a temporal DSA sequence (which would involve multiple frames per acquisition capturing contrast flow dynamics). Reviewer B's exclusion rationale is correct on this point."
+    },
+    {
+      "sample_id": 80,
+      "final_decision": "EXCLUDE",
+      "resolution": "adjudicated",
+      "rationale": "Although I1 is technically satisfied in the loosest sense (fluoroscopy, temporally ordered sequences) and I2-I4 are met with quantitative ConvLSTM tracking metrics, the study is about markerless lung tumor tracking for SBRT radiotherapy using an X-CAT phantom, not angiographic (DSA/vascular contrast) imaging analysis. The systematic review's scope is AI methods applied to angiographic image sequences specifically (vessel/contrast-based imaging tasks), not fluoroscopy in general for arbitrary anatomical targets. Reviewer A correctly identifies that this is domain-mismatched: the imaging target is a lung tumor tracked via fluoroscopic projection, with no vascular/angiographic content, no contrast injection, and no angiography-relevant task (vessel segmentation, DSA denoising, etc.). Reviewer B's rationale focuses only on the technical similarity (ConvLSTM, sequential frames, quantitative metrics) but ignores that the clinical/imaging domain is entirely outside angiography, which is the core scope-defining criterion for this SLR. This falls under E1 in spirit (non-angiographic imaging application) even though the modality label is fluoroscopy \u2014 the review's intent is angiographic imaging, and lung tumor tracking is a different clinical use case unrelated to vascular structures."
+    },
+    {
+      "sample_id": 148,
+      "final_decision": "EXCLUDE",
+      "resolution": "adjudicated",
+      "rationale": "Although the study uses kV X-ray fluoroscopic image sequences (temporally ordered), fluoroscopy alone does not equal angiographic imaging (DSA/fluoroscopic sequences used for vascular imaging). This paper concerns markerless lung tumor tracking during radiotherapy using CNN-based segmentation on fluoroscopic/DRR images - it has nothing to do with angiographic (vascular) image analysis, which is the subject domain of this systematic review. Reviewer B's rationale focuses only on the modality (fluoroscopy) and technical/quantitative criteria (I2-I4), but overlooks that the review's scope is specifically angiographic imaging applications (vessel segmentation, DSA analysis, etc.), not general fluoroscopic imaging for tumor tracking. Reviewer A correctly identifies this domain mismatch. While I1 technically allows \"fluoroscopy,\" the intent of the SR is angiographic/vascular imaging, and this paper is about oncology/radiotherapy tumor tracking, entirely unrelated to angiographic image analysis tasks (I2 e.g., vessel segmentation, DSA denoising). Thus it falls outside the intended scope and should be excluded."
+    },
+    {
+      "sample_id": 173,
+      "final_decision": "EXCLUDE",
+      "resolution": "adjudicated",
+      "rationale": "With no abstract available, only the title can be assessed. While the title suggests DSA imaging and a deep-learning approach (satisfying I1/I2 at a surface level), there is no way to confirm I3 (sufficient technical/methodological detail to identify the principal computational approach) or I4 (quantitative evaluation results reported), and no way to rule out E2 (whether the study uses temporally ordered sequences vs. static/summary DSA frames) or E4 (whether this is merely an abstract/poster without full methodological detail). The stated protocol explicitly instructs defaulting to EXCLUDE when there is truly insufficient information to determine relevance from title alone. Reviewer A's rationale correctly applies this default; Reviewer B's INCLUDE relies on inference from the title that cannot be verified against the required criteria."
+    }
+  ]
+}

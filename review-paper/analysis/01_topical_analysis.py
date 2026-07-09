@@ -32,8 +32,9 @@ plt.rcParams.update({
 })
 
 # === CONFIGURATION ===
-INPUT_PATH = Path("/data/Deep_Angiography/AngioVision/slr/results/stage2_results.jsonl")
-OUTPUT_DIR = Path("/data/Deep_Angiography/AngioVision/slr/analysis-results")
+SLR_ROOT = Path(__file__).resolve().parent.parent
+INPUT_PATH = SLR_ROOT / "results" / "stage2_results.jsonl"
+OUTPUT_DIR = SLR_ROOT / "analysis-results"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Venue normalization: raw JSONL string → short display label ───────────────
@@ -110,13 +111,13 @@ ANATOMY_NORMALIZATION_MAP: Dict[str, str] = {
     "aorta":            "Cardiac",
 
     # Neuro (Cerebral / Spinal)
-    "cerebral":         "Neuro (Cerebral/Spinal)",
-    "spinal":           "Neuro (Cerebral/Spinal)",
-    "brain":            "Neuro (Cerebral/Spinal)",
-    "intracranial":     "Neuro (Cerebral/Spinal)",
-    "neurovascular":    "Neuro (Cerebral/Spinal)",
-    "cranial":          "Neuro (Cerebral/Spinal)",
-    "neuro":            "Neuro (Cerebral/Spinal)",
+    "cerebral":         "Neurologic",
+    "spinal":           "Neurologic",
+    "brain":            "Neurologic",
+    "intracranial":     "Neurologic",
+    "neurovascular":    "Neurologic",
+    "cranial":          "Neurologic",
+    "neuro":            "Neurologic",
 
     # Other Thoracic
     "lung":             "Other Thoracic",
@@ -176,6 +177,8 @@ MODALITY_NORMALIZATION_MAP: Dict[str, str] = {
     "fluoroscopy":      "X-ray / Fluoroscopy",
     "fluoroscopic":     "X-ray / Fluoroscopy",
     "fluoroscope":      "X-ray / Fluoroscopy",
+    "x-ray fluoroscopy": "X-ray / Fluoroscopy",
+    "x ray fluoroscopy": "X-ray / Fluoroscopy",
 }
 
 # Figure registry (preserved structure & paths)
@@ -277,6 +280,7 @@ def plot_distribution(series: pd.Series, title: str, filename: Path, top_n: int 
     colors = plt.cm.tab20(np.linspace(0, 1, len(counts)))
     counts.plot(kind="barh", color=colors)
     plt.xlabel("Count", fontsize=15)
+    plt.ylabel("")
     plt.tight_layout()
     plt.savefig(filename, dpi=300)
     plt.close()
@@ -294,15 +298,39 @@ def run_topical_analysis(df: pd.DataFrame, norm_venue_counts: Counter, venue_typ
     )
 
     # 1. Temporal Trends
+    CURRENT_YEAR = 2026  # partial-year cutoff; see PARTIAL_YEAR_LABEL below
     df_year = df.dropna(subset=["year"]).copy()
     df_year["year"] = df_year["year"].astype(int)
-    df_year = df_year[df_year["year"] >= 2000]
+    df_year = df_year[(df_year["year"] >= 2000) & (df_year["year"] <= CURRENT_YEAR)]
 
-    year_range  = pd.Series(range(2000, 2026))
-    year_counts = df_year["year"].value_counts().reindex(year_range, fill_value=0)
+    year_range  = pd.Series(range(2000, CURRENT_YEAR + 1))
+    year_counts = df_year["year"].value_counts().reindex(year_range, fill_value=0).sort_index()
+
+    # Collapse the leading run of empty years (starting at 2000) into a single
+    # "2000-YYYY" bin so the figure isn't dominated by empty bars.
+    nonzero_years = year_counts[year_counts > 0].index
+    first_active_year = int(nonzero_years.min()) if len(nonzero_years) else year_range.max()
+
+    if first_active_year > year_range.min() + 1:
+        leading_bin_label = f"{year_range.min()}–{first_active_year - 1}"
+        leading_count = int(year_counts.loc[:first_active_year - 1].sum())
+        remaining_counts = year_counts.loc[first_active_year:]
+
+        plot_index  = [leading_bin_label] + [str(y) for y in remaining_counts.index]
+        plot_values = [leading_count] + remaining_counts.tolist()
+    else:
+        plot_index  = [str(y) for y in year_counts.index]
+        plot_values = year_counts.tolist()
+
+    # Mark the current (partial) year with a distinct color and an explicit
+    # "(partial)" x-tick label so the incomplete-year caveat is visible
+    # directly in the figure, not just in the surrounding prose.
+    partial_label = f"{CURRENT_YEAR} (partial)"
+    plot_index[-1] = partial_label
+    bar_colors = ["skyblue"] * (len(plot_values) - 1) + ["#DD8452"]
 
     plt.figure(figsize=(9, 5))
-    year_counts.sort_index().plot(kind="bar", color="skyblue")
+    plt.bar(plot_index, plot_values, color=bar_colors)
     plt.xlabel("Year", fontsize=15)
     plt.ylabel("Number of Papers", fontsize=15)
     plt.xticks(rotation=45)
@@ -326,10 +354,13 @@ def run_topical_analysis(df: pd.DataFrame, norm_venue_counts: Counter, venue_typ
     journal_values    = [journal_counts.get(v, 0)    for v in labels]
     conference_values = [conference_counts.get(v, 0) for v in labels]
 
-    fig, ax = plt.subplots(figsize=(14, 8))
+    # Figure is placed at a single (double-column) width in the manuscript
+    # (~3.4in). A narrower canvas with a narrower bar width means less
+    # downscaling on print, so the text renders larger and more legible.
+    fig, ax = plt.subplots(figsize=(8, 6))
     x = np.arange(len(labels))
-    width = 0.5  # Narrower bar width for improved readability
-    
+    width = 0.35  # Narrower bar width, avoids overlap on the smaller canvas
+
     ax.bar(x, journal_values, width,
            label="Journal", color="#4C72B0")
     ax.bar(x, conference_values, width, bottom=journal_values,
@@ -341,7 +372,7 @@ def run_topical_analysis(df: pd.DataFrame, norm_venue_counts: Counter, venue_typ
         rotation=45,
         ha="right",
         rotation_mode="anchor",
-        fontsize=14,  # Increased from 12
+        fontsize=14,
     )
     ax.set_ylabel("Number of Papers", fontsize=16, fontweight="bold")
     ax.set_xlabel("Venue", fontsize=16, fontweight="bold")
