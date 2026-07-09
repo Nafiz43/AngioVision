@@ -11,6 +11,9 @@ Runs the DICOM visual-data-preparation stages sequentially:
     03  mosaics                  (mosaic.png per sequence + sizes CSV)
     04  consolidate metadata     (hub CSV + instances distribution)
     05  accession check          (reports list vs consolidated metadata)
+    06  DSA split                (frame-based mask detection; copies every
+                                  sequence into 00_potential_dsas/ or
+                                  01_potential_non_dsas/ under dsa_split_root)
 
 On start you're offered the chance to fix the config (input dir, output
 dir, ...) — changes are saved to config.local.json (gitignored). Every
@@ -44,7 +47,7 @@ sys.path.insert(0, str(PIPELINE_DIR))
 from config import PipelineConfig, load_config, save_local_overrides  # noqa: E402
 from vdp import (  # noqa: E402
     s00_consistency_check, s01_process_sequences, s02_stats_gen,
-    s03_mosaics, s04_consolidate, s05_accession_check,
+    s03_mosaics, s04_consolidate, s05_accession_check, s06_dsa_split,
 )
 
 STEPS = [
@@ -54,6 +57,7 @@ STEPS = [
     ("03", "Mosaics + sizes", s03_mosaics.run),
     ("04", "Consolidate metadata (+ instances stats)", s04_consolidate.run),
     ("05", "Accession cross-check", s05_accession_check.run),
+    ("06", "DSA split (frame-based mask detection)", s06_dsa_split.run),
     # 00-post (outlier mosaics + no-visual accessions) runs automatically
     # after the steps above whenever step 00 is selected — its inputs are
     # produced by steps 02/03/05, so it cannot run at position 00.

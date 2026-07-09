@@ -33,7 +33,8 @@ class PipelineConfig:
     # "strict"  = RadiationSetting GR + SeriesDescription DSA/CO 2
     #             + PositionerMotion STATIC + NumberOfFrames > min_frames
     # "relaxed" = same, without the SeriesDescription check
-    mode: str = "strict"
+    # mode: str = "strict"
+    mode: str = "relaxed"
     min_frames: int = 2
     skip_existing: bool = True
 
@@ -55,6 +56,37 @@ class PipelineConfig:
     reports_csv: str = ""
     reports_accession_column: str = "Anon Acc #"
 
+    # ── Step 06: frame-based DSA split ───────────────────────────────────
+    # Auto-calibrated DSA mask-frame detector (ported from
+    # utils/05_dsa_identification_based_on_frame_v2.py). Thresholds are
+    # learned from known-positive DSA sequences, then every extracted
+    # sequence under output_root is classified and copied into
+    #   <dsa_split_root>/00_potential_dsas/<accession>/<sop>/
+    #   <dsa_split_root>/01_potential_non_dsas/<accession>/<sop>/
+    # Comma-separated list of roots holding known-DSA sequences
+    # (each sequence = a dir owning a frames/ subdir).
+    dsa_calibration_roots: str = ",".join([
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/0AwEV1kXtf",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/0BH55V6rIB",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/2C9rBTcczL",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/5NUyFXc5Ai",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/5o3Mxk1lx7",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/6kpsDZBHAH",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/1cZA9m5qti",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/P2ykm7rSF8",
+        "/data/Deep_Angiography/DICOM_Sequence_Processed/1MPUcLN3XP/2.16.840.1.113883.3.16.245346042915223951797304877264329724942",
+        "/data/Deep_Angiography/Deep_Angio_DB_v02/example_dsa_cases",
+    ])
+    # Where the two split dirs are created. Must NOT live inside
+    # output_root (would pollute the sequence tree on re-runs).
+    dsa_split_root: str = str(PIPELINE_DIR / "runs" / "dsa_split")
+    # Calibrated-threshold cache (stable across runs, like runs/ itself).
+    # If this file exists, is complete, and was calibrated on the same
+    # dsa_calibration_roots, step 06 SKIPS calibration and reuses it.
+    # Delete the file or --set dsa_recalibrate=true to force recalibration.
+    dsa_thresholds_json: str = str(PIPELINE_DIR / "runs" / "dsa_calibration.json")
+    dsa_recalibrate: bool = False
+
     # ── Parallelism ──────────────────────────────────────────────────────
     workers: int = max(1, (os.cpu_count() or 8) - 1)
 
@@ -62,7 +94,8 @@ class PipelineConfig:
     EDITABLE: tuple = field(
         default=(
             "input_root", "output_root", "mode", "min_frames",
-            "reports_csv", "reports_accession_column", "workers",
+            "reports_csv", "reports_accession_column",
+            "dsa_calibration_roots", "dsa_split_root", "workers",
         ),
         repr=False,
     )
