@@ -1,3 +1,12 @@
+> **SUPERSEDED — see [`README_pipeline.md`](./README_pipeline.md).**
+> The `custom_framework_*` / `siglip` scripts described below have been unified
+> into `train.py` / `validate.py` (package `angio_ft/`). Structural variants are
+> now flags: `--arch {clip,siglip}` and `--temporal_mode {none,sinusoidal}`.
+> The originals are preserved under `legacy/`. This file is kept for historical
+> parameter reference only.
+
+---
+
 # AngioVision Fine-Tuning (ViT + BERT + Contrastive Loss) --- Parameter Guide
 
 This guide explains the CLI parameters for `train_framework_pooled.py`

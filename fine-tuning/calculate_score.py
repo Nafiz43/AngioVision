@@ -46,7 +46,13 @@ def load_validation_csv(settings_py: str) -> str:
 
 SETTINGS_FILE = "/data/Deep_Angiography/AngioVision/configs/settings.py"
 
-DEFAULT_GT_PATH = load_validation_csv(SETTINGS_FILE)
+
+def resolve_default_gt_path() -> str:
+    """Resolve the GT default from central settings.py ONLY when --gt_path was
+    not passed. Loading settings at import time made the script (and thus the
+    whole validate -> score pipeline) crash on any machine without the /data
+    mount, even when an explicit --gt_path was provided."""
+    return load_validation_csv(SETTINGS_FILE)
 
 
 
@@ -69,8 +75,9 @@ def parse_args():
     parser.add_argument(
         "--gt_path",
         type=str,
-        default=DEFAULT_GT_PATH,
-        help=f"Path to ground truth CSV (default: {DEFAULT_GT_PATH}). In the validation pipeline, this should be the same resolved path as validation_csv.",
+        default=None,
+        help="Path to ground truth CSV (default: VALIDATION_CSV from central settings.py). "
+             "In the validation pipeline, this should be the same resolved path as validation_csv.",
     )
 
     parser.add_argument(
@@ -298,6 +305,8 @@ def build_zero_groups(reason: str):
 
 def main():
     args = parse_args()
+    if args.gt_path is None:
+        args.gt_path = resolve_default_gt_path()
     safe_print_header(args)
 
     pred_raw = safe_read_csv(args.pred_path, tag="PRED")

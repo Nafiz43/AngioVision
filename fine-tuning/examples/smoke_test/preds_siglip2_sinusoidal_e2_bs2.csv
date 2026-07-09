@@ -1,0 +1,13 @@
+AccessionNumber,SOPInstanceUID,Question,Answer
+VACC000,9.8.7.0,Is there stenosis?,YES
+VACC001,9.8.7.1,Is there stenosis?,YES
+VACC001,9.8.7.1,Is there a stent?,NO
+VACC002,9.8.7.2,Is there stenosis?,YES
+VACC002,9.8.7.2,Is there a stent?,YES
+VACC002,9.8.7.2,Any dissection?,YES
+VACC003,9.8.7.3,Is there stenosis?,YES
+VACC004,9.8.7.4,Is there stenosis?,NO
+VACC004,9.8.7.4,Is there a stent?,NO
+VACC005,9.8.7.5,Is there stenosis?,NO
+VACC005,9.8.7.5,Is there a stent?,YES
+VACC005,9.8.7.5,Any dissection?,YES

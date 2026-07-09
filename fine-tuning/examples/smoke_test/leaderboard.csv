@@ -1,0 +1,5 @@
+rank,arch,run_name,vision_tower,loss,best_epoch,train_loss,val_loss,accuracy,precision,recall,f1,all_yes_acc,all_no_acc,random_acc,flipped_acc
+1,clip,clip_sinusoidal_e2_bs2,tiny-vit (rad-dino stand-in),softmax,1,0.71329566,0.69389337,0.58330000,0.58570000,0.58330000,0.58040000,0.50000000,0.50000000,0.33330000,0.41670000
+2,siglip,siglip_sinusoidal_e2_bs2,tiny-vit (rad-dino stand-in),sigmoid,1,4.78970655,4.63689041,0.50000000,0.50000000,0.50000000,0.50000000,0.50000000,0.50000000,0.33330000,0.50000000
+3,siglip2,siglip2_sinusoidal_e2_bs2,tiny-siglip (siglip2-base stand-in),sigmoid,1,4.59487788,4.47483826,0.50000000,0.50000000,0.50000000,0.48570000,0.50000000,0.50000000,0.33330000,0.50000000
+4,xclip,xclip_none_e2_bs2,tiny-xclip (xclip-base-patch32 stand-in),softmax,1,0.68449821,0.69331902,0.41670000,0.38890000,0.41670000,0.37780000,0.50000000,0.50000000,0.33330000,0.58330000

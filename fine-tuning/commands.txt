@@ -1,4 +1,34 @@
+############################################################################
+# UNIFIED PIPELINE (NEW)  ->  see README_pipeline.md
+# The custom_framework_* / siglip scripts are archived under legacy/.
+# Structural variants are now flags: --arch {clip,siglip} + --temporal_mode {none,sinusoidal}
+############################################################################
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# --- The four structural ablations (same data flags for each) ---
+# CLIP + temporal
+python3 train.py --arch clip   --temporal_mode sinusoidal \
+  --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
+  --reports_csv /data/Deep_Angiography/Reports/Report_List_v01_01.csv \
+  --base_frames_dir /data/Deep_Angiography/DICOM_Sequence_Processed \
+  --vit_name microsoft/rad-dino --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
+  --epochs 100 --batch_size 16 --amp
+
+# CLIP, no temporal          -> add:  --arch clip   --temporal_mode none
+# SigLIP + temporal          -> add:  --arch siglip --temporal_mode sinusoidal
+# SigLIP, no temporal        -> add:  --arch siglip --temporal_mode none
+# Report-generation head     -> add:  --enable_generation   (delegates to legacy/, CLIP-only)
+# Auto validate+score+plot   -> add:  --run_post_pipeline
+
+# --- Validation (flags MUST match the training run) ---
+python3 validate.py --arch clip --temporal_mode sinusoidal \
+  --vit_name microsoft/rad-dino --bert_name UCSD-VA-health/RadBERT-RoBERTa-4m \
+  --checkpoint /data/Deep_Angiography/AngioVision/fine-tuning/checkpoints/clip_tempON_100_16_None_None \
+  --out_csv preds.csv --error_csv errs.csv --device cuda --frame_chunk_size 32 --pooling max
+
+############################################################################
+# BELOW: historical command log (references archived scripts in legacy/)
+############################################################################
 
 python3 custom_framework_train.py \
   --meta_csv /data/Deep_Angiography/DICOM-metadata-stats/consolidated_metadata_GT.csv \
