@@ -42,9 +42,9 @@ from pathlib import Path
 
 DATA_ROOT = Path("/data/Deep_Angiography")
 
-# Keep in sync with CALIBRATION_ROOTS in
-# utils/05_dsa_identification_based_on_frame_v2.py and the
-# dsa_calibration_roots default in utils/visual-data-preparation/config.py.
+# Mirrors CALIBRATION_ROOTS in utils/05_dsa_identification_based_on_frame_v2.py.
+# The visual-data-preparation pipeline's dsa_calibration_roots default now
+# points at DEST_ROOT (the directory this script populates).
 CALIBRATION_ROOTS = [
     DATA_ROOT / "DICOM_Sequence_Processed/0AwEV1kXtf",
     DATA_ROOT / "DICOM_Sequence_Processed/0BH55V6rIB",

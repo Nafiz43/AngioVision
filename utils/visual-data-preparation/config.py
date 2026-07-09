@@ -64,19 +64,24 @@ class PipelineConfig:
     #   <dsa_split_root>/00_potential_dsas/<accession>/<sop>/
     #   <dsa_split_root>/01_potential_non_dsas/<accession>/<sop>/
     # Comma-separated list of roots holding known-DSA sequences
-    # (each sequence = a dir owning a frames/ subdir).
-    dsa_calibration_roots: str = ",".join([
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/0AwEV1kXtf",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/0BH55V6rIB",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/2C9rBTcczL",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/5NUyFXc5Ai",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/5o3Mxk1lx7",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/6kpsDZBHAH",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/1cZA9m5qti",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/P2ykm7rSF8",
-        "/data/Deep_Angiography/DICOM_Sequence_Processed/1MPUcLN3XP/2.16.840.1.113883.3.16.245346042915223951797304877264329724942",
-        "/data/Deep_Angiography/Deep_Angio_DB_v02/example_dsa_cases",
-    ])
+    # (each sequence = a dir owning a frames/ subdir). The default is the
+    # consolidated examples dir populated by utils/copy_dsa_calibration_examples.py
+    # (which gathered the 10 original roots listed below).
+    # dsa_calibration_roots: str = ",".join([
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/0AwEV1kXtf",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/0BH55V6rIB",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/2C9rBTcczL",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/5NUyFXc5Ai",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/5o3Mxk1lx7",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/6kpsDZBHAH",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/1cZA9m5qti",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/P2ykm7rSF8",
+    #     "/data/Deep_Angiography/DICOM_Sequence_Processed/1MPUcLN3XP/2.16.840.1.113883.3.16.245346042915223951797304877264329724942",
+    #     "/data/Deep_Angiography/Deep_Angio_DB_v02/example_dsa_cases",
+    # ])
+    dsa_calibration_roots: str = (
+        "/data/Deep_Angiography/frame_identification_algo_calibration_examples"
+    )
     # Where the two split dirs are created. Must NOT live inside
     # output_root (would pollute the sequence tree on re-runs).
     dsa_split_root: str = str(PIPELINE_DIR / "runs" / "dsa_split")
