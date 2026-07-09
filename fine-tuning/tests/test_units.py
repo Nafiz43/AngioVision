@@ -557,3 +557,84 @@ def test_metadata_reader_accepts_s01_lowercase_keys(tmp_path):
     _write_metadata_csv(d3, [("PatientSex", "F")])
     acc, sop, status = read_metadata_key_value_csv(d3)
     assert acc is None and status.startswith("metadata_missing_accession")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# grad-context behaviour: eval builds no graph, training numerics untouched
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_tiny_pooled_clip():
+    """Tiny random ViT ('cls' mode, the rad-dino path) + tiny BERT, one
+    trainable ViT block — no downloads, mirrors the real default setup."""
+    import transformers
+    import angio_ft.models as M
+
+    torch.manual_seed(42)
+    vit_cfg = transformers.ViTConfig(
+        hidden_size=32, intermediate_size=64, num_hidden_layers=3,
+        num_attention_heads=2, image_size=32, patch_size=8,
+        hidden_dropout_prob=0.0, attention_probs_dropout_prob=0.0)
+    tower = transformers.ViTModel(vit_cfg)
+    bert_cfg = transformers.BertConfig(
+        vocab_size=64, hidden_size=32, num_hidden_layers=1,
+        num_attention_heads=2, intermediate_size=64, max_position_embeddings=64,
+        hidden_dropout_prob=0.0, attention_probs_dropout_prob=0.0)
+
+    orig_loader = M.load_vision_tower
+    orig_auto = transformers.AutoModel.from_pretrained
+    M.load_vision_tower = lambda name: (tower, "cls")
+    transformers.AutoModel.from_pretrained = staticmethod(
+        lambda name: transformers.BertModel(bert_cfg))
+    try:
+        return M.PooledCLIP(
+            vit_name="tiny-vit", text_model_name="tiny-bert", embed_dim=16,
+            arch="clip", temporal_mode="sinusoidal", vit_trainable_blocks=1)
+    finally:
+        M.load_vision_tower = orig_loader
+        transformers.AutoModel.from_pretrained = orig_auto
+
+
+class _IdentityProcessor:
+    def __call__(self, images, return_tensors="pt", **kw):
+        import numpy as np
+        arrs = [np.asarray(im.resize((32, 32)), dtype=np.float32) / 255.0
+                for im in images]
+        px = torch.tensor(np.stack(arrs)).permute(0, 3, 1, 2)
+        return {"pixel_values": (px - 0.5) / 0.5}
+
+
+def test_eval_no_grad_builds_no_graph_but_training_grads_flow(tmp_path):
+    """Regression for the enable_grad -> nullcontext fix: with a TRAINABLE ViT,
+    an outer no_grad() must fully suppress graph construction (validation-loss
+    passes previously recorded a transient graph), while normal training-mode
+    forwards must still produce gradients for the trainable block."""
+    import numpy as np
+    from PIL import Image
+
+    model = _build_tiny_pooled_clip()
+    proc = _IdentityProcessor()
+    rng = np.random.default_rng(0)
+    frames = []
+    for k in range(9):
+        p = tmp_path / f"f{k}.png"
+        Image.fromarray(rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)).save(p)
+        frames.append(p)
+
+    device = torch.device("cpu")
+
+    # eval under no_grad: pooled sequence feature must NOT carry a graph
+    model.eval()
+    with torch.no_grad():
+        feat = model.encode_framepaths_pooled(
+            frames, proc, device, chunk_size=4, pooling="max", io_threads=2)
+    assert not feat.requires_grad and feat.grad_fn is None
+
+    # training mode: grads must flow into the trainable ViT block
+    model.train()
+    feat = model.encode_framepaths_pooled(
+        frames, proc, device, chunk_size=4, pooling="max", io_threads=2)
+    assert feat.requires_grad
+    feat.sum().backward()
+    trainable_grads = [p.grad for p in model.vit.parameters()
+                       if p.requires_grad and p.grad is not None]
+    assert trainable_grads and any(g.abs().sum() > 0 for g in trainable_grads)

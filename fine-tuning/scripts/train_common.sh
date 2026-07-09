@@ -67,7 +67,14 @@ fi
 POOLING="${POOLING:-max}"
 SEED="${SEED:-42}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
-FRAME_CHUNK_SIZE="${FRAME_CHUNK_SIZE:-16}"
+# 64 (was 16): frames per ViT forward. Pooling is chunk-size invariant
+# (loss/grads verified equal to float noise), so this is purely a
+# GPU-utilization knob — larger = fewer, bigger kernels.
+FRAME_CHUNK_SIZE="${FRAME_CHUNK_SIZE:-64}"
+# AMP=1 enables CUDA mixed precision (--amp). Changes numerics slightly
+# (not bit-reproducible vs fp32 history) — A/B against seed noise before
+# adopting for reported results.
+AMP="${AMP:-0}"
 DEVICE="${DEVICE:-cuda}"               # cuda | cpu (validation device; training auto-detects)
 
 # VIT_NAME / BERT_NAME: empty -> per-arch defaults inside the pipeline
@@ -105,6 +112,7 @@ TRAIN_FLAGS=(
     --epoch_qa_eval
 )
 [[ -n "$VALIDATION_CSV" ]] && TRAIN_FLAGS+=(--validation_csv "$VALIDATION_CSV")
+[[ "$AMP" == "1" ]] && TRAIN_FLAGS+=(--amp)
 [[ "$DEVICE" == "cpu" ]] && TRAIN_FLAGS+=(--cpu)
 
 PRED_CSV="$OUTPUT_DIR/preds_${RUN_NAME}.csv"

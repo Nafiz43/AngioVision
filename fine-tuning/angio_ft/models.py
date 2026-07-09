@@ -24,6 +24,7 @@ during training always loads cleanly for evaluation (fixes the historical
 
 from __future__ import annotations
 
+import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import math
@@ -340,7 +341,10 @@ class PooledCLIP(nn.Module):
         inputs = processor(**proc_kwargs)
         pixel_values = inputs["pixel_values"].to(device, non_blocking=True)
 
-        vit_ctx = torch.no_grad() if self._vit_is_frozen() else torch.enable_grad()
+        # nullcontext (not enable_grad) so an outer no_grad() during validation
+        # is respected; under training grad is already enabled, so numerics are
+        # identical (verified bit-identical loss+grads by test_units.py).
+        vit_ctx = torch.no_grad() if self._vit_is_frozen() else contextlib.nullcontext()
         with vit_ctx:
             out = self.vit(pixel_values=pixel_values)  # batch = one clip of T frames
             feats = getattr(out, "pooler_output", None)
@@ -394,7 +398,8 @@ class PooledCLIP(nn.Module):
             return pool_stack(feats, pooling)
 
         running, aux = self._init_running(device, self.vit_hidden, pooling)
-        vit_ctx = torch.no_grad() if self._vit_is_frozen() else torch.enable_grad()
+        # nullcontext (not enable_grad): see _encode_video_clip note.
+        vit_ctx = torch.no_grad() if self._vit_is_frozen() else contextlib.nullcontext()
 
         for i in range(0, len(loaded), chunk_size):
             chunk = loaded[i: i + chunk_size]
@@ -474,7 +479,8 @@ class PooledCLIP(nn.Module):
         tok = tokenizer(
             texts, padding=True, truncation=True, max_length=512, return_tensors="pt"
         ).to(device)
-        text_ctx = torch.no_grad() if self._text_is_frozen() else torch.enable_grad()
+        # nullcontext (not enable_grad): see _encode_video_clip note.
+        text_ctx = torch.no_grad() if self._text_is_frozen() else contextlib.nullcontext()
         with text_ctx:
             tout = self.text_model(**tok)
             tcls = tout.last_hidden_state[:, 0, :]                                  # (B, D_txt)

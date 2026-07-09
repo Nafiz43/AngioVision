@@ -768,10 +768,9 @@ def train(args) -> None:
         if val_loader is not None:
             model.eval()
             v_sum, v_n = 0.0, 0
-            # NOTE: the model re-enables grad inside its ViT forward when the
-            # backbone is trainable, so a blanket no_grad() would be partially
-            # overridden anyway; we simply never call backward and free the
-            # graph batch-by-batch.
+            # The model uses nullcontext (not enable_grad) around its trainable
+            # towers, so this no_grad() fully suppresses graph construction —
+            # no activation retention during the validation pass.
             with torch.no_grad():
                 for vbatch in val_loader:
                     if len(vbatch["text"]) == 0:
