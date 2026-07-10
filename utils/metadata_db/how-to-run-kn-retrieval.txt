@@ -1,5 +1,12 @@
 # How to Run K@N Retrieval Evaluation
 
+> **NOTE (2026-07):** this pipeline has been modularized into
+> `utils/image-matching/` (entry point `run_matching.py`, package `imatch/`)
+> — use that as the maintained code path. Flags, defaults and outputs are
+> identical, so every command below works unchanged after swapping
+> `eval_kn_retrieval.py` → `../image-matching/run_matching.py`.
+> `eval_kn_retrieval.py` stays here for provenance.
+
 All sequence-retrieval experiments in this directory are now driven by a single
 streamlined pipeline: `eval_kn_retrieval.py`. The old per-experiment scripts
 (`eval_k1.py`, `eval_k1_best_image.py`, `eval_k1_best_set_of_images.py`) are fully

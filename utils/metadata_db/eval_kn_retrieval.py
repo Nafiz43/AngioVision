@@ -3,6 +3,10 @@
 K@N Cross-Validated Sequence Retrieval Evaluation — AngioVision DSA
 ====================================================================
 
+NOTE: superseded by the modularized `utils/image-matching/` tool
+(`run_matching.py` + `imatch/` package) — identical flags/defaults/outputs.
+This monolith is kept for provenance; prefer the modular version for new work.
+
 Pipeline
 ────────
   1. Load labeled CSV; exclude 'other' rows; group by angio_run.

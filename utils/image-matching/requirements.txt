@@ -1,0 +1,17 @@
+# Core (always required)
+numpy
+tqdm
+pydicom
+chromadb
+pillow
+
+# Embedding models — HF path (rad-dino / vit-* / any AutoModel ID)
+torch
+transformers
+
+# Embedding models — OpenCLIP aliases only
+# open-clip-torch
+
+# Optional outputs (skipped with a warning when absent)
+matplotlib      # bar chart PNG
+python-docx     # retrieval-examples Word doc
