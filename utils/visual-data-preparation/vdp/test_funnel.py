@@ -52,6 +52,10 @@ def main() -> None:
     # filtered_by_reason sums to filtered total
     assert sum(s01["filtered_by_reason"].values()) == s01["filtered"]
 
+    # passed-total line = processed + skipped (clear on skip-existing re-runs)
+    passed = by[("sequence_filter", "=> PASSED the filter (extracted + already on disk)")]
+    assert passed["sequences"] == s01["processed"] + s01["skipped_existing"] == 450
+
     # image filter: non-DSA reasons shown, potential_dsa excluded from breakdown
     non_dsa_metrics = [k[1] for k in by if k[0] == "image_filter" and "reason" in k[1]]
     assert any("no_mask_detected" in m for m in non_dsa_metrics)

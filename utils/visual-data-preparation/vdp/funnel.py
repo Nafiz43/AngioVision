@@ -75,10 +75,17 @@ def compose_rows(steps: Dict[str, Any]) -> List[Dict[str, Any]]:
             add("sequence_filter", f"filtered: {reason}", cnt,
                 by_reason_frames.get(reason, ""))
     add("sequence_filter", "filtered TOTAL", s01.get("filtered", ""))
-    add("sequence_filter", "skipped (already extracted)", s01.get("skipped_existing", ""))
     add("sequence_filter", "errors (extraction)", s01.get("errors", ""))
-    add("sequence_filter", "=> PASSED -> extracted this run",
-        s01.get("processed", ""), s01.get("extracted_frames", ""))
+    # Passed the filter = newly extracted + already-on-disk (skip-existing).
+    processed, skipped = s01.get("processed"), s01.get("skipped_existing")
+    passed_total = (processed + skipped
+                    if isinstance(processed, int) and isinstance(skipped, int) else "")
+    add("sequence_filter", "=> PASSED the filter (extracted + already on disk)",
+        passed_total)
+    add("sequence_filter", "   - extracted this run",
+        processed if processed is not None else "", s01.get("extracted_frames", ""))
+    add("sequence_filter", "   - already extracted (skipped)",
+        skipped if skipped is not None else "")
 
     # ── IMAGE-BASED DSA FILTER (step 06) ─────────────────────────────────
     add("image_filter", "sequences classified", s06.get("sequences", ""))
