@@ -20,6 +20,22 @@ from pathlib import Path
 PIPELINE_DIR = Path(__file__).resolve().parent
 LOCAL_CONFIG_PATH = PIPELINE_DIR / "config.local.json"
 
+# Directory names step 06 splits sequences into (mirror s06_dsa_split).
+POTENTIAL_DSA_DIRNAME = "00_potential_dsas"
+POTENTIAL_NON_DSA_DIRNAME = "01_potential_non_dsas"
+
+
+def dequote(raw: str) -> str:
+    """Strip one pair of surrounding quotes, e.g. --set p="'/a/b'" -> /a/b.
+
+    Without this a quoted path is not absolute (starts with a quote), so
+    Path() silently joins it onto the pipeline dir.
+    """
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+        raw = raw[1:-1].strip()
+    return raw
+
 
 @dataclass
 class PipelineConfig:
@@ -95,6 +111,12 @@ class PipelineConfig:
     # ── Parallelism ──────────────────────────────────────────────────────
     workers: int = max(1, (os.cpu_count() or 8) - 1)
 
+    def dsa_sequences_root(self) -> str:
+        """Potential-DSA subset produced by step 06 — the working set that
+        every post-split step (02/03/04) analyses instead of the full
+        output_root."""
+        return str(Path(self.dsa_split_root) / POTENTIAL_DSA_DIRNAME)
+
     # Fields the interactive editor offers to change, in display order.
     EDITABLE: tuple = field(
         default=(
@@ -113,6 +135,8 @@ def load_config() -> PipelineConfig:
         valid = {f.name for f in fields(PipelineConfig)}
         for key, value in overrides.items():
             if key in valid:
+                if isinstance(value, str):
+                    value = dequote(value)  # heal any quote-poisoned saved paths
                 setattr(cfg, key, value)
     return cfg
 

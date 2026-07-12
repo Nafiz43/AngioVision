@@ -47,10 +47,8 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
+from config import POTENTIAL_DSA_DIRNAME, POTENTIAL_NON_DSA_DIRNAME
 from vdp.common import IMAGE_EXTENSIONS, find_sequence_dirs, write_csv
-
-POTENTIAL_DSA_DIRNAME = "00_potential_dsas"
-POTENTIAL_NON_DSA_DIRNAME = "01_potential_non_dsas"
 
 # Pixels at or below this value are treated as black border and excluded.
 BLACK_THRESHOLD = 10

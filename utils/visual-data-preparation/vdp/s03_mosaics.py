@@ -108,7 +108,7 @@ def _process_sequence(seq_dir_str: str, tile: int, max_cols: int,
 
 def run(cfg, run_dir: Path) -> Dict:
     step_dir = run_dir / "03_mosaics"
-    seq_dirs = find_sequence_dirs(Path(cfg.output_root))
+    seq_dirs = find_sequence_dirs(Path(cfg.dsa_split_root))  # both split dirs (DSA + non-DSA)
 
     results: List[Dict] = []
     with tqdm(total=len(seq_dirs), unit="seq", desc="[03] Mosaics") as pbar:

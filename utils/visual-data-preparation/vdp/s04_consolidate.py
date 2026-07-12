@@ -138,7 +138,7 @@ def _sort_key(sd: Optional[int], at: Optional[int], cd: Optional[int]
 
 def run(cfg, run_dir: Path) -> Dict:
     step_dir = run_dir / "04_consolidated_metadata"
-    output_root = Path(cfg.output_root)
+    output_root = Path(cfg.dsa_sequences_root())  # potential-DSA subset (step 06)
 
     metadata_files = [str(p) for p in sorted(output_root.rglob("metadata.csv"))]
 

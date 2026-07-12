@@ -7,13 +7,17 @@ Runs the DICOM visual-data-preparation stages sequentially:
 
     00  consistency check        (read-only QA on the raw input tree)
     01  process sequences        (extract frames + metadata.csv per SOP)
+    06  DSA split                (frame-based mask detection; copies every
+                                  sequence into 00_potential_dsas/ or
+                                  01_potential_non_dsas/ under dsa_split_root)
     02  frame stats              (frame-count distribution + plots)
     03  mosaics                  (mosaic.png per sequence + sizes CSV)
     04  consolidate metadata     (hub CSV + instances distribution)
     05  accession check          (reports list vs consolidated metadata)
-    06  DSA split                (frame-based mask detection; copies every
-                                  sequence into 00_potential_dsas/ or
-                                  01_potential_non_dsas/ under dsa_split_root)
+
+Steps 02-05 run on the potential-DSA subset produced by 06, not the full
+extracted tree — the split happens immediately after extraction so every
+downstream stage only touches likely-DSA sequences.
 
 On start you're offered the chance to fix the config (input dir, output
 dir, ...) — changes are saved to config.local.json (gitignored). Every
@@ -44,20 +48,23 @@ from pathlib import Path
 PIPELINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PIPELINE_DIR))
 
-from config import PipelineConfig, load_config, save_local_overrides  # noqa: E402
+from config import PipelineConfig, dequote, load_config, save_local_overrides  # noqa: E402
 from vdp import (  # noqa: E402
     s00_consistency_check, s01_process_sequences, s02_stats_gen,
     s03_mosaics, s04_consolidate, s05_accession_check, s06_dsa_split,
 )
 
+# Execution order (not id order): 06 runs right after 01 so the DSA split
+# happens on the freshly extracted sequences, and 02-05 then analyse only the
+# potential-DSA subset (see cfg.dsa_sequences_root()).
 STEPS = [
     ("00", "DICOM consistency check", s00_consistency_check.run),
     ("01", "Process DICOM sequences", s01_process_sequences.run),
+    ("06", "DSA split (frame-based mask detection)", s06_dsa_split.run),
     ("02", "Statistics generation", s02_stats_gen.run),
     ("03", "Mosaics + sizes", s03_mosaics.run),
     ("04", "Consolidate metadata (+ instances stats)", s04_consolidate.run),
     ("05", "Accession cross-check", s05_accession_check.run),
-    ("06", "DSA split (frame-based mask detection)", s06_dsa_split.run),
     # 00-post (outlier mosaics + no-visual accessions) runs automatically
     # after the steps above whenever step 00 is selected — its inputs are
     # produced by steps 02/03/05, so it cannot run at position 00.
@@ -70,7 +77,7 @@ def _coerce(current, raw: str):
         return raw.strip().lower() in ("1", "true", "yes", "y")
     if isinstance(current, int):
         return int(raw)
-    return raw
+    return dequote(raw)
 
 
 def interactive_config_fix(cfg: PipelineConfig) -> PipelineConfig:

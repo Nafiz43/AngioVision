@@ -36,7 +36,7 @@ INSTANCES_THRESHOLD = 16
 
 def run(cfg, run_dir: Path) -> Dict:
     step_dir = run_dir / STEP_DIRNAME
-    output_root = Path(cfg.output_root)
+    output_root = Path(cfg.dsa_sequences_root())  # potential-DSA subset (step 06)
 
     rows = []
     for seq_dir in find_sequence_dirs(output_root):
