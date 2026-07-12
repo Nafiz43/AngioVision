@@ -125,8 +125,8 @@ def build_train_argparser() -> argparse.ArgumentParser:
     ap.set_defaults(frames_20pct=False)
     ap.add_argument("--frame_chunk_size", type=int, default=16)
     ap.add_argument("--min_frames_per_sequence", type=int, default=1)
-    ap.add_argument("--max_sequences_per_study", type=int, default=None)
-    ap.add_argument("--max_frames_per_sequence", type=int, default=32)
+    ap.add_argument("--max_sequences_per_study", type=int, default=16)
+    ap.add_argument("--max_frames_per_sequence", type=int, default=16)
 
     # ── ViT fine-tuning ────────────────────────────────────────────────────
     ap.add_argument("--freeze_vision", action="store_true")
