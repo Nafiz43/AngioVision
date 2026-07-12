@@ -186,7 +186,7 @@ def build_toy_dataset(num_sequences: int, sequence_length: int) -> List[StudySam
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minimal multimodal fine-tuning demo.")
-    parser.add_argument("--epochs", type=int, default=20, help="Number of toy training epochs.")
+    parser.add_argument("--epochs", type=int, default=25, help="Number of toy training epochs.")
     parser.add_argument("--embedding-dim", type=int, default=16, help="Shared embedding dimension.")
     parser.add_argument("--num-sequences", type=int, default=3, help="Number of visual sequences per study.")
     parser.add_argument("--sequence-length", type=int, default=4, help="Length of each sequence.")

@@ -653,7 +653,7 @@ def build_argparser():
     ap.add_argument("--embed_dim", type=int, default=256)
 
     ap.add_argument("--batch_size", type=int, default=2)
-    ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument("--epochs", type=int, default=25)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight_decay", type=float, default=0.01)
 

@@ -357,7 +357,7 @@ def main() -> None:
     parser.add_argument("--output_dir", type=Path, default=None)
 
     # Training
-    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-6)

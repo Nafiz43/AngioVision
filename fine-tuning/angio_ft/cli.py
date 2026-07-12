@@ -75,7 +75,7 @@ def build_train_argparser() -> argparse.ArgumentParser:
 
     # ── training ───────────────────────────────────────────────────────────
     ap.add_argument("--batch_size", type=int, default=2)
-    ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument("--epochs", type=int, default=25)
     ap.add_argument("--vision_backbone_lr", type=float, default=1e-5)
     ap.add_argument("--head_lr", type=float, default=1e-4)
     ap.add_argument("--text_lr", type=float, default=5e-5)

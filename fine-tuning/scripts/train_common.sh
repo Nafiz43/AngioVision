@@ -66,7 +66,7 @@ VALIDATION_CSV="${VALIDATION_CSV:-}"   # empty -> central settings.py VALIDATION
 OUT_DIR="${OUT_DIR:-/data/Deep_Angiography/AngioVision/fine-tuning/checkpoints}"
 OUTPUT_DIR="${OUTPUT_DIR:-/data/Deep_Angiography/AngioVision/fine-tuning/output}"
 
-EPOCHS="${EPOCHS:-5}"
+EPOCHS="${EPOCHS:-25}"
 BATCH_SIZE="${BATCH_SIZE:-2}"
 VAL_FRACTION="${VAL_FRACTION:-0.1}"
 # xclip models temporality inside the vision tower (cross-frame attention),

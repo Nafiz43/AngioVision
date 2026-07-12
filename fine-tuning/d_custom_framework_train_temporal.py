@@ -1210,7 +1210,7 @@ def build_argparser():
     ap.add_argument("--embed_dim", type=int, default=256)
 
     ap.add_argument("--batch_size", type=int, default=2)
-    ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument("--epochs", type=int, default=25)
 
     ap.add_argument("--vision_backbone_lr", type=float, default=1e-5)
     ap.add_argument("--head_lr", type=float, default=1e-4)
@@ -2433,7 +2433,7 @@ if __name__ == "__main__":
 #     ap.add_argument("--embed_dim", type=int, default=256)
 
 #     ap.add_argument("--batch_size", type=int, default=2)
-#     ap.add_argument("--epochs", type=int, default=1)
+#     ap.add_argument("--epochs", type=int, default=25)
 
 #     # Separate LRs for stability/efficiency
 #     ap.add_argument("--vision_backbone_lr", type=float, default=1e-5)
