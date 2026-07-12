@@ -28,6 +28,15 @@ from torch.utils.data import Dataset
 from .common import find_frame_files_for_sop, parse_sop_instance_uids
 
 
+def random_keep_fraction(items: List[Any], fraction: float, rng: random.Random) -> List[Any]:
+    """Randomly keep ~`fraction` of items (at least 1), preserving order."""
+    if fraction >= 1.0 or len(items) <= 1:
+        return items
+    k = max(1, int(round(len(items) * fraction)))
+    keep = sorted(rng.sample(range(len(items)), k))
+    return [items[i] for i in keep]
+
+
 class StudyDataset(Dataset):
     def __init__(
         self,
@@ -44,6 +53,8 @@ class StudyDataset(Dataset):
         drop_missing_reports: bool = True,
         report_sampling: str = "uniform",
         report_sampling_seed: int = 42,
+        frame_keep_fraction: float = 1.0,
+        frame_keep_seed: int = 42,
     ):
         self.base_frames_dir = Path(base_frames_dir)
         self.report_text_col = report_text_col
@@ -56,6 +67,8 @@ class StudyDataset(Dataset):
         self.drop_missing_reports = drop_missing_reports
         self.report_sampling = report_sampling
         self.report_sampling_seed = int(report_sampling_seed)
+        self.frame_keep_fraction = float(frame_keep_fraction)
+        self._frame_keep_rng = random.Random(int(frame_keep_seed))
 
         if self.report_sampling != "uniform":
             raise ValueError(
@@ -121,6 +134,11 @@ class StudyDataset(Dataset):
                         self.base_frames_dir, acc, sop
                     )
                 frame_files = list(self._frame_cache[key])  # shallow copy for safety
+
+                # Random frame subsample (e.g. --20% keeps a random fifth)
+                frame_files = random_keep_fraction(
+                    frame_files, self.frame_keep_fraction, self._frame_keep_rng
+                )
 
                 # Uniform temporal subsample preserving order
                 if (

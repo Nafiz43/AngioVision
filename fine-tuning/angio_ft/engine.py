@@ -450,7 +450,11 @@ def train(args) -> None:
         drop_missing_reports=not args.keep_missing_reports,
         report_sampling=args.report_sampling,
         report_sampling_seed=args.report_sampling_seed,
+        frame_keep_fraction=0.2 if getattr(args, "frames_20pct", False) else 1.0,
+        frame_keep_seed=args.seed,
     )
+    if getattr(args, "frames_20pct", False):
+        print("[INFO] --20% active: training on a random 20% of frames per sequence.")
 
     # ── optional study-level train/val split (for per-epoch validation loss) ──
     train_data: torch.utils.data.Dataset = dataset

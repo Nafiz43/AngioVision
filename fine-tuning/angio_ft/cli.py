@@ -116,6 +116,13 @@ def build_train_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--cpu", action="store_true")
 
     # ── sequence / frame limits ────────────────────────────────────────────
+    frac = ap.add_mutually_exclusive_group()
+    frac.add_argument("--20%", dest="frames_20pct", action="store_true",
+                      help="Train on a random 20%% of frames per sequence "
+                           "(80%% randomly skipped, seeded by --seed).")
+    frac.add_argument("--full-data", dest="frames_20pct", action="store_false",
+                      help="Train on all frames (default).")
+    ap.set_defaults(frames_20pct=False)
     ap.add_argument("--frame_chunk_size", type=int, default=16)
     ap.add_argument("--min_frames_per_sequence", type=int, default=1)
     ap.add_argument("--max_sequences_per_study", type=int, default=None)

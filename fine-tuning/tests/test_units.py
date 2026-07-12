@@ -638,3 +638,21 @@ def test_eval_no_grad_builds_no_graph_but_training_grads_flow(tmp_path):
     trainable_grads = [p.grad for p in model.vit.parameters()
                        if p.requires_grad and p.grad is not None]
     assert trainable_grads and any(g.abs().sum() > 0 for g in trainable_grads)
+
+
+def test_random_keep_fraction():
+    import random as _random
+    from angio_ft.data import random_keep_fraction
+
+    items = list(range(100))
+    kept = random_keep_fraction(items, 0.2, _random.Random(42))
+    assert len(kept) == 20
+    assert kept == sorted(kept)                      # order preserved
+    assert set(kept) <= set(items)
+    # deterministic under same seed
+    assert kept == random_keep_fraction(items, 0.2, _random.Random(42))
+    # full-data / degenerate cases: untouched
+    assert random_keep_fraction(items, 1.0, _random.Random(0)) == items
+    assert random_keep_fraction([1], 0.2, _random.Random(0)) == [1]
+    # never drops to zero
+    assert len(random_keep_fraction([1, 2], 0.2, _random.Random(0))) == 1
