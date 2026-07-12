@@ -419,11 +419,16 @@ def run(cfg, run_dir: Path) -> Dict:
               results)
 
     n_dsa = sum(1 for r in results if r["verdict"] == "potential_dsa")
+    verdict_breakdown: Dict[str, int] = {}
+    for r in results:
+        v = r["verdict"]
+        verdict_breakdown[v] = verdict_breakdown.get(v, 0) + 1
     summary = {
         "thresholds_source": thresholds_source,
         "sequences": len(results),
         "potential_dsas": n_dsa,
         "potential_non_dsas": len(results) - n_dsa,
+        "verdict_breakdown": verdict_breakdown,
         "copy_failures": sum(1 for r in results if not r["copied"]),
         "dsa_dir": str(dsa_root),
         "non_dsa_dir": str(non_dsa_root),

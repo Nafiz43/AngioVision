@@ -51,7 +51,7 @@ sys.path.insert(0, str(PIPELINE_DIR))
 
 from config import PipelineConfig, dequote, load_config, save_local_overrides  # noqa: E402
 from vdp import (  # noqa: E402
-    s00_consistency_check, s01_process_sequences, s02_stats_gen,
+    funnel, s00_consistency_check, s01_process_sequences, s02_stats_gen,
     s03_mosaics, s04_consolidate, s05_accession_check, s06_dsa_split,
 )
 
@@ -216,6 +216,15 @@ def main() -> int:
     (run_dir / "pipeline_manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
+
+    # Story-like filtering funnel across all stages (reads the step summaries).
+    try:
+        manifest["funnel"] = funnel.build(manifest["steps"], cfg, run_dir)
+        (run_dir / "pipeline_manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"[funnel] FAILED: {type(e).__name__}: {e}", file=sys.stderr)
 
     print(f"{'=' * 64}")
     for step_id in [s[0] for s in STEPS] + ["00-post"]:

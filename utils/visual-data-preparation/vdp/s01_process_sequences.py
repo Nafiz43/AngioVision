@@ -49,12 +49,9 @@ def _process_leaf_dir(
         uid = get_tag_str(ds, "SOPInstanceUID") or None
         acc = get_tag_str(ds, "AccessionNumber")
 
-        if skip_existing and uid and dest_already_exists(output_root, acc, uid):
-            out["skipped"].append({"file": str(f), "accession_number": acc,
-                                   "sop_instance_uid": uid})
-            del ds
-            continue
-
+        # Evaluate the eligibility filter FIRST — before the skip-existing
+        # check — so every file gets a filter verdict for funnel accounting,
+        # even on a re-run where the frames are already extracted.
         try:
             ok, reason = passes_eligibility_filter(ds, min_frames, mode)
         except Exception as fe:
@@ -71,6 +68,13 @@ def _process_leaf_dir(
                 "positioner": get_tag_str(ds, "PositionerMotion"),
                 "num_frames": get_tag_str(ds, "NumberOfFrames"),
             })
+            del ds
+            continue
+
+        # Passed the filter — skip re-extraction if already on disk.
+        if skip_existing and uid and dest_already_exists(output_root, acc, uid):
+            out["skipped"].append({"file": str(f), "accession_number": acc,
+                                   "sop_instance_uid": uid})
             del ds
             continue
 
@@ -148,10 +152,33 @@ def run(cfg, run_dir: Path) -> Dict:
               ["file", "accession_number", "sop_instance_uid"], merged["skipped"])
     write_csv(step_dir / "errors.csv", ["file", "stage", "reason"], merged["errors"])
 
+    # Per-reason funnel breakdown (short-circuit filter → each file has exactly
+    # one reason = the first gate it failed).
+    def _nframes(s: str) -> int:
+        try:
+            return int(str(s).strip()) if str(s).strip() else 1
+        except (ValueError, TypeError):
+            return 1
+
+    filtered_by_reason: Dict[str, int] = {}
+    filtered_frames_by_reason: Dict[str, int] = {}
+    for r in merged["filtered"]:
+        reason = r["reason"]
+        filtered_by_reason[reason] = filtered_by_reason.get(reason, 0) + 1
+        filtered_frames_by_reason[reason] = (
+            filtered_frames_by_reason.get(reason, 0) + _nframes(r.get("num_frames"))
+        )
+
+    extracted_frames = sum(int(r.get("frame_count", 0) or 0) for r in merged["processed"])
+
     summary = {
         "mode": cfg.mode,
+        "examined": sum(len(merged[k]) for k in ("processed", "filtered", "skipped", "errors")),
         "processed": len(merged["processed"]),
+        "extracted_frames": extracted_frames,
         "filtered": len(merged["filtered"]),
+        "filtered_by_reason": filtered_by_reason,
+        "filtered_frames_by_reason": filtered_frames_by_reason,
         "skipped_existing": len(merged["skipped"]),
         "errors": len(merged["errors"]),
         "output_root": str(output_root),

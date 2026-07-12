@@ -47,11 +47,17 @@ def _scan_leaf_dir(leaf_str: str) -> List[Dict]:
                             "accession": "", "sop": "", "study": "",
                             "error": f"{type(e).__name__}: {e}"})
             continue
+        nof = get_tag_str(ds, "NumberOfFrames")
+        try:
+            n_frames = int(nof) if nof else 1  # absent => single-frame instance
+        except (ValueError, TypeError):
+            n_frames = 1
         records.append({
             "file": str(f), "readable": True,
             "accession": get_tag_str(ds, "AccessionNumber"),
             "sop": get_tag_str(ds, "SOPInstanceUID"),
             "study": get_tag_str(ds, "StudyInstanceUID"),
+            "num_frames": n_frames,
             "error": "",
         })
         del ds
@@ -107,8 +113,10 @@ def run(cfg, run_dir: Path) -> Dict:
 
     n_dup_uids = len({r["sop_instance_uid"] for r in duplicate_rows})
     n_mismatch = len({r["accession_number"] for r in mismatch_rows})
+    total_frames = sum(r.get("num_frames", 0) for r in records if r["readable"])
     summary = {
         "dicom_files": len(records),
+        "total_frames": total_frames,
         "unreadable": len(unreadable),
         "missing_accession": len(no_accession),
         "duplicate_sop_uids": n_dup_uids,
