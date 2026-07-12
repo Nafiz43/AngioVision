@@ -47,17 +47,19 @@ PYTHON="${PYTHON:-python3}"
 
 # Consolidated metadata from the visual-data-preparation run (step 04). It is
 # generated from the potential-DSA subset, so it lists exactly the sequences
-# under BASE_FRAMES_DIR below. Populated by copying the run's
-# 04_consolidated_metadata/consolidated_metadata_ALL_Sequences.csv here.
+# under BASE_FRAMES_DIR below. Copied here from the run's
+# 04_consolidated_metadata/consolidated_metadata_ALL_Sequences.csv with its
+# accession column renamed AccessionNumber -> "Anon Acc #" so it joins the
+# reports CSV (which keys on "Anon Acc #").
 META_CSV="${META_CSV:-/data/Deep_Angiography/DSA_Split/consolidated_metadata_ALL_Sequences.csv}"
-REPORTS_CSV="${REPORTS_CSV:-/data/Deep_Angiography/AngioVision/fine-tuning/cleaned_report_list.csv}"
+REPORTS_CSV="${REPORTS_CSV:-/data/Deep_Angiography/Reports/Report_List_v01_01_cleaned.csv}"
 # Train on the potential-DSA frames produced by the split (step 06). Layout is
 # <acc>/<sop>/frames/, which is what find_frame_files_for_sop expects.
 BASE_FRAMES_DIR="${BASE_FRAMES_DIR:-/data/Deep_Angiography/DSA_Split/00_potential_dsas}"
-# Accession column shared by META_CSV and REPORTS_CSV. The step-04 consolidated
-# CSV uses "AccessionNumber"; override if your reports CSV keys accessions under
-# a different header (e.g. "Anon Acc #").
-ANON_COL="${ANON_COL:-AccessionNumber}"
+# Accession column shared by META_CSV and REPORTS_CSV (both use "Anon Acc #").
+ANON_COL="${ANON_COL:-Anon Acc #}"
+# Report text column in REPORTS_CSV to train on (cleaned, PHI-removed variant).
+REPORT_TEXT_COL="${REPORT_TEXT_COL:-cleaned_radrpt}"
 VAL_DATA_DIR="${VAL_DATA_DIR:-/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed}"
 VALIDATION_CSV="${VALIDATION_CSV:-}"   # empty -> central settings.py VALIDATION_CSV
 
@@ -110,6 +112,7 @@ TRAIN_FLAGS=(
     --reports_csv "$REPORTS_CSV"
     --base_frames_dir "$BASE_FRAMES_DIR"
     --anon_col "$ANON_COL"
+    --report_text_col "$REPORT_TEXT_COL"
     --val_data_dir "$VAL_DATA_DIR"
     --out_dir "$OUT_DIR"
     --output_dir "$OUTPUT_DIR"
