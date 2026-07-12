@@ -36,17 +36,16 @@ def dequote(raw: str) -> str:
 class PipelineConfig:
     # ── Shared inputs ─────────────────────────────────────────────────────
     # Ground-truth validation CSV (SOPInstanceUID, Question, Answer[, AccessionNumber]).
-    # 2026-06-17 snapshot, curated *_filtered version — keep in sync with
+    # Validation_VDP snapshot (has generated mosaics) — keep in sync with
     # configs/settings.py:VALIDATION_CSV.
     validation_csv: str = (
-        "/data/Deep_Angiography/VLM_Validation_Data_2026_06_17/"
+        "/data/Deep_Angiography/Validation_VDP/"
         "VLM_Validation_Data_2026_06_17_v01_filtered.csv"
     )
-    # Tree of sequence dirs, each holding mosaic.png + metadata.csv.
-    mosaics_root: str = (
-        "/data/Deep_Angiography/VLM_Validation_Data_2026_06_17/"
-        "VLM_Validation_Data_2026_06_17/DICOM_Sequence_Processed"
-    )
+    # Validation root; build_sequence_index walks it recursively for sequence
+    # dirs (mosaic.png + metadata.csv). Mosaics live under DSA_Split/<split>/
+    # <accession>/<SOP>/.
+    mosaics_root: str = "/data/Deep_Angiography/Validation_VDP"
 
     # ── Step 01: VLM baselines (Ollama) ──────────────────────────────────
     # Comma-separated Ollama model tags to benchmark.
