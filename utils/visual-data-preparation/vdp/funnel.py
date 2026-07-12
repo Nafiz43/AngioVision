@@ -52,8 +52,8 @@ def compose_rows(steps: Dict[str, Any]) -> List[Dict[str, Any]]:
                      "sequences": seqs, "frames": frames})
 
     # ── RAW INPUT (step 00) ──────────────────────────────────────────────
-    add("raw_input", "DICOM instances (files)", s00.get("dicom_files", ""),
-        s00.get("total_frames", ""))
+    add("raw_input", "sequences (1 DICOM file = 1 sequence)",
+        s00.get("dicom_files", ""), s00.get("total_frames", ""))
     add("raw_input", "unreadable", s00.get("unreadable", ""))
     add("raw_input", "missing accession number", s00.get("missing_accession", ""))
     add("raw_input", "duplicate SOP UIDs", s00.get("duplicate_sop_uids", ""))
@@ -88,9 +88,12 @@ def compose_rows(steps: Dict[str, Any]) -> List[Dict[str, Any]]:
         skipped if skipped is not None else "")
 
     # ── IMAGE-BASED DSA FILTER (step 06) ─────────────────────────────────
-    add("image_filter", "sequences classified", s06.get("sequences", ""))
-    add("image_filter", "potential DSA", s06.get("potential_dsas", ""))
-    add("image_filter", "potential non-DSA", s06.get("potential_non_dsas", ""))
+    add("image_filter", "sequences classified", s06.get("sequences", ""),
+        s06.get("frames", ""))
+    add("image_filter", "potential DSA", s06.get("potential_dsas", ""),
+        s06.get("potential_dsa_frames", ""))
+    add("image_filter", "potential non-DSA", s06.get("potential_non_dsas", ""),
+        s06.get("potential_non_dsa_frames", ""))
     for verdict, cnt in (s06.get("verdict_breakdown", {}) or {}).items():
         if verdict != "potential_dsa":
             add("image_filter", f"  non-DSA reason: {verdict}", cnt)
@@ -102,7 +105,8 @@ def _fmt(v: Any) -> str:
     return f"{v:,}" if isinstance(v, int) else ("" if v == "" else str(v))
 
 
-def _render_text(rows: List[Dict[str, Any]], paths: Dict[str, str]) -> str:
+def _render_text(rows: List[Dict[str, Any]], paths: Dict[str, str],
+                 header_lines: List[str] = None) -> str:
     bar = "=" * 72
     stage_titles = {
         "raw_input": "RAW INPUT  (step 00 — header scan)",
@@ -110,6 +114,9 @@ def _render_text(rows: List[Dict[str, Any]], paths: Dict[str, str]) -> str:
         "image_filter": "IMAGE-BASED DSA FILTER  (step 06 — frame mask detection)",
     }
     out = [bar, "  VDP RUN — FILTERING FUNNEL / STORY", bar]
+    for hl in (header_lines or []):
+        out.append(f"  {hl}")
+    out.append("  (counts are SEQUENCES; frame totals shown in parentheses)")
     seen_stage = None
     for r in rows:
         if r["stage"] != seen_stage:
@@ -145,16 +152,16 @@ def build(steps: Dict[str, Any], cfg, run_dir: Path) -> Dict[str, Any]:
         "consolidated metadata": s04.get("consolidated_csv", "(step 04 did not run)"),
         "per-stage reports": str(run_dir),
     }
-    text = _render_text(rows, paths)
+    header = [
+        f"data type   : {getattr(cfg, 'data_type', 'training').upper()}",
+        f"input root  : {cfg.input_root}",
+    ]
 
     report_txt = run_dir / "vdp_funnel_report.txt"
-    report_txt.write_text(text, encoding="utf-8")
     write_csv(run_dir / "vdp_funnel_report.csv",
               ["stage", "metric", "sequences", "frames"], rows)
     paths["this report"] = str(report_txt)
-
-    # reprint with the report path now included
-    text = _render_text(rows, paths)
+    text = _render_text(rows, paths, header)
     report_txt.write_text(text, encoding="utf-8")
     print(text)
     return {"rows": len(rows), "report_txt": str(report_txt)}

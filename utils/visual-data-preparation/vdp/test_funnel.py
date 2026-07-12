@@ -25,7 +25,9 @@ STEPS = {
         "filtered": 550, "skipped_existing": 50, "errors": 0,
         "processed": 400, "extracted_frames": 24900}},
     "06": {"status": "ok", "summary": {
-        "sequences": 450, "potential_dsas": 300, "potential_non_dsas": 150,
+        "sequences": 450, "frames": 22500,
+        "potential_dsas": 300, "potential_dsa_frames": 15000,
+        "potential_non_dsas": 150, "potential_non_dsa_frames": 7500,
         "verdict_breakdown": {"potential_dsa": 300, "no_mask_detected": 140,
                               "skipped_all_black": 10},
         "dsa_dir": "/x/00_potential_dsas", "non_dsa_dir": "/x/01_potential_non_dsas"}},
@@ -36,9 +38,9 @@ def main() -> None:
     rows = compose_rows(STEPS)
     by = {(r["stage"], r["metric"]): r for r in rows}
 
-    # raw input carried through
-    assert by[("raw_input", "DICOM instances (files)")]["sequences"] == 1000
-    assert by[("raw_input", "DICOM instances (files)")]["frames"] == 50000
+    # raw input carried through (sequences + frames both present)
+    seq_row = by[("raw_input", "sequences (1 DICOM file = 1 sequence)")]
+    assert seq_row["sequences"] == 1000 and seq_row["frames"] == 50000
     assert by[("raw_input", "duplicate SOP UIDs")]["sequences"] == 30
 
     # every filter reason present with its frame count
@@ -56,7 +58,9 @@ def main() -> None:
     passed = by[("sequence_filter", "=> PASSED the filter (extracted + already on disk)")]
     assert passed["sequences"] == s01["processed"] + s01["skipped_existing"] == 450
 
-    # image filter: non-DSA reasons shown, potential_dsa excluded from breakdown
+    # image filter: sequences AND frames shown; non-DSA reasons listed
+    assert by[("image_filter", "potential DSA")]["sequences"] == 300
+    assert by[("image_filter", "potential DSA")]["frames"] == 15000
     non_dsa_metrics = [k[1] for k in by if k[0] == "image_filter" and "reason" in k[1]]
     assert any("no_mask_detected" in m for m in non_dsa_metrics)
     assert not any("potential_dsa" in m for m in non_dsa_metrics)

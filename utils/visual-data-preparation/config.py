@@ -39,11 +39,27 @@ def dequote(raw: str) -> str:
 
 @dataclass
 class PipelineConfig:
-    # ── Core paths ────────────────────────────────────────────────────────
+    # ── Data type ─────────────────────────────────────────────────────────
+    # "training" (default) uses the core paths below. "validation" swaps
+    # input/output/split roots to the val_* paths further down (see
+    # apply_data_type) so the two never share output directories.
+    data_type: str = "training"
+
+    # ── Core paths (training) ─────────────────────────────────────────────
     # Raw DICOM tree to ingest.
     input_root: str = "/data/Deep_Angiography/rawdata"
     # Where extracted sequences (frames/ + metadata.csv per SOP) are written.
     output_root: str = str(PIPELINE_DIR / "runs" / "extracted_sequences")
+
+    # ── Validation-mode paths (used when data_type == "validation") ───────
+    # Independent of the training paths so a validation run never writes into
+    # the training output tree. Override individually with --set val_*.
+    val_input_root: str = (
+        "/data/Deep_Angiography/VLM_Validation_Data_2026_06_17/"
+        "Validation_DICOM_Data_2026_06_17_v01"
+    )
+    val_output_root: str = "/data/Deep_Angiography/Validation_VDP/DICOM_Sequence_Processed"
+    val_dsa_split_root: str = "/data/Deep_Angiography/Validation_VDP/DSA_Split"
 
     # ── Step 01: extraction filter ────────────────────────────────────────
     # "strict"  = RadiationSetting GR + SeriesDescription DSA/CO 2
@@ -110,6 +126,17 @@ class PipelineConfig:
 
     # ── Parallelism ──────────────────────────────────────────────────────
     workers: int = max(1, (os.cpu_count() or 8) - 1)
+
+    def apply_data_type(self) -> None:
+        """When data_type == 'validation', swap input/output/split roots to the
+        val_* paths so validation outputs land in a separate directory tree.
+        No-op for training. Calibration (dsa_calibration_roots / thresholds
+        cache) is intentionally shared — the DSA detector uses one calibration
+        for both data types."""
+        if self.data_type == "validation":
+            self.input_root = self.val_input_root
+            self.output_root = self.val_output_root
+            self.dsa_split_root = self.val_dsa_split_root
 
     def dsa_sequences_root(self) -> str:
         """Potential-DSA subset produced by step 06 — the working set that

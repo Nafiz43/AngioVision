@@ -131,6 +131,11 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Steps: " + ", ".join(f"{s[0]} ({s[1]})" for s in STEPS),
     )
+    parser.add_argument("--data_type", choices=["training", "validation"],
+                        default="training",
+                        help="Which dataset to process. 'validation' swaps input/output/"
+                             "split roots to the val_* paths so it runs independently and "
+                             "stores results in a separate directory tree from training.")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="Non-interactive: accept config as-is, run selected steps")
     parser.add_argument("--skip", nargs="+", default=[], choices=STEP_IDS,
@@ -152,6 +157,11 @@ def main() -> int:
     if args.set:
         save_local_overrides(cfg)
 
+    # Data type is per-invocation (NOT persisted to config.local.json). Applied
+    # after --set so val_* overrides are honoured, then it swaps the roots.
+    cfg.data_type = args.data_type
+    cfg.apply_data_type()
+
     if not args.yes:
         cfg = interactive_config_fix(cfg)
 
@@ -168,12 +178,16 @@ def main() -> int:
             selected = interactive_step_selection()
 
     run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = PIPELINE_DIR / "runs" / f"run_{run_ts}"
+    run_dir = PIPELINE_DIR / "runs" / cfg.data_type / f"run_{run_ts}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'=' * 64}")
-    print(f"  Run dir : {run_dir}")
-    print(f"  Steps   : {', '.join(s for s in STEP_IDS if s in selected) or 'none'}")
+    print(f"  Data type   : {cfg.data_type.upper()}")
+    print(f"  Input root  : {cfg.input_root}")
+    print(f"  Output root : {cfg.output_root}")
+    print(f"  Split root  : {cfg.dsa_split_root}")
+    print(f"  Run dir     : {run_dir}")
+    print(f"  Steps       : {', '.join(s for s in STEP_IDS if s in selected) or 'none'}")
     print(f"{'=' * 64}\n")
 
     manifest = {

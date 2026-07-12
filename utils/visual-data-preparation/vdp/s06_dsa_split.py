@@ -420,14 +420,29 @@ def run(cfg, run_dir: Path) -> Dict:
 
     n_dsa = sum(1 for r in results if r["verdict"] == "potential_dsa")
     verdict_breakdown: Dict[str, int] = {}
+
+    def _nf(r) -> int:
+        try:
+            return int(r.get("total_frames") or 0)
+        except (ValueError, TypeError):
+            return 0
+
+    total_frames = frames_dsa = 0
     for r in results:
         v = r["verdict"]
         verdict_breakdown[v] = verdict_breakdown.get(v, 0) + 1
+        nf = _nf(r)
+        total_frames += nf
+        if v == "potential_dsa":
+            frames_dsa += nf
     summary = {
         "thresholds_source": thresholds_source,
         "sequences": len(results),
+        "frames": total_frames,
         "potential_dsas": n_dsa,
+        "potential_dsa_frames": frames_dsa,
         "potential_non_dsas": len(results) - n_dsa,
+        "potential_non_dsa_frames": total_frames - frames_dsa,
         "verdict_breakdown": verdict_breakdown,
         "copy_failures": sum(1 for r in results if not r["copied"]),
         "dsa_dir": str(dsa_root),
