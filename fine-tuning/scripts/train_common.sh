@@ -45,9 +45,19 @@ MODE="${1:-train}"
 # ── configurable knobs (env-overridable) ─────────────────────────────────────
 PYTHON="${PYTHON:-python3}"
 
-META_CSV="${META_CSV:-/data/Deep_Angiography/AngioVision/fine-tuning/consolidated_metadata_gt.csv}"
+# Consolidated metadata from the visual-data-preparation run (step 04). It is
+# generated from the potential-DSA subset, so it lists exactly the sequences
+# under BASE_FRAMES_DIR below. Populated by copying the run's
+# 04_consolidated_metadata/consolidated_metadata_ALL_Sequences.csv here.
+META_CSV="${META_CSV:-/data/Deep_Angiography/DSA_Split/consolidated_metadata_ALL_Sequences.csv}"
 REPORTS_CSV="${REPORTS_CSV:-/data/Deep_Angiography/AngioVision/fine-tuning/cleaned_report_list.csv}"
-BASE_FRAMES_DIR="${BASE_FRAMES_DIR:-/data/Deep_Angiography/DICOM_Sequence_Processed}"
+# Train on the potential-DSA frames produced by the split (step 06). Layout is
+# <acc>/<sop>/frames/, which is what find_frame_files_for_sop expects.
+BASE_FRAMES_DIR="${BASE_FRAMES_DIR:-/data/Deep_Angiography/DSA_Split/00_potential_dsas}"
+# Accession column shared by META_CSV and REPORTS_CSV. The step-04 consolidated
+# CSV uses "AccessionNumber"; override if your reports CSV keys accessions under
+# a different header (e.g. "Anon Acc #").
+ANON_COL="${ANON_COL:-AccessionNumber}"
 VAL_DATA_DIR="${VAL_DATA_DIR:-/data/Deep_Angiography/Validation_Data/Validation_Data_2026_03_04/DICOM_Sequence_Processed}"
 VALIDATION_CSV="${VALIDATION_CSV:-}"   # empty -> central settings.py VALIDATION_CSV
 
@@ -99,6 +109,7 @@ TRAIN_FLAGS=(
     --meta_csv "$META_CSV"
     --reports_csv "$REPORTS_CSV"
     --base_frames_dir "$BASE_FRAMES_DIR"
+    --anon_col "$ANON_COL"
     --val_data_dir "$VAL_DATA_DIR"
     --out_dir "$OUT_DIR"
     --output_dir "$OUTPUT_DIR"
