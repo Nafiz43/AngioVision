@@ -630,6 +630,10 @@ def train(args) -> None:
 
     opt.zero_grad(set_to_none=True)
 
+    early_stop_patience = int(getattr(args, "early_stop_patience", 0) or 0)
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+
     for epoch in range(start_epoch, args.epochs):
         pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{args.epochs}", dynamic_ncols=True)
         gc_buffer: List[dict] = []
@@ -815,6 +819,18 @@ def train(args) -> None:
 
         epoch_metrics.add(epoch + 1, train_loss_epoch, val_loss_epoch, qa_metrics)
         print(f"[INFO] Epoch metrics row appended: {epoch_metrics_csv}")
+
+        if early_stop_patience and val_loss_epoch is not None:
+            if val_loss_epoch < best_val_loss:
+                best_val_loss = val_loss_epoch
+                epochs_no_improve = 0
+            else:
+                epochs_no_improve += 1
+                print(f"[INFO] No val_loss improvement for {epochs_no_improve} epoch(s) "
+                      f"(best={best_val_loss:.6f}, patience={early_stop_patience}).")
+                if epochs_no_improve >= early_stop_patience:
+                    print(f"[INFO] Early stopping at epoch {epoch + 1}.")
+                    break
 
     loss_writer.flush()
 

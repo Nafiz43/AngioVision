@@ -127,6 +127,9 @@ def build_train_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--min_frames_per_sequence", type=int, default=1)
     ap.add_argument("--max_sequences_per_study", type=int, default=16)
     ap.add_argument("--max_frames_per_sequence", type=int, default=16)
+    ap.add_argument("--early_stop_patience", type=int, default=5,
+                    help="Stop if val_loss shows no improvement for this many "
+                         "consecutive epochs. 0 disables early stopping.")
 
     # ── ViT fine-tuning ────────────────────────────────────────────────────
     ap.add_argument("--freeze_vision", action="store_true")
