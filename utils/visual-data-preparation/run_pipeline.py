@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import multiprocessing as mp
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -115,6 +116,16 @@ def interactive_step_selection() -> set:
 
 
 def main() -> int:
+    # Use 'spawn' for every step's ProcessPoolExecutor. The default 'fork' on
+    # Linux can deadlock workers on a lock held in the parent at fork time
+    # (e.g. the tqdm bar opened just before the pool), leaving all workers idle
+    # in futex_wait while the parent blocks on the pool pipe. spawn starts clean
+    # interpreters with no inherited locks.
+    try:
+        mp.set_start_method("spawn")
+    except RuntimeError:
+        pass  # already set (e.g. re-entry)
+
     parser = argparse.ArgumentParser(
         description="visual-data-preparation pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
