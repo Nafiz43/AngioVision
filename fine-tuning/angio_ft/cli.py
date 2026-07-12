@@ -56,7 +56,7 @@ def build_train_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--base_frames_dir", required=True)
 
     # ── column names ───────────────────────────────────────────────────────
-    ap.add_argument("--report_text_col", default="radrpt")
+    ap.add_argument("--report_text_col", default="cleaned_radrpt")
     ap.add_argument("--anon_col", default="Anon Acc #")
     ap.add_argument("--sop_col", default="SOPInstanceUIDs")
     ap.add_argument("--report_type_col", default="Type",
