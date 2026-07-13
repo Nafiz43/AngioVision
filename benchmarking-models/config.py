@@ -67,6 +67,16 @@ class PipelineConfig:
     # "" = auto (cuda if available), or "cuda"/"cpu"/"cuda:1".
     clip_device: str = ""
 
+    # ── Step 05: zero-shot SigLIP-family baselines (naive, not fine-tuned) ─
+    # Comma-separated HF checkpoints for the SigLIP tower family the
+    # fine-tuning track uses: SigLIP, SigLIP2, MedSigLIP. medsiglip-448 is
+    # gated — needs a HF token (~/.cache/huggingface/token). Shares clip_device.
+    siglip_models: str = (
+        "google/siglip-base-patch16-224,"
+        "google/siglip2-base-patch16-224,"
+        "google/medsiglip-448"
+    )
+
     # ── Step 03: AWS Bedrock VLM baselines ───────────────────────────────
     # Comma-separated Bedrock model ids (Converse API). Auth via boto3's
     # default credential chain — no keys in this repo.
@@ -87,7 +97,7 @@ class PipelineConfig:
     EDITABLE: tuple = field(
         default=(
             "validation_csv", "mosaics_root", "vlm_models", "ollama_url",
-            "clip_models", "clip_device", "bedrock_models", "bedrock_region",
+            "clip_models", "clip_device", "siglip_models", "bedrock_models", "bedrock_region",
             "baselines_dir", "ft_predictions_dir", "alpha",
         ),
         repr=False,

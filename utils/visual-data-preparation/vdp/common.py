@@ -173,7 +173,13 @@ def passes_eligibility_filter(ds, min_frames: int, mode: str) -> Tuple[bool, str
     def _get(tag: str) -> str:
         return get_tag_str(ds, tag).upper()
 
-    if _get("RadiationSetting") != REQUIRED_RADIATION_SETTING:
+    # ponytail: relaxed radiation gate — reject only an explicit non-GR setting
+    # (e.g. SC fluoro). A missing/empty RadiationSetting tag passes through to the
+    # downstream DSA-mask classifier (s06), which is the real DSA detector. This
+    # recovered ~1.8k accessions whose DICOMs simply lack the tag. To restore the
+    # strict gate, require == REQUIRED_RADIATION_SETTING again.
+    rad = _get("RadiationSetting")
+    if rad and rad != REQUIRED_RADIATION_SETTING:
         return False, "bad_radiation"
 
     if mode == "strict":

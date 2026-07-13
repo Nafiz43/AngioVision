@@ -50,13 +50,15 @@ sys.path.insert(0, str(PIPELINE_DIR))
 
 from config import PipelineConfig, dequote, load_config, save_local_overrides  # noqa: E402
 from bmk import (  # noqa: E402
-    s01_vlm_baselines, s02_clip_zeroshot, s03_bedrock, s04_statistics,
+    s01_vlm_baselines, s02_clip_zeroshot, s03_bedrock,
+    s05_siglip_zeroshot, s04_statistics,
 )
 
 STEPS = [
     ("01", "VLM baselines (Ollama)", s01_vlm_baselines.run),
     ("02", "CLIP zero-shot baseline (naive, not fine-tuned)", s02_clip_zeroshot.run),
     ("03", "Bedrock VLM baselines (AWS)", s03_bedrock.run),
+    ("05", "SigLIP-family zero-shot baselines (SigLIP/SigLIP2/MedSigLIP)", s05_siglip_zeroshot.run),
     ("04", "Statistics (McNemar + bootstrap)", s04_statistics.run),
 ]
 STEP_IDS = [s[0] for s in STEPS]
