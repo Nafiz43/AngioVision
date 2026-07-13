@@ -11,6 +11,7 @@ Consolidates three standalone `utils/` scripts (`21_cleaning_reports.py`,
 | Step | Module | What it does |
 |------|--------|--------------|
 | 00 | `s00_clean_reports` | Unicode normalization, PHI removal (Presidio — skipped with a warning if not installed), attestation/header/HISTORY stripping, abbreviation + shorthand expansion, sentence casing → `cleaned_reports.csv` + Original\|Cleaned reviewer docx |
+| 00b | `s00b_slice_reports` | Keeps only findings/impression/angiography/variant-anatomy/vessel-catheterized sections, drops procedural boilerplate; overwrites the cleaned column in place, original kept in `*_unsliced` |
 | 01 | `s01_augment_reports` | N conservative Ollama rephrasings per report (Type column: Original / Augmented 1..N). Incremental + resume-safe; failed generations fall back to the original text (logged) |
 | 02 | `s02_comparison_docx` | 3-column reviewer docx: Acc ID \| Original \| Augmented, one row per variant |
 

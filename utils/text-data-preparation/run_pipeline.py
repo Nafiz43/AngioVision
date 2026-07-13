@@ -7,6 +7,8 @@ Runs the report text-preparation stages sequentially:
 
     00  clean reports            (PHI removal, abbreviation expansion,
                                   sentence casing → cleaned CSV + docx)
+    00b slice reports            (keep findings/impression/angiography
+                                  sections, drop procedural boilerplate)
     01  augment reports          (Ollama rephrasing, resumable)
     02  comparison docx          (Original vs Augmented reviewer table)
 
@@ -41,10 +43,12 @@ PIPELINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PIPELINE_DIR))
 
 from config import PipelineConfig, load_config, save_local_overrides  # noqa: E402
-from tdp import s00_clean_reports, s01_augment_reports, s02_comparison_docx  # noqa: E402
+from tdp import (s00_clean_reports, s00b_slice_reports,  # noqa: E402
+                 s01_augment_reports, s02_comparison_docx)
 
 STEPS = [
     ("00", "Clean reports", s00_clean_reports.run),
+    ("00b", "Slice reports (findings/impression only)", s00b_slice_reports.run),
     ("01", "Augment reports (Ollama)", s01_augment_reports.run),
     ("02", "Original-vs-Augmented docx", s02_comparison_docx.run),
 ]
