@@ -532,6 +532,72 @@ def peek_checkpoint_config(ckpt_path: Path, device: torch.device) -> Optional[Di
 # Single-checkpoint evaluation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _lr_probe_cv(
+    probe_rows: List[Tuple[str, str, str, "np.ndarray", "np.ndarray"]],
+    gt_csv: str,
+    n_splits: int = 5,
+    seed: int = 42,
+) -> Dict[str, float]:
+    """Grouped-CV logistic-regression probe on buffered embeddings.
+
+    Trains LR on [seq ; question ; seq*question] features against the GT
+    answers, with GroupKFold folds grouped by accession so no study leaks
+    across train/test. This is the 'templates + LR on embeddings' readout;
+    scores are cross-validated because only ~361 labeled rows exist.
+    """
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score, f1_score
+    from sklearn.model_selection import GroupKFold
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    gt: Dict[Tuple[str, str], int] = {}
+    with open(gt_csv, newline="", encoding="utf-8", errors="replace") as f:
+        for r in csv.DictReader(f):
+            a = str(r.get("Answer", "")).strip().lower()
+            if a in ("yes", "no"):
+                key = (normalize_str(r.get("SOPInstanceUID", "")), str(r.get("Question", "")).strip())
+                gt[key] = 1 if a == "yes" else 0
+
+    X, y, groups = [], [], []
+    seen: set = set()
+    for acc, sop_norm, q, s, qv in probe_rows:
+        key = (sop_norm, q.strip())
+        lbl = gt.get(key)
+        if lbl is None or key in seen:
+            continue
+        seen.add(key)
+        X.append(np.concatenate([s, qv, s * qv]))
+        y.append(lbl)
+        groups.append(str(acc))
+    if len(set(groups)) < n_splits or len(set(y)) < 2:
+        print(f"[LR_PROBE] skipped: {len(y)} matched rows / {len(set(groups))} groups is too few")
+        return {}
+    X = np.stack(X); y = np.asarray(y); groups = np.asarray(groups)
+
+    accs, f1s = [], []
+    for tr, te in GroupKFold(n_splits=n_splits).split(X, y, groups):
+        clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=5000, random_state=seed))
+        clf.fit(X[tr], y[tr])
+        pred = clf.predict(X[te])
+        accs.append(accuracy_score(y[te], pred))
+        f1s.append(f1_score(y[te], pred))
+    import numpy as _np
+    maj = float(max(_np.mean(y), 1 - _np.mean(y)))
+    out = {
+        "LR_PROBE_ACC": float(_np.mean(accs)),
+        "LR_PROBE_ACC_STD": float(_np.std(accs)),
+        "LR_PROBE_F1": float(_np.mean(f1s)),
+        "LR_PROBE_MAJORITY": maj,
+        "LR_PROBE_N": float(len(y)),
+    }
+    print(f"[LR_PROBE] n={len(y)} majority={maj:.3f} "
+          f"cv_acc={out['LR_PROBE_ACC']:.3f}±{out['LR_PROBE_ACC_STD']:.3f} "
+          f"cv_F1={out['LR_PROBE_F1']:.3f} folds={[round(a, 4) for a in accs]}")
+    return out
+
+
 def predict_and_score(
     model: nn.Module,
     tokenizer,
@@ -549,6 +615,7 @@ def predict_and_score(
     vit_image_size: Optional[int] = None,
     prompt_ensemble: bool = False,
     margin_debias: bool = False,
+    lr_probe: bool = False,
     calculate_score_script: str = "calculate_score.py",
     random_seed: int = 42,
 ) -> Dict[str, Any]:
@@ -579,6 +646,7 @@ def predict_and_score(
     skip_counts: Dict[str, int] = {}
 
     pred_rows: List[Tuple[str, str, str, float, str]] = []  # acc, sop, q, margin, family
+    probe_rows: List[Tuple[str, str, str, Any, Any]] = []  # acc, sop_norm, q, seq_vec, q_vec
 
     if True:
         seq_dirs = find_validation_sequence_dirs(data_dir)
@@ -636,6 +704,11 @@ def predict_and_score(
                 sim_yes = (img_emb @ yes_emb.t()).item()
                 sim_no = (img_emb @ no_emb.t()).item()
                 pred_rows.append((acc, sop, q, sim_yes - sim_no, family))
+                if lr_probe:
+                    q_emb = model.encode_text(tokenizer, [q], device=device)
+                    probe_rows.append((acc, sop_norm, q,
+                                       img_emb.squeeze(0).float().cpu().numpy(),
+                                       q_emb.squeeze(0).float().cpu().numpy()))
 
             n_ok += 1
 
@@ -698,6 +771,9 @@ def predict_and_score(
     print(f"  Accuracy (orig/flip): {format_pair(metrics.get('ORIGINAL_ACCURACY'), metrics.get('FLIPPED_ACCURACY'))}")
     print(f"  F1-score (orig/flip): {format_pair(metrics.get('ORIGINAL_F1'), metrics.get('FLIPPED_F1'))}")
 
+    if lr_probe and probe_rows:
+        metrics.update(_lr_probe_cv(probe_rows, score_gt_csv, seed=random_seed))
+
     if was_training:
         model.train()
 
@@ -757,6 +833,7 @@ def run_single_checkpoint(
         vit_image_size=vit_image_size,
         prompt_ensemble=getattr(args, "prompt_ensemble", False),
         margin_debias=getattr(args, "margin_debias", False),
+        lr_probe=getattr(args, "lr_probe", False),
         calculate_score_script=args.calculate_score_script,
         random_seed=args.random_seed,
     )
