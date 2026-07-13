@@ -89,6 +89,7 @@ class PipelineConfig:
     # AccessionNumber, SOPInstanceUID, Question, Answer.
     ft_predictions_dir: str = "/data/Deep_Angiography/AngioVision/fine-tuning/output"
     alpha: float = 0.15
+    qa_limit: int = 0  # 0 = all QA rows; >0 = head(n) for smoke tests
     n_bootstrap: int = 2000
     bootstrap_seed: int = 42
     random_baseline_seed: int = 12345
@@ -98,7 +99,7 @@ class PipelineConfig:
         default=(
             "validation_csv", "mosaics_root", "vlm_models", "ollama_url",
             "clip_models", "clip_device", "siglip_models", "bedrock_models", "bedrock_region",
-            "baselines_dir", "ft_predictions_dir", "alpha",
+            "baselines_dir", "ft_predictions_dir", "alpha", "qa_limit",
         ),
         repr=False,
     )

@@ -143,6 +143,8 @@ def load_inputs(cfg):
     """Validation rows + sequence index, shared by both baseline steps."""
     os.makedirs(cfg.baselines_dir, exist_ok=True)
     val_df = common.load_validation_csv(cfg.validation_csv)
+    if getattr(cfg, "qa_limit", 0) > 0:
+        val_df = val_df.head(cfg.qa_limit)
     print(f"validation rows: {len(val_df)}")
     seq_index = common.build_sequence_index(cfg.mosaics_root)
     print(f"indexed sequences (mosaic + metadata): {len(seq_index)}")
