@@ -121,6 +121,25 @@ def build_features(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame]:
     """Returns X, y (1=yes), groups (accession), and the kept GT rows."""
     keep = gt[gt["sop_norm"].isin(seq_embs)].reset_index(drop=True)
+
+    if mode == "dmargin":
+        # Single feature: margin debiased by the per-family median (unsupervised,
+        # no GT used) - the templates+debias readout with a learned threshold.
+        margins, families = [], []
+        for _, r in keep.iterrows():
+            s = seq_embs[r["sop_norm"]]
+            qcat = q_embs[r["Question"]]
+            d = s.shape[0]
+            yes_h, no_h = qcat[d:2 * d], qcat[2 * d:]
+            margins.append(float(s @ yes_h - s @ no_h))
+            families.append(make_yes_no_hypotheses_tagged(r["Question"])[2])
+        med = {f: float(np.median([m for m, g in zip(margins, families) if g == f]))
+               for f in set(families)}
+        X = np.array([[m - med[f]] for m, f in zip(margins, families)])
+        y = (keep["Answer"] == "yes").to_numpy().astype(int)
+        groups = keep["Accession"].astype(str).to_numpy()
+        return X, y, groups, keep
+
     feats, dim = [], None
     for _, r in keep.iterrows():
         s = seq_embs[r["sop_norm"]]
