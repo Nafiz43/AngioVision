@@ -256,34 +256,142 @@ def find_validation_sequence_dirs(data_dir: Path) -> List[Path]:
     return sorted(seq_dirs)
 
 
-def make_yes_no_hypotheses(question: str) -> Tuple[str, str]:
+def _clean_vessel_phrase(x: str) -> str:
+    x = x.strip().rstrip(".?").strip()
+    x = x.replace("it's", "its")
+    x = re.sub(r"\s+or one o[fr] its branches$", " or one of its branches", x)
+    return x
+
+
+def make_yes_no_hypotheses_tagged(question: str) -> Tuple[str, str, str]:
+    """Return (yes_hypothesis, no_hypothesis, family_tag).
+
+    Hypotheses are phrased as declarative report-style findings (matching the
+    text distribution the tower is fine-tuned on), never as questions: with a
+    report-tuned tower, "Yes. <question>" / "No. <question>" embed almost
+    identically and the decision degenerates to a global polarity bias.
+    The family tag groups questions for per-family margin debiasing.
+    """
     q = question.strip().rstrip("?").lower()
-    if "variant anatomy" in q:
+    q = re.sub(r"\s*please s?t?ate yes or no\W*$", "", q).rstrip("?. ")
+    if "variant anatomy" in q or "vascular aberrancy" in q:
         return (
             "Angiography demonstrates variant vascular anatomy.",
             "Angiography demonstrates no variant vascular anatomy.",
+            "variant_anatomy",
         )
-    if "hemorrhage" in q or "extravasation" in q:
+    if "hemorrhage" in q or "extravasation" in q or "bleeding" in q:
         return (
             "Angiography shows hemorrhage or contrast extravasation.",
             "Angiography shows no hemorrhage and no contrast extravasation.",
+            "bleeding",
         )
     if "dissection" in q:
         return (
             "Angiography shows evidence of arterial or venous dissection.",
             "Angiography shows no evidence of arterial or venous dissection.",
+            "dissection",
         )
     if "stenosis" in q:
         return (
             "Angiography shows stenosis in a visualized vessel.",
             "Angiography shows no stenosis in any visualized vessel.",
+            "stenosis",
         )
     if "stent" in q:
         return (
             "An endovascular stent is visible on angiography.",
             "No endovascular stent is visible on angiography.",
+            "stent",
         )
-    return (f"Yes. {question}", f"No. {question}")
+    if "microcatheter" in q:
+        return (
+            "Contrast is injected through a microcatheter.",
+            "Contrast is injected through the base catheter rather than a microcatheter.",
+            "microcatheter",
+        )
+    m = re.search(r"is the (catheter|sheath) tip (?:located )?in (?:an |a |the )?(.+)$", q)
+    if m:
+        tip, vessel = m.group(1), _clean_vessel_phrase(m.group(2))
+        return (
+            f"The {tip} tip is positioned in the {vessel}.",
+            f"The {tip} tip is not in the {vessel}.",
+            f"{tip}_tip",
+        )
+    m = re.search(r"is the perfused organ .*?the (\w+)$", q)
+    if m:
+        organ = m.group(1)
+        return (
+            f"The organ perfused in this angiogram is the {organ}.",
+            f"The organ perfused in this angiogram is not the {organ}.",
+            "perfused_organ",
+        )
+    if "opacif" in q:  # also catches typos: opacifed / "In the ... opacified"
+        m = re.search(r"(?:is|are|in) (?:the |a |an )?(.+?) opacif", q)
+        subj = _clean_vessel_phrase(m.group(1)) if m else "target structure"
+        return (
+            f"Contrast opacifies the {subj}.",
+            f"The {subj} is not opacified.",
+            "opacified",
+        )
+    m = re.search(r"is the (.+?) patent", q)
+    if m:
+        vessel = _clean_vessel_phrase(m.group(1))
+        return (
+            f"The {vessel} is patent.",
+            f"The {vessel} is occluded.",
+            "patency",
+        )
+    if "embolic material" in q or "coil or plug" in q:
+        return (
+            "Embolic material such as coils or plugs is present.",
+            "No embolic material is present.",
+            "embolic_material",
+        )
+    if "tumor" in q:
+        return (
+            "A vascular tumor is demonstrated on angiography.",
+            "No tumor is demonstrated on angiography.",
+            "tumor",
+        )
+    if "calcif" in q:
+        return (
+            "Atherosclerotic calcifications are identified along the vessels.",
+            "No atherosclerotic calcification is identified.",
+            "calcification",
+        )
+    if "radial or brachial" in q:
+        return (
+            "The procedure is performed from a radial or brachial approach.",
+            "The procedure is performed from a femoral approach.",
+            "approach",
+        )
+    if "femoral approach" in q:
+        return (
+            "The procedure is performed from a femoral approach.",
+            "The procedure is performed from a radial or brachial approach.",
+            "approach",
+        )
+    for pat in (
+        r"is there (?:a |an )?(.+?)(?: demonstrated| identified| definitively demonstrated)?(?: (?:in|on|within) (?:this|the) angiogram)?$",
+        r"does the angiogram demonstrate (?:a |an )?(.+)$",
+        r"is (?:a |an )?(.+?) (?:demonstrated|identified|visible|visualized)(?: .*)?$",
+        r"is (?:a |an )?(.+?) (?:demonstrated|identified)? ?(?:in|on) (?:this|the) angiogram$",
+    ):
+        m = re.search(pat, q)
+        if m:
+            finding = _clean_vessel_phrase(m.group(1))
+            return (
+                f"Angiography demonstrates {finding}.",
+                f"Angiography demonstrates no {finding}.",
+                "demonstrates",
+            )
+    return (f"Yes. {question}", f"No. {question}", "fallback")
+
+
+def make_yes_no_hypotheses(question: str) -> Tuple[str, str]:
+    yes_h, no_h, _ = make_yes_no_hypotheses_tagged(question)
+    return (yes_h, no_h)
 
 
 # Extra paraphrases per question family, used only with --prompt_ensemble.
@@ -440,6 +548,7 @@ def predict_and_score(
     sequence_repeat_factor: int = 1,
     vit_image_size: Optional[int] = None,
     prompt_ensemble: bool = False,
+    margin_debias: bool = False,
     calculate_score_script: str = "calculate_score.py",
     random_seed: int = 42,
 ) -> Dict[str, Any]:
@@ -469,10 +578,9 @@ def predict_and_score(
     n_ok = 0
     skip_counts: Dict[str, int] = {}
 
-    with open(temp_out_csv, "w", newline="") as f_out:
-        writer = csv.writer(f_out)
-        writer.writerow(["AccessionNumber", "SOPInstanceUID", "Question", "Answer"])
+    pred_rows: List[Tuple[str, str, str, float, str]] = []  # acc, sop, q, margin, family
 
+    if True:
         seq_dirs = find_validation_sequence_dirs(data_dir)
         for seq_dir in tqdm(seq_dirs, desc=f"Sequences [{label}]", dynamic_ncols=True):
             n_total += 1
@@ -521,15 +629,38 @@ def predict_and_score(
 
             for q in relevant_questions:
                 yes_hs, no_hs = make_yes_no_hypothesis_sets(q, ensemble=prompt_ensemble)
+                _, _, family = make_yes_no_hypotheses_tagged(q)
                 txt_emb = model.encode_text(tokenizer, yes_hs + no_hs, device=device)
                 yes_emb = F.normalize(txt_emb[: len(yes_hs)].mean(dim=0, keepdim=True), dim=-1)
                 no_emb = F.normalize(txt_emb[len(yes_hs):].mean(dim=0, keepdim=True), dim=-1)
                 sim_yes = (img_emb @ yes_emb.t()).item()
                 sim_no = (img_emb @ no_emb.t()).item()
-                pred = "YES" if sim_yes > sim_no else "NO"
-                writer.writerow([acc, sop, q, pred])
+                pred_rows.append((acc, sop, q, sim_yes - sim_no, family))
 
             n_ok += 1
+
+    # ── decision rule ────────────────────────────────────────────────────
+    # Raw: margin > 0. Debiased: subtract the per-family MEDIAN margin first,
+    # removing the global polarity bias a drifted text tower imposes on every
+    # sequence, while keeping the (informative) ranking across sequences.
+    # Uses no ground-truth labels, so there is no leakage.
+    thresholds: Dict[str, float] = {}
+    if margin_debias and pred_rows:
+        by_family: Dict[str, List[float]] = {}
+        for _, _, _, margin, family in pred_rows:
+            by_family.setdefault(family, []).append(margin)
+        import statistics
+        thresholds = {fam: statistics.median(v) for fam, v in by_family.items()}
+        print("[INFO] Margin debias ON; per-family median thresholds:")
+        for fam, thr in sorted(thresholds.items()):
+            print(f"    {fam}: {thr:+.6f} (n={len(by_family[fam])})")
+
+    with open(temp_out_csv, "w", newline="") as f_out:
+        writer = csv.writer(f_out)
+        writer.writerow(["AccessionNumber", "SOPInstanceUID", "Question", "Answer"])
+        for acc, sop, q, margin, family in pred_rows:
+            pred = "YES" if margin > thresholds.get(family, 0.0) else "NO"
+            writer.writerow([acc, sop, q, pred])
 
     print(f"[INFO] Wrote predictions to: {temp_out_csv}")
     print("\n[SUMMARY]")
@@ -625,6 +756,7 @@ def run_single_checkpoint(
         sequence_repeat_factor=args.sequence_repeat_factor,
         vit_image_size=vit_image_size,
         prompt_ensemble=getattr(args, "prompt_ensemble", False),
+        margin_debias=getattr(args, "margin_debias", False),
         calculate_score_script=args.calculate_score_script,
         random_seed=args.random_seed,
     )

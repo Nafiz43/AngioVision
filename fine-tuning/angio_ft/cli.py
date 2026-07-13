@@ -252,6 +252,9 @@ def build_validate_argparser() -> argparse.ArgumentParser:
                     help="Optional dev-split GT CSV used ONLY to select the best checkpoint. "
                          "When set, final metrics are reported once against the held-out "
                          "--validation_csv (see split_gt.py to create the split).")
+    ap.add_argument("--margin_debias", action="store_true",
+                    help="Debias yes/no decisions by subtracting the per-question-family "
+                         "median similarity margin (unsupervised, no GT labels used).")
     ap.add_argument("--prompt_ensemble", action="store_true",
                     help="Average text embeddings over several yes/no hypothesis paraphrases "
                          "per question instead of a single sentence pair.")
