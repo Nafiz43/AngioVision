@@ -159,7 +159,7 @@ _TEMPLATE = r"""<!doctype html>
   <input id="q" type="search" placeholder="filter rows…">
   <button id="toggleCols">Columns ▾</button>
   <button id="showAll">Show all</button>
-  <button id="theme">Theme</button>
+  <button id="theme" title="Switch between light and dark mode">☾ Dark</button>
   <button id="qtype">Question type ▤</button>
   <span class="count" id="count"></span>
 </div>
@@ -444,10 +444,16 @@ function closeOverlay(){ document.getElementById('overlay').classList.remove('op
 document.getElementById('q').oninput=drawBody;
 document.getElementById('toggleCols').onclick=()=>document.getElementById('cols').classList.toggle('open');
 document.getElementById('showAll').onclick=()=>{hidden.clear(); drawCols(); draw();};
-document.getElementById('theme').onclick=()=>{
-  const cur=document.documentElement.getAttribute('data-theme');
-  document.documentElement.setAttribute('data-theme', cur==='light'?'dark':'light');
-};
+function effectiveTheme(){
+  return document.documentElement.getAttribute('data-theme')
+      || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+}
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme', t);
+  document.getElementById('theme').textContent = t==='light' ? '☀ Light' : '☾ Dark';
+}
+document.getElementById('theme').onclick=()=>applyTheme(effectiveTheme()==='light'?'dark':'light');
+applyTheme(effectiveTheme());   // pin to the OS-effective theme + label the button on load
 const qtypeBtn=document.getElementById('qtype');
 if(qchart){
   qtypeBtn.onclick=openOverlay;
