@@ -77,6 +77,32 @@ class PipelineConfig:
         "google/medsiglip-448"
     )
 
+    # ── Step 07: zero-shot X-CLIP baseline (video tower; mosaic as clip) ──
+    # X-CLIP has no single-image path — the mosaic is replicated to its 8-frame
+    # clip length. Forced but consistent with the mosaic system-level task.
+    xclip_model: str = "microsoft/xclip-base-patch32"
+
+    # ── Step 06: comprehensive per-question evaluation suite ─────────────
+    # Fine-tuned frozen-probe per-question CSV (from the fine-tuning probe;
+    # cols checkpoint,group,question,n,yes_rate,F1_BASELINE,F1_A1_pre,...).
+    # The suite joins per-question zero-shot/VLM F1 + constant controls onto it.
+    probe_perq_csv: str = (
+        "/data/Deep_Angiography/AngioVision/fine-tuning/reports/"
+        "perq_leaderboard_2026-07-13.csv"
+    )
+    # Weighted-F1 twin of probe_perq_csv (same checkpoints/questions/OOF preds,
+    # F1 columns are weighted-F1 instead of macro). Used when f1_average=weighted.
+    probe_perq_csv_weighted: str = (
+        "/data/Deep_Angiography/AngioVision/fine-tuning/reports/"
+        "perq_leaderboard_weighted.csv"
+    )
+    # Per-question F1 averaging for step 06: "macro" (default) or "weighted".
+    # "weighted" weights each class's F1 by its support; writes a parallel set of
+    # *_weighted.csv/html so the macro outputs are left untouched.
+    f1_average: str = "macro"
+    # Stable dir the suite mirrors its latest CSV+HTML into (easy to find/pull).
+    eval_out_dir: str = str(PIPELINE_DIR / "runs" / "eval_suite")
+
     # ── Step 03: AWS Bedrock VLM baselines ───────────────────────────────
     # Comma-separated Bedrock model ids (Converse API). Auth via boto3's
     # default credential chain — no keys in this repo.
@@ -98,8 +124,11 @@ class PipelineConfig:
     EDITABLE: tuple = field(
         default=(
             "validation_csv", "mosaics_root", "vlm_models", "ollama_url",
-            "clip_models", "clip_device", "siglip_models", "bedrock_models", "bedrock_region",
-            "baselines_dir", "ft_predictions_dir", "alpha", "qa_limit",
+            "clip_models", "clip_device", "siglip_models", "xclip_model",
+            "bedrock_models", "bedrock_region",
+            "baselines_dir", "ft_predictions_dir", "probe_perq_csv",
+            "probe_perq_csv_weighted", "f1_average", "eval_out_dir",
+            "alpha", "qa_limit",
         ),
         repr=False,
     )

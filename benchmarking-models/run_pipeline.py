@@ -51,7 +51,7 @@ sys.path.insert(0, str(PIPELINE_DIR))
 from config import PipelineConfig, dequote, load_config, save_local_overrides  # noqa: E402
 from bmk import (  # noqa: E402
     s01_vlm_baselines, s02_clip_zeroshot, s03_bedrock,
-    s05_siglip_zeroshot, s04_statistics,
+    s05_siglip_zeroshot, xclip_zeroshot, s06_per_question, s04_statistics,
 )
 
 STEPS = [
@@ -59,7 +59,9 @@ STEPS = [
     ("02", "CLIP zero-shot baseline (naive, not fine-tuned)", s02_clip_zeroshot.run),
     ("03", "Bedrock VLM baselines (AWS)", s03_bedrock.run),
     ("05", "SigLIP-family zero-shot baselines (SigLIP/SigLIP2/MedSigLIP)", s05_siglip_zeroshot.run),
+    ("07", "X-CLIP zero-shot baseline (video tower, mosaic-as-clip)", xclip_zeroshot.run),
     ("04", "Statistics (McNemar + bootstrap)", s04_statistics.run),
+    ("06", "Per-question comprehensive eval suite (F1 + collapsible HTML)", s06_per_question.run),
 ]
 STEP_IDS = [s[0] for s in STEPS]
 
@@ -112,9 +114,16 @@ def main() -> int:
                         metavar="STEP", help="Run ONLY these step ids")
     parser.add_argument("--set", nargs="+", default=[], metavar="KEY=VALUE",
                         help="Override config values (saved to config.local.json)")
+    parser.add_argument("--f1-average", choices=["macro", "weighted"], default=None,
+                        dest="f1_average",
+                        help="Per-question F1 averaging for step 06 (default from "
+                             "config: macro). 'weighted' writes parallel "
+                             "*_weighted.{csv,html} without touching the macro outputs.")
     args = parser.parse_args()
 
     cfg = load_config()
+    if args.f1_average:
+        cfg.f1_average = args.f1_average
 
     for pair in args.set:
         key, _, raw = pair.partition("=")
