@@ -139,10 +139,14 @@ _TEMPLATE = r"""<!doctype html>
   .mmodes{ display:flex; gap:6px; }
   .mhead button{ margin-left:auto; }
   .chartbody{ overflow:auto; padding:12px 18px 18px; }
-  .brow{ display:grid; grid-template-columns:minmax(140px,300px) 1fr auto; gap:10px;
+  .brow{ display:grid; grid-template-columns:minmax(240px,420px) 1fr auto; gap:10px;
     align-items:center; padding:3px 0; }
-  .blabel{ font-size:12px; color:var(--ink); overflow:hidden; text-overflow:ellipsis;
-    white-space:nowrap; }
+  .blabel{ font-size:12px; color:var(--ink); overflow-wrap:anywhere; }
+  .clegend{ display:flex; flex-wrap:wrap; gap:12px; padding:0 0 12px; margin-bottom:10px;
+    border-bottom:1px solid var(--line); }
+  .clegend .li{ display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--mut);
+    text-transform:uppercase; letter-spacing:.4px; }
+  .clegend .sw{ width:12px; height:12px; border-radius:3px; flex:none; }
   .btrack{ background:var(--chip); border-radius:6px; height:16px; overflow:hidden; }
   .bfill{ height:100%; border-radius:6px; min-width:2px; }
   .bval{ font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums;
@@ -215,6 +219,14 @@ const COLDOC = {
   "n":"Number of validation rows (image–question pairs) for this question.",
   "yes_rate":"Fraction of this question's rows whose ground-truth answer is "+
     "'yes' (its class balance).",
+  "no_probe":"NO-PROBE readout — the fine-tuned checkpoint answering yes/no ON "+
+    "ITS OWN, with NO probe and NO LR trained. For each question it encodes a "+
+    "'yes' and a 'no' hypothesis as text and picks whichever is more "+
+    "cosine-similar to the image embedding (this is what checkpoint selection "+
+    "scores). Per-question F1 over the SAME rows as the probe columns. Contrast "+
+    "it with F1_BASELINE: same frozen embedding, but F1_BASELINE adds a trained "+
+    "linear head — the gap is what a probe recovers that the model's own "+
+    "readout cannot.",
   "F1_BASELINE":PROBE_METHOD+"\n\nFeatures: [ image_final ; question ; "+
     "image_final × question ]. The default probe — one image view plus a single "+
     "elementwise image×question interaction.",
@@ -426,7 +438,12 @@ function drawChart(mode){
   const data = mode==='group'? byG : byQ;
   const maxv = mode==='group'
     ? Math.max(1,...data.map(d=>d.qcount)) : Math.max(1,...data.map(d=>d.count));
-  document.getElementById('chartBody').innerHTML = data.map(d=>{
+  const groups=[...new Set(data.map(d=>d.group))]
+    .sort((a,b)=>(GROUP_COLORS[a]?0:1)-(GROUP_COLORS[b]?0:1));
+  const legend='<div class="clegend">'+groups.map(g=>
+    `<span class="li"><span class="sw" style="background:${GROUP_COLORS[g]||'#5a6b7b'}"></span>${esc(g)}</span>`
+  ).join("")+'</div>';
+  document.getElementById('chartBody').innerHTML = legend + data.map(d=>{
     const val = mode==='group'? d.qcount : d.count;
     const w = val/maxv*100;
     const color = GROUP_COLORS[d.group]||'#5a6b7b';
