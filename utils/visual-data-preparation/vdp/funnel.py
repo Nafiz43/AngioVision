@@ -106,7 +106,8 @@ def _fmt(v: Any) -> str:
 
 
 def _render_text(rows: List[Dict[str, Any]], paths: Dict[str, str],
-                 header_lines: List[str] = None) -> str:
+                 header_lines: List[str] = None,
+                 csv_files: List[str] = None) -> str:
     bar = "=" * 72
     stage_titles = {
         "raw_input": "RAW INPUT  (step 00 — header scan)",
@@ -134,6 +135,11 @@ def _render_text(rows: List[Dict[str, Any]], paths: Dict[str, str],
     out.append("WHERE IT ALL LANDED")
     for label, p in paths.items():
         out.append(f"  {label:<26} {p}")
+    if csv_files:
+        out.append("")
+        out.append("CSV FILES PRODUCED")
+        for p in csv_files:
+            out.append(f"  {p}")
     out.append(bar)
     return "\n".join(out) + "\n"
 
@@ -161,7 +167,22 @@ def build(steps: Dict[str, Any], cfg, run_dir: Path) -> Dict[str, Any]:
     write_csv(run_dir / "vdp_funnel_report.csv",
               ["stage", "metric", "sequences", "frames"], rows)
     paths["this report"] = str(report_txt)
-    text = _render_text(rows, paths, header)
+    csv_files = _collect_csvs(steps, run_dir)
+    text = _render_text(rows, paths, header, csv_files)
     report_txt.write_text(text, encoding="utf-8")
     print(text)
-    return {"rows": len(rows), "report_txt": str(report_txt)}
+    return {"rows": len(rows), "report_txt": str(report_txt),
+            "csv_files": csv_files}
+
+
+def _collect_csvs(steps: Dict[str, Any], run_dir: Path) -> List[str]:
+    """Every CSV the run produced: all under run_dir, plus any absolute CSV
+    path a step summary mentions that lives outside it (e.g. sizes CSVs)."""
+    found = {str(p.resolve()) for p in run_dir.rglob("*.csv")}
+    for info in steps.values():
+        s = info.get("summary")
+        if isinstance(s, dict):
+            for v in s.values():
+                if isinstance(v, str) and v.endswith(".csv") and Path(v).exists():
+                    found.add(str(Path(v).resolve()))
+    return sorted(found)

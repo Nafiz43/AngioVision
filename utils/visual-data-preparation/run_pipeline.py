@@ -34,6 +34,7 @@ Usage
     python run_pipeline.py --skip 03 05        # everything except 03 and 05
     python run_pipeline.py --only 00 01        # just these two
     python run_pipeline.py --yes --set input_root=/some/dicom/tree
+    python run_pipeline.py --funnel-only runs/training/run_<ts>   # re-print a run's story
 """
 
 from __future__ import annotations
@@ -115,6 +116,23 @@ def interactive_step_selection() -> set:
     return selected
 
 
+def rebuild_funnel(run_dir: Path) -> int:
+    """--funnel-only: re-render the funnel story for an existing run dir from
+    its manifest. Complete AND interrupted runs work (the manifest is flushed
+    after every step); steps that never ran simply render blank."""
+    manifest_path = run_dir / "pipeline_manifest.json"
+    if not manifest_path.exists():
+        print(f"[ERROR] no pipeline_manifest.json in {run_dir} — this run "
+              "predates incremental manifests or isn't a run dir.", file=sys.stderr)
+        return 2
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    from types import SimpleNamespace
+    cfg = SimpleNamespace(**manifest.get("config", {}))
+    manifest["funnel"] = funnel.build(manifest.get("steps", {}), cfg, run_dir)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return 0
+
+
 def main() -> int:
     # Use 'spawn' for every step's ProcessPoolExecutor. The default 'fork' on
     # Linux can deadlock workers on a lock held in the parent at fork time
@@ -144,7 +162,15 @@ def main() -> int:
                         metavar="STEP", help="Run ONLY these step ids")
     parser.add_argument("--set", nargs="+", default=[], metavar="KEY=VALUE",
                         help="Override config values (saved to config.local.json)")
+    parser.add_argument("--funnel-only", metavar="RUN_DIR", default=None,
+                        help="Rebuild + print the funnel story for an EXISTING run dir "
+                             "from its pipeline_manifest.json (no steps are run). Works "
+                             "on interrupted runs too, since the manifest is now written "
+                             "incrementally after every step.")
     args = parser.parse_args()
+
+    if args.funnel_only:
+        return rebuild_funnel(Path(args.funnel_only))
 
     cfg = load_config()
 
@@ -196,10 +222,18 @@ def main() -> int:
         "steps": {},
     }
 
+    def flush_manifest() -> None:
+        # Written after EVERY step so an interrupted/killed run still leaves a
+        # usable manifest behind (--funnel-only can then tell a partial story).
+        (run_dir / "pipeline_manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
     exit_code = 0
     for step_id, title, run_fn in STEPS:
         if step_id not in selected:
             manifest["steps"][step_id] = {"status": "opted_out"}
+            flush_manifest()
             continue
         print(f"── Step {step_id}: {title} " + "─" * max(0, 44 - len(title)))
         try:
@@ -211,6 +245,7 @@ def main() -> int:
             }
             print(f"[{step_id}] FAILED: {type(e).__name__}: {e}", file=sys.stderr)
             exit_code = 1
+        flush_manifest()
         print()
 
     # Post-QA phase of step 00 — depends on outputs of steps 02/03/05
@@ -225,18 +260,13 @@ def main() -> int:
             }
             print(f"[00-post] FAILED: {type(e).__name__}: {e}", file=sys.stderr)
             exit_code = 1
+        flush_manifest()
         print()
-
-    (run_dir / "pipeline_manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
 
     # Story-like filtering funnel across all stages (reads the step summaries).
     try:
         manifest["funnel"] = funnel.build(manifest["steps"], cfg, run_dir)
-        (run_dir / "pipeline_manifest.json").write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-        )
+        flush_manifest()
     except Exception as e:
         print(f"[funnel] FAILED: {type(e).__name__}: {e}", file=sys.stderr)
 
