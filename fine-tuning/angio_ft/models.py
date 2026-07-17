@@ -577,6 +577,55 @@ class PooledCLIP(nn.Module):
             sequence_feat, device, sequence_repeat_factor
         ), "ok"
 
+    @torch.no_grad()
+    def encode_sequence_rich(self, processor, frame_paths, device, frame_chunk_size,
+                             max_frames, vit_image_size=None):
+        """Richer frozen features for probing (approach A). Returns a dict:
+        'final'      -> current probe feature: proj+normalised study embedding (E,)
+        'pre'        -> PRE-projection pooled feature (vision hidden dim,)
+        'frame_proj' -> per-frame proj+normalised features (F, E), in text space
+        Temporal PE intentionally omitted (probe-time feature study; leaves
+        training/scoring paths untouched)."""
+        frame_paths = uniform_subsample(frame_paths, max_frames)
+        if not frame_paths:
+            return None, "no_frames"
+        if self.vision_feature_mode == "video":
+            loaded = []
+            for idx, p in enumerate(frame_paths):
+                img = self._load_image(p)
+                if img is not None:
+                    loaded.append((idx, img))
+            if not loaded:
+                return None, "no_readable_frames"
+            feats = self._encode_video_clip(loaded, processor, device, vit_image_size)
+        else:
+            chunks = []
+            for i in range(0, len(frame_paths), frame_chunk_size):
+                imgs = []
+                for p in frame_paths[i:i + frame_chunk_size]:
+                    try:
+                        imgs.append(Image.open(p).convert("RGB"))
+                    except Exception:
+                        continue
+                if not imgs:
+                    continue
+                pk = dict(images=imgs, return_tensors="pt")
+                if vit_image_size is not None:
+                    pk["size"] = {"height": vit_image_size, "width": vit_image_size}
+                out = self.vit(pixel_values=processor(**pk)["pixel_values"].to(device))
+                chunks.append(self._frame_features(out))
+            if not chunks:
+                return None, "no_readable_frames"
+            feats = torch.cat(chunks, dim=0)
+        pre = self._pool_tensor(feats, self.frame_pooling)
+        final = F.normalize(self.vision_proj(pre.unsqueeze(0)), dim=-1)
+        frame_proj = F.normalize(self.vision_proj(feats), dim=-1)
+        return {
+            "final": final.squeeze(0).float().cpu().numpy(),
+            "pre": pre.float().cpu().numpy(),
+            "frame_proj": frame_proj.float().cpu().numpy(),
+        }, "ok"
+
     def _finish_sequence_embedding(
         self,
         sequence_feat: torch.Tensor,

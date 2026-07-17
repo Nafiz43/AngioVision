@@ -598,6 +598,109 @@ def _lr_probe_cv(
     return out
 
 
+def _dump_rich_probe_npz(rich_rows, gt_csv, path="/tmp/rich_probe_emb.npz"):
+    """Dump approach-A frozen features for offline feature-set sweeping."""
+    import numpy as np
+    gt: Dict[Tuple[str, str], int] = {}
+    with open(gt_csv, newline="", encoding="utf-8", errors="replace") as f:
+        for r in csv.DictReader(f):
+            a = str(r.get("Answer", "")).strip().lower()
+            if a in ("yes", "no"):
+                gt[(normalize_str(r.get("SOPInstanceUID", "")), str(r.get("Question", "")).strip())] = 1 if a == "yes" else 0
+    final, pre, attn, qv, y, groups, ql = [], [], [], [], [], [], []
+    seen: set = set()
+    for acc, sop_norm, q, f_, p_, a_, qv_ in rich_rows:
+        key = (sop_norm, q.strip())
+        lbl = gt.get(key)
+        if lbl is None or key in seen:
+            continue
+        seen.add(key)
+        final.append(f_); pre.append(p_); attn.append(a_); qv.append(qv_)
+        y.append(lbl); groups.append(str(acc)); ql.append(q.strip())
+    if not y:
+        print("[RICH_PROBE] no labeled rows to dump"); return
+    np.savez(path, final=np.stack(final), pre=np.stack(pre), attn=np.stack(attn),
+             qv=np.stack(qv), y=np.asarray(y), groups=np.asarray(groups), q=np.asarray(ql))
+    print(f"[RICH_PROBE] dumped {len(y)} rows -> {path} "
+          f"final={np.stack(final).shape} pre={np.stack(pre).shape} attn={np.stack(attn).shape}")
+
+
+def _complex_probe_cv(
+    probe_rows,
+    gt_csv: str,
+    n_splits: int = 5,
+    seed: int = 42,
+    pca_dim: int = 64,
+    hidden=(256, 64),
+    alpha: float = 3.0,
+) -> Dict[str, float]:
+    """Grouped-CV NON-LINEAR (MLP) probe on the SAME buffered frozen embeddings
+    the linear probe uses. PCA feature reduction fights the low-sample/high-dim
+    regime (~361 rows, ~1.5k feats). Scaler+PCA+MLP are fit INSIDE each train
+    fold (sklearn Pipeline) so held-out studies never leak into fitting. Complements
+    _lr_probe_cv; leaves it untouched."""
+    import numpy as np
+    from sklearn.decomposition import PCA
+    from sklearn.metrics import accuracy_score, f1_score
+    from sklearn.model_selection import GroupKFold
+    from sklearn.neural_network import MLPClassifier
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    gt: Dict[Tuple[str, str], int] = {}
+    with open(gt_csv, newline="", encoding="utf-8", errors="replace") as f:
+        for r in csv.DictReader(f):
+            a = str(r.get("Answer", "")).strip().lower()
+            if a in ("yes", "no"):
+                key = (normalize_str(r.get("SOPInstanceUID", "")), str(r.get("Question", "")).strip())
+                gt[key] = 1 if a == "yes" else 0
+
+    X, y, groups = [], [], []
+    seen: set = set()
+    for row in probe_rows:
+        acc, sop_norm, q, s, qv = row[0], row[1], row[2], row[3], row[4]
+        key = (sop_norm, q.strip())
+        lbl = gt.get(key)
+        if lbl is None or key in seen:
+            continue
+        seen.add(key)
+        X.append(np.concatenate([s, qv, s * qv]))
+        y.append(lbl)
+        groups.append(str(acc))
+    if len(set(groups)) < n_splits or len(set(y)) < 2:
+        print(f"[COMPLEX_PROBE] skipped: {len(y)} rows / {len(set(groups))} groups too few")
+        return {}
+    X = np.stack(X); y = np.asarray(y); groups = np.asarray(groups)
+    n_train = (len(y) * (n_splits - 1)) // n_splits
+    k = int(min(pca_dim, X.shape[1], max(2, n_train - 1)))
+
+    accs, f1s = [], []
+    for tr, te in GroupKFold(n_splits=n_splits).split(X, y, groups):
+        clf = make_pipeline(
+            StandardScaler(),
+            PCA(n_components=k, random_state=seed),
+            MLPClassifier(hidden_layer_sizes=hidden, alpha=alpha, max_iter=2000,
+                          early_stopping=True, n_iter_no_change=25, random_state=seed),
+        )
+        clf.fit(X[tr], y[tr])
+        pred = clf.predict(X[te])
+        accs.append(accuracy_score(y[te], pred))
+        f1s.append(f1_score(y[te], pred))
+    maj = float(max(np.mean(y), 1 - np.mean(y)))
+    out = {
+        "COMPLEX_PROBE_ACC": float(np.mean(accs)),
+        "COMPLEX_PROBE_ACC_STD": float(np.std(accs)),
+        "COMPLEX_PROBE_F1": float(np.mean(f1s)),
+        "COMPLEX_PROBE_MAJORITY": maj,
+        "COMPLEX_PROBE_N": float(len(y)),
+        "COMPLEX_PROBE_PCA": float(k),
+    }
+    print(f"[COMPLEX_PROBE] n={len(y)} pca={k} hidden={hidden} alpha={alpha} majority={maj:.3f} "
+          f"cv_acc={out['COMPLEX_PROBE_ACC']:.3f}±{out['COMPLEX_PROBE_ACC_STD']:.3f} "
+          f"cv_F1={out['COMPLEX_PROBE_F1']:.3f} folds={[round(a, 4) for a in accs]}")
+    return out
+
+
 def predict_and_score(
     model: nn.Module,
     tokenizer,
@@ -616,6 +719,8 @@ def predict_and_score(
     prompt_ensemble: bool = False,
     margin_debias: bool = False,
     lr_probe: bool = False,
+    complex_probe: bool = False,
+    rich_probe: bool = False,
     calculate_score_script: str = "calculate_score.py",
     random_seed: int = 42,
 ) -> Dict[str, Any]:
@@ -647,6 +752,7 @@ def predict_and_score(
 
     pred_rows: List[Tuple[str, str, str, float, str]] = []  # acc, sop, q, margin, family
     probe_rows: List[Tuple[str, str, str, Any, Any]] = []  # acc, sop_norm, q, seq_vec, q_vec
+    rich_rows: List = []  # acc, sop_norm, q, final, pre, attn, qv (approach-A features)
 
     if True:
         seq_dirs = find_validation_sequence_dirs(data_dir)
@@ -695,6 +801,13 @@ def predict_and_score(
                 error_rows.append({"seq_dir": str(seq_dir), "status": emb_status, "details": ""})
                 continue
 
+            rich = None
+            if rich_probe:
+                rich, _ = model.encode_sequence_rich(
+                    processor=processor, frame_paths=frame_paths, device=device,
+                    frame_chunk_size=frame_chunk_size, max_frames=max_frames,
+                    vit_image_size=vit_image_size)
+
             for q in relevant_questions:
                 yes_hs, no_hs = make_yes_no_hypothesis_sets(q, ensemble=prompt_ensemble)
                 _, _, family = make_yes_no_hypotheses_tagged(q)
@@ -704,11 +817,18 @@ def predict_and_score(
                 sim_yes = (img_emb @ yes_emb.t()).item()
                 sim_no = (img_emb @ no_emb.t()).item()
                 pred_rows.append((acc, sop, q, sim_yes - sim_no, family))
-                if lr_probe:
+                if lr_probe or complex_probe or rich_probe:
                     q_emb = model.encode_text(tokenizer, [q], device=device)
                     probe_rows.append((acc, sop_norm, q,
                                        img_emb.squeeze(0).float().cpu().numpy(),
                                        q_emb.squeeze(0).float().cpu().numpy()))
+                    if rich_probe and rich is not None:
+                        _qn = F.normalize(q_emb, dim=-1).squeeze(0)
+                        _fp = torch.as_tensor(rich["frame_proj"], device=device)
+                        _w = torch.softmax((_fp @ _qn) / 0.1, dim=0)
+                        _sattn = F.normalize((_w.unsqueeze(1) * _fp).sum(0), dim=-1).float().cpu().numpy()
+                        rich_rows.append((acc, sop_norm, q, rich["final"], rich["pre"], _sattn,
+                                          q_emb.squeeze(0).float().cpu().numpy()))
 
             n_ok += 1
 
@@ -774,6 +894,12 @@ def predict_and_score(
     if lr_probe and probe_rows:
         metrics.update(_lr_probe_cv(probe_rows, score_gt_csv, seed=random_seed))
 
+    if rich_probe and rich_rows:
+        _dump_rich_probe_npz(rich_rows, score_gt_csv)
+
+    if complex_probe and probe_rows:
+        metrics.update(_complex_probe_cv(probe_rows, score_gt_csv, seed=random_seed))
+
     if was_training:
         model.train()
 
@@ -834,6 +960,8 @@ def run_single_checkpoint(
         prompt_ensemble=getattr(args, "prompt_ensemble", False),
         margin_debias=getattr(args, "margin_debias", False),
         lr_probe=getattr(args, "lr_probe", False),
+        complex_probe=getattr(args, "complex_probe", False),
+        rich_probe=getattr(args, "rich_probe", False),
         calculate_score_script=args.calculate_score_script,
         random_seed=args.random_seed,
     )

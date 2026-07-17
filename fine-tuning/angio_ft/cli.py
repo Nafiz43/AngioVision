@@ -259,6 +259,14 @@ def build_validate_argparser() -> argparse.ArgumentParser:
                     help="After scoring, run a grouped-CV logistic-regression probe on the "
                          "buffered (sequence, question) embeddings against GT answers "
                          "(templates + LR readout; GroupKFold by accession).")
+    ap.add_argument("--complex_probe", action="store_true",
+                    help="Like --lr_probe but a NON-LINEAR probe: PCA feature "
+                         "reduction + MLP classifier under the same GroupKFold-by-"
+                         "accession CV. Additive; the linear probe stays available.")
+    ap.add_argument("--rich_probe", action="store_true",
+                    help="Approach-A feature study: dump richer frozen features "
+                         "(pre-projection pooled + question-conditioned attention-"
+                         "pooled frames) to /tmp/rich_probe_emb.npz for offline probing.")
     ap.add_argument("--prompt_ensemble", action="store_true",
                     help="Average text embeddings over several yes/no hypothesis paraphrases "
                          "per question instead of a single sentence pair.")
