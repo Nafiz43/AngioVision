@@ -4,3 +4,5 @@ sample_data/
 config.local.json
 __pycache__/
 *.pyc
+labeling_app/sample.csv
+labeling_app/labels.csv

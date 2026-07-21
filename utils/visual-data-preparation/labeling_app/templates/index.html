@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DSA Labeling</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <div class="progress-wrap">
+      <div class="progress-text">{{ progress.done }} / {{ progress.total }} labeled</div>
+      <div class="progress-bar"><div class="progress-fill" style="width: {{ (progress.done / progress.total * 100) if progress.total else 0 }}%"></div></div>
+    </div>
+    <div class="labeler-picker">
+      <label for="labeler">Labeler</label>
+      <select id="labeler">
+        {% for name in labelers %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </header>
+
+  <main>
+    <img class="mosaic" src="{{ url_for('mosaic', item_id=item.id) }}" alt="mosaic for {{ item.id }}">
+
+    <form id="label-form" method="post" action="{{ url_for('label') }}">
+      <input type="hidden" name="id" value="{{ item.id }}">
+      <input type="hidden" name="labeler" id="labeler-hidden" value="">
+
+      <div class="choice-row">
+        <button type="button" class="choice-btn" data-value="dsa">DSA <kbd>1</kbd></button>
+        <button type="button" class="choice-btn" data-value="non_dsa">Non-DSA <kbd>2</kbd></button>
+      </div>
+      <input type="hidden" name="human_label" id="human-label" value="{{ item.algo_verdict }}">
+
+      <div class="algo-note">Algorithm predicted:
+        <strong>{{ 'DSA' if item.algo_verdict == 'dsa' else 'Non-DSA' }}</strong>
+      </div>
+
+      <button type="submit" class="next-btn">Next &rarr; <kbd>Enter</kbd></button>
+    </form>
+  </main>
+
+  <script>
+    const ALGO_VERDICT = {{ item.algo_verdict | tojson }};
+    const humanLabelInput = document.getElementById('human-label');
+    const buttons = document.querySelectorAll('.choice-btn');
+    const labelerSelect = document.getElementById('labeler');
+    const labelerHidden = document.getElementById('labeler-hidden');
+
+    function setChoice(value) {
+      humanLabelInput.value = value;
+      buttons.forEach(b => b.classList.toggle('selected', b.dataset.value === value));
+    }
+    setChoice(ALGO_VERDICT);
+    buttons.forEach(b => b.addEventListener('click', () => setChoice(b.dataset.value)));
+
+    // Remember the labeler across page loads (defaults to the first option
+    // - Goldman - the very first time this browser visits).
+    const savedLabeler = localStorage.getItem('dsa_labeler');
+    if (savedLabeler) labelerSelect.value = savedLabeler;
+    labelerHidden.value = labelerSelect.value;
+    labelerSelect.addEventListener('change', () => {
+      localStorage.setItem('dsa_labeler', labelerSelect.value);
+      labelerHidden.value = labelerSelect.value;
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === '1') setChoice('dsa');
+      else if (e.key === '2') setChoice('non_dsa');
+      else if (e.key === 'Enter') document.getElementById('label-form').requestSubmit();
+    });
+  </script>
+</body>
+</html>
