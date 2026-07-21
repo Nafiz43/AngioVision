@@ -154,6 +154,10 @@ def main() -> int:
                         help="Which dataset to process. 'validation' swaps input/output/"
                              "split roots to the val_* paths so it runs independently and "
                              "stores results in a separate directory tree from training.")
+    parser.add_argument("--dicom-backend", choices=["pydicom", "gdcm"],
+                        default="pydicom",
+                        help="Pixel-data decoding backend for step 01 (default: pydicom). "
+                             "'gdcm' requires python-gdcm installed.")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="Non-interactive: accept config as-is, run selected steps")
     parser.add_argument("--skip", nargs="+", default=[], choices=STEP_IDS,
@@ -183,10 +187,22 @@ def main() -> int:
     if args.set:
         save_local_overrides(cfg)
 
-    # Data type is per-invocation (NOT persisted to config.local.json). Applied
-    # after --set so val_* overrides are honoured, then it swaps the roots.
+    # Data type and DICOM backend are per-invocation (NOT persisted to
+    # config.local.json). Applied after --set so val_* overrides are honoured,
+    # then data_type swaps the roots.
     cfg.data_type = args.data_type
     cfg.apply_data_type()
+    cfg.dicom_backend = args.dicom_backend
+
+    # A non-default backend gets its own output/split dirs so it can never
+    # collide with (or skip-existing against) another backend's run — unless
+    # the user already pinned those paths explicitly via --set.
+    explicitly_set = {pair.partition("=")[0] for pair in args.set}
+    if cfg.dicom_backend != "pydicom":
+        if "output_root" not in explicitly_set:
+            cfg.output_root = f"{cfg.output_root.rstrip('/')}_{cfg.dicom_backend}"
+        if "dsa_split_root" not in explicitly_set:
+            cfg.dsa_split_root = f"{cfg.dsa_split_root.rstrip('/')}_{cfg.dicom_backend}"
 
     if not args.yes:
         cfg = interactive_config_fix(cfg)
@@ -209,6 +225,7 @@ def main() -> int:
 
     print(f"\n{'=' * 64}")
     print(f"  Data type   : {cfg.data_type.upper()}")
+    print(f"  DICOM backend: {cfg.dicom_backend}")
     print(f"  Input root  : {cfg.input_root}")
     print(f"  Output root : {cfg.output_root}")
     print(f"  Split root  : {cfg.dsa_split_root}")

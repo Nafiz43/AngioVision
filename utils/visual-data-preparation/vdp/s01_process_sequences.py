@@ -28,7 +28,7 @@ from vdp.common import (
 
 def _process_leaf_dir(
     leaf_str: str, output_root_str: str, min_frames: int,
-    skip_existing: bool, mode: str,
+    skip_existing: bool, mode: str, dicom_backend: str,
 ) -> Dict[str, List[Dict]]:
     output_root = Path(output_root_str)
     out: Dict[str, List[Dict]] = {
@@ -86,7 +86,7 @@ def _process_leaf_dir(
         try:
             ds_full = pydicom.dcmread(f, force=True)
             base_name = uid if uid else sanitize_dirname(f.stem)
-            frame_count = save_frames(ds_full, frames_dir, base_name)
+            frame_count = save_frames(ds_full, frames_dir, base_name, backend=dicom_backend)
             del ds_full
 
             metadata_rows = extract_metadata_pairs(ds)
@@ -132,7 +132,8 @@ def run(cfg, run_dir: Path) -> Dict:
         with ProcessPoolExecutor(max_workers=cfg.workers) as ex:
             futures = [
                 ex.submit(_process_leaf_dir, str(d), str(output_root),
-                          cfg.min_frames, cfg.skip_existing, cfg.mode)
+                          cfg.min_frames, cfg.skip_existing, cfg.mode,
+                          cfg.dicom_backend)
                 for d in leaf_dirs
             ]
             for fut in as_completed(futures):
@@ -173,6 +174,7 @@ def run(cfg, run_dir: Path) -> Dict:
 
     summary = {
         "mode": cfg.mode,
+        "dicom_backend": cfg.dicom_backend,
         "examined": sum(len(merged[k]) for k in ("processed", "filtered", "skipped", "errors")),
         "processed": len(merged["processed"]),
         "extracted_frames": extracted_frames,

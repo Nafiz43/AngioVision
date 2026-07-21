@@ -70,6 +70,12 @@ class PipelineConfig:
     min_frames: int = 2
     skip_existing: bool = True
 
+    # DICOM pixel-data decoding backend for step 01 (see vdp.common.save_frames).
+    # "pydicom" = whatever non-GDCM plugin pydicom ships with (pylibjpeg/pillow/
+    # native) — today's default. "gdcm" forces the GDCM plugin. Per-invocation
+    # like data_type: never persisted to config.local.json.
+    dicom_backend: str = "pydicom"
+
     # ── Step 00 post-QA: frame-count outlier review ──────────────────────
     # Sequences with frame counts outside [low, high] get their mosaic +
     # metadata copied to 00_consistency_check/outliers/ for review.

@@ -19,6 +19,7 @@ import numpy as np
 import pydicom
 from PIL import Image
 from pydicom.multival import MultiValue
+from pydicom.pixels import get_decoder
 
 NA_VALUE = "NA"
 MAX_VALUE_CHARS = 2000
@@ -232,11 +233,30 @@ def to_uint8_windowed(arr: np.ndarray, ds) -> np.ndarray:
     return (arr * 255).astype(np.uint8)
 
 
-def save_frames(ds, frames_dir: Path, base_name: str) -> int:
+def configure_pixel_backend(ds, backend: str) -> None:
+    """Force pixel-data decoding through a specific plugin so a pydicom-only
+    vs GDCM comparison run is meaningful regardless of which packages happen
+    to be installed. 'gdcm' forces the GDCM plugin; 'pydicom' forces
+    whichever non-GDCM plugin pydicom already ships with (pylibjpeg/pillow/
+    native), so re-running the 'pydicom' backend after python-gdcm gets
+    installed for the other pass still reproduces the original behavior."""
+    if backend == "gdcm":
+        ds.pixel_array_options(decoding_plugin="gdcm")
+        return
+    try:
+        available = get_decoder(ds.file_meta.TransferSyntaxUID)._available
+        plugin = next((p for p in available if p != "gdcm"), "")
+    except Exception:
+        plugin = ""
+    ds.pixel_array_options(decoding_plugin=plugin)
+
+
+def save_frames(ds, frames_dir: Path, base_name: str, backend: str = "pydicom") -> int:
     """
     Read pixel_array BEFORE creating any directory so a failed pixel read
     never leaves an empty dir on disk. Raises on any failure.
     """
+    configure_pixel_backend(ds, backend)
     px = ds.pixel_array
     frames_dir.mkdir(parents=True, exist_ok=True)
 
