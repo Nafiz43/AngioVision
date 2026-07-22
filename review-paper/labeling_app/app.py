@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-DSA / non-DSA manual labeling app.
+Article include/exclude manual screening app.
 
 Serves the fixed stratified sample (sample.csv, built by select_sample.py)
-one mosaic at a time, pre-selected to the algorithm's own verdict. A
+one article at a time, pre-selected to the Stage-1 LLM's own verdict. A
 submission appends to labels.csv and is never shown again - state lives
 entirely in that file, so it's consistent across sessions, restarts, and
 multiple labelers hitting the same server.
 
 Usage:
-    python3 app.py [--port 5051]
+    python3 app.py [--port 5052]
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, abort, redirect, render_template, request, send_file, url_for
+from flask import Flask, abort, redirect, render_template, request, url_for
 
 APP_DIR = Path(__file__).resolve().parent
 SAMPLE_CSV = APP_DIR / "sample.csv"
@@ -84,23 +84,12 @@ def index():
     )
 
 
-@app.route("/mosaic/<item_id>")
-def mosaic(item_id: str):
-    row = sample_by_id().get(item_id)
-    if not row:
-        abort(404)
-    path = Path(row["mosaic_path"])
-    if not path.exists():
-        abort(404)
-    return send_file(path, mimetype="image/png")
-
-
 @app.route("/label", methods=["POST"])
 def label():
     item_id = request.form["id"]
     human_label = request.form["human_label"]
     labeler = request.form.get("labeler", LABELERS[0])
-    if human_label not in ("dsa", "non_dsa") or labeler not in LABELERS:
+    if human_label not in ("include", "exclude") or labeler not in LABELERS:
         abort(400)
 
     row = sample_by_id().get(item_id)
@@ -127,7 +116,7 @@ def label():
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=5051)
+    parser.add_argument("--port", type=int, default=5052)
     parser.add_argument("--host", default="0.0.0.0")
     args = parser.parse_args()
     if not SAMPLE_CSV.exists():

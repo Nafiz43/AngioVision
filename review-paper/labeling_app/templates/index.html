@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>DSA Labeling</title>
+<title>Article Screening</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 <script src="{{ url_for('static', filename='theme.js') }}"></script>
 </head>
@@ -26,21 +26,37 @@
   </header>
 
   <main>
-    <img class="mosaic" src="{{ url_for('mosaic', item_id=item.id) }}" alt="mosaic for {{ item.id }}">
+    <article class="paper-card">
+      <h1 class="paper-title">{{ item.title }}</h1>
+      <div class="paper-meta">
+        {{ item.authors }}{% if item.year %} &middot; {{ item.year }}{% endif %}{% if item.journal_venue %} &middot; {{ item.journal_venue }}{% endif %}
+      </div>
+      {% if item.doi %}
+      <div class="paper-meta"><a href="https://doi.org/{{ item.doi }}" target="_blank" rel="noopener">doi.org/{{ item.doi }}</a></div>
+      {% elif item.url %}
+      <div class="paper-meta"><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.url }}</a></div>
+      {% endif %}
+      <p class="paper-abstract">{{ item.abstract }}</p>
+    </article>
 
     <form id="label-form" method="post" action="{{ url_for('label') }}">
       <input type="hidden" name="id" value="{{ item.id }}">
       <input type="hidden" name="labeler" id="labeler-hidden" value="">
 
       <div class="choice-row">
-        <button type="button" class="choice-btn" data-value="dsa">DSA <kbd>1</kbd></button>
-        <button type="button" class="choice-btn" data-value="non_dsa">Non-DSA <kbd>2</kbd></button>
+        <button type="button" class="choice-btn" data-value="include">Include <kbd>1</kbd></button>
+        <button type="button" class="choice-btn" data-value="exclude">Exclude <kbd>2</kbd></button>
       </div>
       <input type="hidden" name="human_label" id="human-label" value="{{ item.algo_verdict }}">
 
-      <div class="algo-note">Algorithm predicted:
-        <strong>{{ 'DSA' if item.algo_verdict == 'dsa' else 'Non-DSA' }}</strong>
+      <div class="algo-note">LLM verdict:
+        <strong>{{ 'Include' if item.algo_verdict == 'include' else 'Exclude' }}</strong>
+        {% if item.bucket == 'UNCERTAIN' %}<span class="uncertain-tag">uncertain</span>{% endif %}
       </div>
+      <div class="algo-reason">{{ item.llm_inclusion_reason }}</div>
+      {% if item.llm_exclusion_reason and item.llm_exclusion_reason != 'Skipped — paper did not pass inclusion gate' %}
+      <div class="algo-reason">{{ item.llm_exclusion_reason }}</div>
+      {% endif %}
 
       <button type="submit" class="next-btn">Next &rarr; <kbd>Enter</kbd></button>
     </form>
@@ -64,21 +80,21 @@
     // visits (localStorage) and redirect there if it differs from what the
     // server rendered, so the URL and the queue always match.
     const CURRENT_LABELER = {{ current_labeler | tojson }};
-    const savedLabeler = localStorage.getItem('dsa_labeler');
+    const savedLabeler = localStorage.getItem('article_labeler');
     if (savedLabeler && savedLabeler !== CURRENT_LABELER) {
       window.location.href = '/?labeler=' + encodeURIComponent(savedLabeler);
     } else {
-      localStorage.setItem('dsa_labeler', CURRENT_LABELER);
+      localStorage.setItem('article_labeler', CURRENT_LABELER);
     }
     labelerHidden.value = CURRENT_LABELER;
     labelerSelect.addEventListener('change', () => {
-      localStorage.setItem('dsa_labeler', labelerSelect.value);
+      localStorage.setItem('article_labeler', labelerSelect.value);
       window.location.href = '/?labeler=' + encodeURIComponent(labelerSelect.value);
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === '1') setChoice('dsa');
-      else if (e.key === '2') setChoice('non_dsa');
+      if (e.key === '1') setChoice('include');
+      else if (e.key === '2') setChoice('exclude');
       else if (e.key === 'Enter') document.getElementById('label-form').requestSubmit();
     });
   </script>
