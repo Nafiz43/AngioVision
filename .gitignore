@@ -70,3 +70,5 @@ dicom_staging.db-wal
 *.pdf
 utils/metadata_db/results-md-files
 utils/visual-data-preparation/config.local.json.bak.20260712_104650
+# Standalone repo, pushed separately to its own GitHub repo
+/clip-main-paper/
