@@ -36,6 +36,8 @@ header {
   gap: 16px;
 }
 
+.page-title { flex: 0 0 auto; font-size: 17px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
+
 .progress-wrap { flex: 1; max-width: 480px; }
 .progress-text { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
@@ -71,7 +73,7 @@ main {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 16px 24px;
+  padding: 16px 24px 96px;
   gap: 18px;
 }
 
@@ -138,24 +140,36 @@ kbd {
 .done-screen p { color: var(--muted); }
 
 .nav-row {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
   justify-content: center;
+  padding: 14px 24px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, .06);
+  z-index: 10;
 }
 .nav-btn {
-  padding: 6px 12px;
-  font-size: 13px;
+  padding: 12px 22px;
+  font-size: 15px;
   font-weight: 600;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
   background: var(--panel);
   color: var(--text);
   text-decoration: none;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+  transition: border-color .15s, transform .1s, box-shadow .15s;
 }
-.nav-btn:hover { border-color: var(--muted); }
-.nav-btn.disabled { opacity: .4; pointer-events: none; }
-.nav-pos { font-size: 13px; color: var(--muted); padding: 0 4px; }
+.nav-btn:hover { border-color: var(--muted); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0, 0, 0, .08); }
+.nav-btn:active { transform: translateY(0); box-shadow: 0 1px 2px rgba(0, 0, 0, .04); }
+.nav-btn.disabled { opacity: .35; pointer-events: none; box-shadow: none; }
+.nav-pos { font-size: 15px; font-weight: 600; color: var(--muted); padding: 0 10px; min-width: 76px; text-align: center; }
 .prior-note { font-size: 13px; color: var(--muted); }
