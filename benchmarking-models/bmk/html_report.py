@@ -12,7 +12,12 @@ render(csv_path, html_path, title, heat_from, freeze_cols, filter_cols,
   * a **Question type** button opening an overlay bar chart of question counts,
     toggleable "By question" / "By group" (needs `qchart_cols=[group,q,n]`),
   * click-to-sort headers, a row search box,
-  * F1 heat-shade (red .40 -> green .90) on values in [0,1]; best-in-row ringed.
+  * F1 heat-shade (red .40 -> green .90) on values in [0,1]; best-in-row ringed,
+  * an **All / UCD / Non-UCD** toggle (top right, next to the theme button):
+    for any column pair `<col>_UCD` / `<col>_NONUCD` alongside a bare `<col>`,
+    shows only the selected institution's twin and hides the other two —
+    columns with no institution twins are unaffected. No-op (toggle hidden)
+    if the CSV has no institution-split columns.
 
 Self-contained, no external assets. Kept inside the eval suite so the CSV->HTML
 transform ships with the pipeline:  python3 -m bmk.html_report in.csv out.html
@@ -23,6 +28,7 @@ from __future__ import annotations
 import csv
 import html
 import json
+import os
 import sys
 
 
@@ -35,12 +41,27 @@ def _rows(csv_path):
 
 def render(csv_path: str, html_path: str, title: str = "Leaderboard",
            heat_from: int = 0, freeze_cols=None, filter_cols=None,
-           weight_col=None, qchart_cols=None) -> str:
+           weight_col=None, qchart_cols=None,
+           titles_csv=None, title_key_cols=None) -> str:
     header, rows = _rows(csv_path)
+    # Optional per-cell tooltips (e.g. TP/TN/FP/FN behind each F1). A parallel
+    # CSV with the SAME header/row order; each non-empty cell becomes the
+    # `title` attribute on the matching data cell. Rows are matched by the
+    # values in `title_key_cols` (default the checkpoint + question columns),
+    # so sorting/filtering in the browser keeps tooltips aligned.
+    titles = None
+    key_cols = list(title_key_cols) if title_key_cols else [0, 2]
+    if titles_csv and os.path.exists(titles_csv):
+        t_header, t_rows = _rows(titles_csv)
+        titles = {}
+        for tr in t_rows:
+            k = "␟".join(tr[i] for i in key_cols if i < len(tr))
+            titles[k] = tr
     payload = json.dumps({
         "header": header, "rows": rows, "heatFrom": heat_from,
         "freeze": sorted(freeze_cols or []), "filters": list(filter_cols or []),
         "weightCol": weight_col, "qchart": list(qchart_cols) if qchart_cols else None,
+        "titles": titles, "titleKeyCols": key_cols,
     })
     doc = _TEMPLATE.replace("/*DATAJSON*/", payload).replace(
         "{{TITLE}}", html.escape(title))
@@ -82,6 +103,7 @@ _TEMPLATE = r"""<!doctype html>
     border-radius:999px; padding:4px 12px; cursor:pointer; font-size:12.5px; }
   .pill:hover{ border-color:var(--accent); }
   .pill.on{ background:var(--accent); border-color:var(--accent); color:#03181a; font-weight:700; }
+  #instseg{ margin-left:auto; display:flex; gap:4px; align-items:center; }
   .bar{ display:flex; flex-wrap:wrap; gap:10px; align-items:center;
     padding:8px 22px; border-bottom:1px solid var(--line); position:sticky; top:0;
     background:var(--bg); z-index:20; }
@@ -163,6 +185,11 @@ _TEMPLATE = r"""<!doctype html>
   <input id="q" type="search" placeholder="filter rows…">
   <button id="toggleCols">Columns ▾</button>
   <button id="showAll">Show all</button>
+  <span id="instseg">
+    <span class="pill instp on" data-inst="ALL">All</span>
+    <span class="pill instp" data-inst="UCD">UCD</span>
+    <span class="pill instp" data-inst="NONUCD">Non-UCD</span>
+  </span>
   <button id="theme" title="Switch between light and dark mode">☾ Dark</button>
   <button id="qtype">Question type ▤</button>
   <span class="count" id="count"></span>
@@ -189,7 +216,13 @@ _TEMPLATE = r"""<!doctype html>
 
 <script>
 const DATA = /*DATAJSON*/;
-const {header, rows, heatFrom, freeze, filters, weightCol, qchart} = DATA;
+const {header, rows, heatFrom, freeze, filters, weightCol, qchart, titles, titleKeyCols} = DATA;
+function cellTitle(r,c){
+  if(!titles) return "";
+  const k = (titleKeyCols||[0,2]).map(i=>r[i]).join("␟");
+  const t = titles[k];
+  return (t && t[c]) ? t[c] : "";
+}
 const FROZEN = new Set(freeze);
 const GROUP_COLORS = {OPACIFICATION:"#0d8f97",LOCATION:"#3b5bdb",PATHOLOGY:"#c0392b",
   DEVICE:"#c98a1b",ACCESS:"#7048e8",OTHER:"#5a6b7b"};
@@ -199,6 +232,34 @@ const LABEL_COL = Math.max(0, header.findIndex(h=>h.toLowerCase()==="question"))
 let hidden = new Set(), sortCol=null, sortDir=-1;
 const pick = {};  // col -> selected value ("" = All)
 filters.forEach(c=> pick[c]="");
+
+// ── institution split: any <col>_UCD / <col>_NONUCD pair alongside a bare
+// <col> becomes a 3-way variant group; instVariant[c] tags which one a
+// column is ('ALL'|'UCD'|'NONUCD'), instBase[c] the shared name. Columns
+// with no split twins are untouched by the toggle (instVariant[c] undefined).
+const instVariant = {}, instBase = {};
+header.forEach((h,c)=>{
+  if(h.endsWith('_UCD') && header.includes(h.slice(0,-4))){
+    instVariant[c]='UCD'; instBase[c]=h.slice(0,-4);
+  } else if(h.endsWith('_NONUCD') && header.includes(h.slice(0,-7))){
+    instVariant[c]='NONUCD'; instBase[c]=h.slice(0,-7);
+  }
+});
+header.forEach((h,c)=>{
+  if(instVariant[c]) return;
+  if(header.includes(h+'_UCD') || header.includes(h+'_NONUCD')){
+    instVariant[c]='ALL'; instBase[c]=h;
+  }
+});
+const HAS_INST_SPLIT = Object.keys(instVariant).length>0;
+let instMode='ALL';  // 'ALL' | 'UCD' | 'NONUCD'
+function instVisible(c){ return !instVariant[c] || instVariant[c]===instMode; }
+function effHidden(c){ return hidden.has(c) || !instVisible(c); }
+function activeWeightCol(){
+  if(weightCol==null || instMode==='ALL') return weightCol;
+  const cand = header.indexOf(header[weightCol]+'_'+instMode);
+  return cand>=0 ? cand : weightCol;
+}
 
 function esc(s){ return String(s).replace(/[&<>"]/g,m=>(
   {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
@@ -265,11 +326,20 @@ const COLDOC = {
   "FP":"False positives — predicted yes, ground truth no.",
   "FN":"False negatives — predicted no, ground truth yes.",
 };
-function docFor(h){
+function baseDocFor(h){
   if(COLDOC[h]!==undefined) return COLDOC[h];
   return "Per-question macro-F1 for model \""+h+"\": it answered this yes/no "+
     "question from the sequence mosaic (zero-shot image–text similarity, or a "+
     "generative VLM). Directly comparable, cell-to-cell, with the probe columns.";
+}
+function docFor(h){
+  if(COLDOC[h]!==undefined) return COLDOC[h];
+  for(const [suf,scope] of [['_UCD','UCD institution rows only'],['_NONUCD','non-UCD institution rows only']]){
+    if(h.endsWith(suf)){
+      return baseDocFor(h.slice(0,-suf.length)) + "\n\nRestricted to "+scope+".";
+    }
+  }
+  return baseDocFor(h);
 }
 const _tip = () => document.getElementById('tip');
 function showTip(el){
@@ -300,7 +370,7 @@ function fmtCell(val,c,rowFloats){
 }
 function rowFloatsOf(r){
   const out=[];
-  for(let c=heatFrom;c<header.length;c++){ if(isNum[c]&&!hidden.has(c)&&r[c]!==""){
+  for(let c=heatFrom;c<header.length;c++){ if(isNum[c]&&!effHidden(c)&&r[c]!==""){
     const v=parseFloat(r[c]); if(shadeable(v)) out.push(v);} }
   return out;
 }
@@ -327,7 +397,7 @@ function drawFilters(){
 }
 function drawHead(){
   document.getElementById('head').innerHTML = header.map((h,c)=>{
-    if(hidden.has(c)) return "";
+    if(effHidden(c)) return "";
     const arrow = sortCol===c ? (sortDir<0?" ▾":" ▴") : "";
     return `<th class="${classOf(c)}" data-c="${c}">${esc(h)}<span class="qm">ⓘ</span>${arrow}</th>`;
   }).join("");
@@ -369,8 +439,10 @@ function drawBody(){
   document.getElementById('count').textContent = `${view.length} / ${rows.length} rows`;
   document.getElementById('body').innerHTML = view.map(r=>{
     const rf = rowFloatsOf(r);
-    return "<tr>"+header.map((_,c)=> hidden.has(c)? "" :
-      `<td class="${classOf(c)}" data-c="${c}">${fmtCell(r[c],c,rf)}</td>`).join("")+"</tr>";
+    return "<tr>"+header.map((_,c)=>{ if(effHidden(c)) return "";
+      const tt = cellTitle(r,c);
+      return `<td class="${classOf(c)}" data-c="${c}"${tt?` data-tip="${esc(tt)}"`:""}>${fmtCell(r[c],c,rf)}</td>`;
+    }).join("")+"</tr>";
   }).join("");
   drawFoot(view);
   applyFreeze();
@@ -378,9 +450,10 @@ function drawBody(){
 function drawFoot(view){
   const foot=document.getElementById('foot');
   if(weightCol==null){ foot.innerHTML=""; return; }
+  const wc = activeWeightCol();  // n / n_UCD / n_NONUCD depending on the toggle
   const cells = header.map((h,c)=>{
-    if(hidden.has(c)) return "";
-    if(c===weightCol){  // n column: total sample count
+    if(effHidden(c)) return "";
+    if(c===wc){  // n column: total sample count
       const s = view.reduce((a,r)=> a + (parseFloat(r[c])||0), 0);
       return `<td class="${classOf(c)}" data-c="${c}">${s}</td>`;
     }
@@ -390,7 +463,7 @@ function drawFoot(view){
     }
     let num=0, den=0;                // weighted mean over shown rows, weight = n
     for(const r of view){
-      const v=parseFloat(r[c]), w=parseFloat(r[weightCol]);
+      const v=parseFloat(r[c]), w=parseFloat(r[wc]);
       if(!isNaN(v) && !isNaN(w)){ num+=v*w; den+=w; }
     }
     if(den===0) return `<td class="${classOf(c)}" data-c="${c}">·</td>`;
@@ -402,7 +475,7 @@ function drawFoot(view){
 }
 function applyFreeze(){
   // cumulative left offset for visible frozen columns, in original order
-  const vis = [...FROZEN].filter(c=>!hidden.has(c)).sort((a,b)=>a-b);
+  const vis = [...FROZEN].filter(c=>!effHidden(c)).sort((a,b)=>a-b);
   let left=0;
   vis.forEach((c,i)=>{
     const th=document.querySelector(`#head th[data-c="${c}"]`);
@@ -461,6 +534,12 @@ function closeOverlay(){ document.getElementById('overlay').classList.remove('op
 document.getElementById('q').oninput=drawBody;
 document.getElementById('toggleCols').onclick=()=>document.getElementById('cols').classList.toggle('open');
 document.getElementById('showAll').onclick=()=>{hidden.clear(); drawCols(); draw();};
+document.getElementById('instseg').style.display = HAS_INST_SPLIT ? 'flex' : 'none';
+document.querySelectorAll('.instp').forEach(p=>p.onclick=()=>{
+  instMode = p.dataset.inst;
+  document.querySelectorAll('.instp').forEach(x=>x.classList.toggle('on', x===p));
+  draw();
+});
 function effectiveTheme(){
   return document.documentElement.getAttribute('data-theme')
       || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -484,6 +563,32 @@ if(qchart){
 } else { qtypeBtn.style.display='none'; }
 window.addEventListener('resize', applyFreeze);
 drawFilters(); drawCols(); draw();
+
+// ── instant hover tooltip for per-cell confusion (TP/TN/FP/FN) ──────────────
+(function(){
+  const tip = document.createElement('div');
+  tip.id = 'celltip';
+  tip.style.cssText = "position:fixed;z-index:9999;pointer-events:none;display:none;"+
+    "max-width:320px;padding:6px 9px;border-radius:6px;font:12px/1.4 ui-monospace,"+
+    "SFMono-Regular,Menlo,monospace;background:#111a24;color:#e6edf3;"+
+    "border:1px solid #39c2c9;box-shadow:0 4px 14px rgba(0,0,0,.4);white-space:nowrap;";
+  document.body.appendChild(tip);
+  function move(e){ tip.style.left=(e.clientX+14)+'px';
+    tip.style.top=(e.clientY+16)+'px'; }
+  document.addEventListener('mouseover', e=>{
+    const td = e.target.closest && e.target.closest('td[data-tip]');
+    if(!td){ tip.style.display='none'; return; }
+    tip.textContent = td.getAttribute('data-tip');
+    tip.style.display='block'; move(e);
+  });
+  document.addEventListener('mousemove', e=>{
+    if(tip.style.display==='block') move(e);
+  });
+  document.addEventListener('mouseout', e=>{
+    const td = e.target.closest && e.target.closest('td[data-tip]');
+    if(td) tip.style.display='none';
+  });
+})();
 </script>
 </body></html>
 """

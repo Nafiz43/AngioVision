@@ -195,3 +195,26 @@ def load_validation_csv(validation_csv: str) -> pd.DataFrame:
 def sanitize_model_tag(model: str) -> str:
     """Ollama tag -> filesystem-safe name: 'qwen3-vl:32b' -> 'qwen3-vl_32b'."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", model.strip())
+
+
+def institution_bucket(raw: object) -> str:
+    """Raw Institution value -> binary bucket: 'UCD' or 'Non-UCD'."""
+    return "UCD" if normalize_text(raw) == "ucd" else "Non-UCD"
+
+
+def load_institution_map(validation_csv: str) -> Dict[str, str]:
+    """normalized SOPInstanceUID -> institution bucket ('UCD' / 'Non-UCD').
+
+    Test data spans multiple institutions (validation CSV's `Institution`
+    column); this powers the UCD-vs-non-UCD split throughout the eval suite.
+    Returns {} if the CSV has no Institution column (split becomes a no-op).
+    """
+    df = pd.read_csv(validation_csv)
+    sop_col = detect_column(df, ["SOPInstanceUID", "SOP UID", "SOP_UID"])
+    inst_col = detect_column(df, ["Institution"], required=False)
+    if inst_col is None:
+        return {}
+    return {
+        normalize_text(sop): institution_bucket(inst)
+        for sop, inst in zip(df[sop_col].astype(str), df[inst_col])
+    }
