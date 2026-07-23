@@ -36,11 +36,12 @@ def load_sample() -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def load_labeled_ids(labeler: str) -> set[str]:
+def load_own_labels(labeler: str) -> dict[str, str]:
+    """id -> human_label already submitted by this labeler (for skip-tracking and back-navigation prefill)."""
     if not LABELS_CSV.exists():
-        return set()
+        return {}
     with open(LABELS_CSV, newline="", encoding="utf-8") as f:
-        return {row["id"] for row in csv.DictReader(f) if row["labeler"] == labeler}
+        return {row["id"]: row["human_label"] for row in csv.DictReader(f) if row["labeler"] == labeler}
 
 
 def append_label(row: dict) -> None:
@@ -63,24 +64,46 @@ def index():
         abort(400)
     sample = load_sample()
     with _lock:
-        labeled_ids = load_labeled_ids(labeler)
-    remaining = [r for r in sample if r["id"] not in labeled_ids]
+        own_labels = load_own_labels(labeler)
+    remaining_idx = [i for i, r in enumerate(sample) if r["id"] not in own_labels]
 
     progress = {
-        "done": len(labeled_ids & {r["id"] for r in sample}),
+        "done": len(own_labels.keys() & {r["id"] for r in sample}),
         "total": len(sample),
     }
 
-    if not remaining:
-        return render_template("done.html", progress=progress)
+    # ?pos= lets Back/Next-N revisit any item regardless of label state, so a
+    # labeler can see (not overwrite) a prior answer. No pos -> resume at the
+    # first item this labeler hasn't done yet (original behavior).
+    pos_param = request.args.get("pos")
+    if pos_param is None:
+        if not remaining_idx:
+            return render_template("done.html", progress=progress, total=len(sample), current_labeler=labeler)
+        pos = remaining_idx[0]
+    else:
+        pos = request.args.get("pos", type=int)
+        if pos is None:
+            abort(400)
+        pos = max(0, min(pos, len(sample) - 1))
 
-    current = remaining[0]
+    current = sample[pos]
+    nav = {
+        "back1": max(0, pos - 1),
+        "back5": max(0, pos - 5),
+        "back10": max(0, pos - 10),
+        "next5": min(len(sample) - 1, pos + 5),
+        "next10": min(len(sample) - 1, pos + 10),
+    }
     return render_template(
         "index.html",
         item=current,
         labelers=LABELERS,
         current_labeler=labeler,
         progress=progress,
+        pos=pos,
+        total=len(sample),
+        nav=nav,
+        prior_label=own_labels.get(current["id"]),
     )
 
 
@@ -89,6 +112,7 @@ def label():
     item_id = request.form["id"]
     human_label = request.form["human_label"]
     labeler = request.form.get("labeler", LABELERS[0])
+    pos = request.form.get("pos", type=int)
     if human_label not in ("include", "exclude") or labeler not in LABELERS:
         abort(400)
 
@@ -100,8 +124,9 @@ def label():
         # Re-check under the lock: two near-simultaneous submits for the same
         # id by the same labeler (shouldn't happen, but cheap to guard) only
         # record once. Different labelers each get their own row for the
-        # same id - that's the point, not a race.
-        if item_id not in load_labeled_ids(labeler):
+        # same id - that's the point, not a race. Revisiting an already-
+        # labeled item via Back never overwrites it.
+        if item_id not in load_own_labels(labeler):
             append_label({
                 "id": item_id,
                 "bucket": row["bucket"],
@@ -111,6 +136,8 @@ def label():
                 "labeled_at": datetime.now(timezone.utc).isoformat(),
             })
 
+    if pos is not None:
+        return redirect(url_for("index", labeler=labeler, pos=pos + 1))
     return redirect(url_for("index", labeler=labeler))
 
 

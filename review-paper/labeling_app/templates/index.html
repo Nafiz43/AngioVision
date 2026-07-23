@@ -26,6 +26,15 @@
   </header>
 
   <main>
+    <div class="nav-row">
+      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back10) }}">&laquo;&laquo; Back 10</a>
+      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back5) }}">&laquo; Back 5</a>
+      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back1) }}">&larr; Back</a>
+      <span class="nav-pos">{{ pos + 1 }} / {{ total }}</span>
+      <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next5) }}">Next 5 &raquo;</a>
+      <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next10) }}">Next 10 &raquo;&raquo;</a>
+    </div>
+
     <article class="paper-card">
       <h1 class="paper-title">{{ item.title }}</h1>
       <div class="paper-meta">
@@ -42,6 +51,7 @@
     <form id="label-form" method="post" action="{{ url_for('label') }}">
       <input type="hidden" name="id" value="{{ item.id }}">
       <input type="hidden" name="labeler" id="labeler-hidden" value="">
+      <input type="hidden" name="pos" value="{{ pos }}">
 
       <div class="choice-row">
         <button type="button" class="choice-btn" data-value="include">Include <kbd>1</kbd></button>
@@ -53,6 +63,9 @@
         <strong>{{ 'Include' if item.algo_verdict == 'include' else 'Exclude' }}</strong>
         {% if item.bucket == 'UNCERTAIN' %}<span class="uncertain-tag">uncertain</span>{% endif %}
       </div>
+      {% if prior_label %}
+      <div class="prior-note">Your previous answer: <strong>{{ 'Include' if prior_label == 'include' else 'Exclude' }}</strong></div>
+      {% endif %}
       <div class="algo-reason">{{ item.llm_inclusion_reason }}</div>
       {% if item.llm_exclusion_reason and item.llm_exclusion_reason != 'Skipped — paper did not pass inclusion gate' %}
       <div class="algo-reason">{{ item.llm_exclusion_reason }}</div>
@@ -64,6 +77,7 @@
 
   <script>
     const ALGO_VERDICT = {{ item.algo_verdict | tojson }};
+    const PRIOR_LABEL = {{ prior_label | tojson }};
     const humanLabelInput = document.getElementById('human-label');
     const buttons = document.querySelectorAll('.choice-btn');
     const labelerSelect = document.getElementById('labeler');
@@ -73,7 +87,7 @@
       humanLabelInput.value = value;
       buttons.forEach(b => b.classList.toggle('selected', b.dataset.value === value));
     }
-    setChoice(ALGO_VERDICT);
+    setChoice(PRIOR_LABEL || ALGO_VERDICT);
     buttons.forEach(b => b.addEventListener('click', () => setChoice(b.dataset.value)));
 
     // The server picks the queue by ?labeler=; remember the choice across

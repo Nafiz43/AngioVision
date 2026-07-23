@@ -3,9 +3,8 @@
   --panel: #ffffff;
   --text: #1a1d23;
   --muted: #656d7a;
-  --accent: #4878CF;
-  --dsa: #d9534f;
-  --non-dsa: #4878CF;
+  --include: #4878CF;
+  --exclude: #d9534f;
   --border: #e1e4e9;
 }
 :root[data-theme="dark"] {
@@ -39,7 +38,7 @@ header {
 .progress-wrap { flex: 1; max-width: 480px; }
 .progress-text { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
-.progress-fill { height: 100%; background: var(--accent); transition: width .2s; }
+.progress-fill { height: 100%; background: var(--include); transition: width .2s; }
 
 .header-controls { display: flex; align-items: center; gap: 12px; }
 
@@ -71,19 +70,22 @@ main {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 16px 24px;
+  padding: 24px;
   gap: 18px;
 }
 
-.mosaic {
-  max-width: min(97vw, 1600px);
-  max-height: 80vh;
-  width: auto;
-  height: auto;
-  border-radius: 8px;
+.paper-card {
+  max-width: 720px;
+  width: 100%;
+  background: var(--panel);
   border: 1px solid var(--border);
-  background: #000;
+  border-radius: 10px;
+  padding: 24px 28px;
 }
+.paper-title { font-size: 20px; margin: 0 0 10px; line-height: 1.35; }
+.paper-meta { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.paper-meta a { color: var(--include); }
+.paper-abstract { font-size: 15px; line-height: 1.55; margin-top: 14px; white-space: pre-wrap; }
 
 .choice-row {
   display: flex;
@@ -105,10 +107,25 @@ main {
   transition: border-color .15s, background .15s;
 }
 .choice-btn:hover { border-color: var(--muted); }
-.choice-btn[data-value="dsa"].selected { border-color: var(--dsa); background: color-mix(in srgb, var(--dsa) 15%, var(--panel)); }
-.choice-btn[data-value="non_dsa"].selected { border-color: var(--non-dsa); background: color-mix(in srgb, var(--non-dsa) 15%, var(--panel)); }
+.choice-btn[data-value="include"].selected { border-color: var(--include); background: color-mix(in srgb, var(--include) 15%, var(--panel)); }
+.choice-btn[data-value="exclude"].selected { border-color: var(--exclude); background: color-mix(in srgb, var(--exclude) 15%, var(--panel)); }
 
 .algo-note { font-size: 13px; color: var(--muted); }
+.uncertain-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #e2a03f;
+  color: #1a1d23;
+  font-size: 11px;
+  font-weight: 600;
+}
+.algo-reason {
+  max-width: 600px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
 
 kbd {
   font-size: 11px;
@@ -124,7 +141,7 @@ kbd {
   font-weight: 600;
   border-radius: 8px;
   border: none;
-  background: var(--accent);
+  background: var(--include);
   color: white;
   cursor: pointer;
   display: flex;

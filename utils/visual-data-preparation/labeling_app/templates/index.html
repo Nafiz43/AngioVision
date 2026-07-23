@@ -26,11 +26,21 @@
   </header>
 
   <main>
+    <div class="nav-row">
+      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back10) }}">&laquo;&laquo; Back 10</a>
+      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back5) }}">&laquo; Back 5</a>
+      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back1) }}">&larr; Back</a>
+      <span class="nav-pos">{{ pos + 1 }} / {{ total }}</span>
+      <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next5) }}">Next 5 &raquo;</a>
+      <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next10) }}">Next 10 &raquo;&raquo;</a>
+    </div>
+
     <img class="mosaic" src="{{ url_for('mosaic', item_id=item.id) }}" alt="mosaic for {{ item.id }}">
 
     <form id="label-form" method="post" action="{{ url_for('label') }}">
       <input type="hidden" name="id" value="{{ item.id }}">
       <input type="hidden" name="labeler" id="labeler-hidden" value="">
+      <input type="hidden" name="pos" value="{{ pos }}">
 
       <div class="choice-row">
         <button type="button" class="choice-btn" data-value="dsa">DSA <kbd>1</kbd></button>
@@ -41,6 +51,9 @@
       <div class="algo-note">Algorithm predicted:
         <strong>{{ 'DSA' if item.algo_verdict == 'dsa' else 'Non-DSA' }}</strong>
       </div>
+      {% if prior_label %}
+      <div class="prior-note">Your previous answer: <strong>{{ 'DSA' if prior_label == 'dsa' else 'Non-DSA' }}</strong></div>
+      {% endif %}
 
       <button type="submit" class="next-btn">Next &rarr; <kbd>Enter</kbd></button>
     </form>
@@ -48,6 +61,7 @@
 
   <script>
     const ALGO_VERDICT = {{ item.algo_verdict | tojson }};
+    const PRIOR_LABEL = {{ prior_label | tojson }};
     const humanLabelInput = document.getElementById('human-label');
     const buttons = document.querySelectorAll('.choice-btn');
     const labelerSelect = document.getElementById('labeler');
@@ -57,7 +71,7 @@
       humanLabelInput.value = value;
       buttons.forEach(b => b.classList.toggle('selected', b.dataset.value === value));
     }
-    setChoice(ALGO_VERDICT);
+    setChoice(PRIOR_LABEL || ALGO_VERDICT);
     buttons.forEach(b => b.addEventListener('click', () => setChoice(b.dataset.value)));
 
     // The server picks the queue by ?labeler=; remember the choice across
