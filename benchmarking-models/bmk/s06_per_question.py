@@ -29,6 +29,12 @@ Every score column in both tables gets two extra twins, `<col>_UCD` and
 institution (no retraining) — the pooled/original column is unchanged and
 still spans all institutions. bmk.html_report renders an All/UCD/Non-UCD
 toggle that shows only the matching column set.
+
+per_question_comprehensive also carries "_cm:<col>:TP|TN|FP|FN" sidecar
+columns (pooled/ALL variant only) alongside every column with confusion
+counts available — bmk.html_report hides these from the rendered table and
+uses them only for its pooled-footer toggle (sum confusion, then derive
+macro-F1, instead of averaging per-row F1).
 """
 
 from __future__ import annotations
@@ -36,6 +42,7 @@ from __future__ import annotations
 import csv
 import glob
 import os
+import re
 import shutil
 
 import numpy as np
@@ -291,8 +298,52 @@ def build_comprehensive(probe_df: pd.DataFrame, model_q_f1: dict, control_q_f1: 
 # probe F1 column  ->  confusion-sidecar column
 _PROBE_F1_TO_CONF = {
     "F1_BASELINE": "BASELINE", "F1_A1_pre": "A1_pre", "F1_A2_attn": "A2_attn",
-    "F1_A3_xmodal": "A3_xmodal", "F1_A2+A3": "A2+A3",
+    "F1_A3_xmodal": "A3_xmodal", "F1_A2+A3": "A2+A3", "F1_B3margins": "B3margins",
 }
+
+
+def _parse_conf_tip(tip: str):
+    """'TP=1 TN=0 FP=0 FN=1 (n=2)' -> (tp, tn, fp, fn) ints, or None if blank."""
+    if not tip:
+        return None
+    m = re.match(r"TP=(\d+) TN=(\d+) FP=(\d+) FN=(\d+)", tip)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _add_cm_columns(comp: pd.DataFrame, cfg, model_q_conf: dict,
+                    control_q_conf: dict) -> pd.DataFrame:
+    """Append "_cm:<col>:TP|TN|FP|FN" sidecar columns (pooled/ALL variant only)
+    for every column with confusion data available, so bmk.html_report's
+    pooled-footer toggle can sum real counts instead of always falling back
+    to the weighted average. Parses the SAME confusion sources already used
+    for the cell-tooltip matrix (feats_conf sidecar for probe columns,
+    model_q_conf / control_q_conf for model/control columns) — no new
+    computation, no _UCD/_NONUCD twins (matches the tooltip matrix's own
+    pooled-only scope)."""
+    macro_probe = getattr(cfg, "probe_perq_csv", "") or ""
+    feats_conf = _load_conf_sidecar(macro_probe.replace(".csv", "_conf.csv"))
+    noprobe_conf = _load_conf_sidecar(macro_probe.replace(".csv", "_noprobe_conf.csv"))
+    keys = [(str(comp.at[i, "checkpoint"]), canon_question(comp.at[i, "question"]))
+            for i in comp.index]
+    for col in list(comp.columns):
+        if col in _PROBE_F1_TO_CONF:
+            src = _PROBE_F1_TO_CONF[col]
+            vals = [_parse_conf_tip(feats_conf.get(k, {}).get(src, "")) for k in keys]
+        elif col == "no_probe":
+            vals = [_parse_conf_tip(noprobe_conf.get(k, {}).get("no_probe", "")) for k in keys]
+        elif col in control_q_conf:
+            m = control_q_conf[col]
+            vals = [_parse_conf_tip(m.get(k[1], "")) for k in keys]
+        elif col in model_q_conf:
+            m = model_q_conf[col]
+            vals = [_parse_conf_tip(m.get(k[1], "")) for k in keys]
+        else:
+            continue
+        if not any(v is not None for v in vals):
+            continue
+        for kind_i, kind in enumerate(("TP", "TN", "FP", "FN")):
+            comp[f"_cm:{col}:{kind}"] = [v[kind_i] if v is not None else "" for v in vals]
+    return comp
 
 
 def _load_conf_sidecar(path):
@@ -444,6 +495,11 @@ def run(cfg, run_dir) -> dict:
         probe_df = pd.read_csv(probe_csv)
         comp = build_comprehensive(probe_df, model_q_f1, control_q_f1,
                                    model_q_f1_inst, control_q_f1_inst)
+        # "_cm:<col>:TP|TN|FP|FN" sidecar columns for the HTML footer's pooled
+        # (sum-confusion-then-derive-F1) mode — added before writing so they
+        # ship in the one comprehensive CSV; bmk.html_report hides them from
+        # the rendered table and only reads them for the pooled footer.
+        comp = _add_cm_columns(comp, cfg, model_q_conf, control_q_conf)
         comp_csv = os.path.join(str(run_dir), f"per_question_comprehensive{suffix}.csv")
         comp.to_csv(comp_csv, index=False)
         print(f"[06] comprehensive per-question -> {comp_csv} ({len(comp)} rows)")

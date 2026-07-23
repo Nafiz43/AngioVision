@@ -18,6 +18,12 @@ render(csv_path, html_path, title, heat_from, freeze_cols, filter_cols,
     shows only the selected institution's twin and hides the other two —
     columns with no institution twins are unaffected. No-op (toggle hidden)
     if the CSV has no institution-split columns.
+  * a **Bottom row** toggle (Weighted avg / Pooled TP/TN/FP/FN): the pooled
+    mode sums confusion counts over the shown rows then derives macro-F1 from
+    the totals, rather than averaging per-row F1. Needs "_cm:<col>:TP|TN|FP|FN"
+    sidecar columns (never rendered as their own <th>/<td>) alongside a bare
+    `<col>` — columns without a sidecar fall back to the weighted average so
+    the footer is never blank.
 
 Self-contained, no external assets. Kept inside the eval suite so the CSV->HTML
 transform ships with the pipeline:  python3 -m bmk.html_report in.csv out.html
@@ -57,11 +63,25 @@ def render(csv_path: str, html_path: str, title: str = "Leaderboard",
         for tr in t_rows:
             k = "␟".join(tr[i] for i in key_cols if i < len(tr))
             titles[k] = tr
+    # "_cm:<col>:TP|TN|FP|FN" sidecar columns carry per-row confusion counts for
+    # the footer's pooled-aggregate mode; they never get a <th>/<td> of their
+    # own. Split them out into a {visibleColIdx: {tp,tn,fp,fn: sidecarColIdx}}
+    # map (indices into the ORIGINAL header/row arrays, which are still sent
+    # whole - simplest to keep row-array indices stable end to end).
+    cm = {}
+    for i, h in enumerate(header):
+        if h.startswith("_cm:"):
+            _, col, kind = h.split(":", 2)
+            cm.setdefault(col, {})[kind.lower()] = i
+    cm_by_visible_idx = {}
+    for i, h in enumerate(header):
+        if h in cm and set(cm[h]) == {"tp", "tn", "fp", "fn"}:
+            cm_by_visible_idx[i] = cm[h]
     payload = json.dumps({
         "header": header, "rows": rows, "heatFrom": heat_from,
         "freeze": sorted(freeze_cols or []), "filters": list(filter_cols or []),
         "weightCol": weight_col, "qchart": list(qchart_cols) if qchart_cols else None,
-        "titles": titles, "titleKeyCols": key_cols,
+        "titles": titles, "titleKeyCols": key_cols, "cm": cm_by_visible_idx,
     })
     doc = _TEMPLATE.replace("/*DATAJSON*/", payload).replace(
         "{{TITLE}}", html.escape(title))
@@ -178,13 +198,18 @@ _TEMPLATE = r"""<!doctype html>
 <body>
 <header>
   <h1>{{TITLE}}</h1>
-  <div class="sub">Select a checkpoint / question group above · frozen left columns stay put on scroll · click a header to sort · “Columns” to hide/show · bottom row = weighted average of the shown rows</div>
+  <div class="sub">Select a checkpoint / question group above · frozen left columns stay put on scroll · click a header to sort · “Columns” to hide/show · bottom row = weighted average or pooled TP/TN/FP/FN over the shown rows (toggle in the bar)</div>
 </header>
 <div class="filters" id="filters"></div>
 <div class="bar">
   <input id="q" type="search" placeholder="filter rows…">
   <button id="toggleCols">Columns ▾</button>
   <button id="showAll">Show all</button>
+  <span class="fgroup" id="footModeGroup">
+    <span class="flabel">Bottom row</span>
+    <span class="pill footmode on" data-m="avg">Weighted avg</span>
+    <span class="pill footmode" data-m="pooled">Pooled TP/TN/FP/FN</span>
+  </span>
   <span id="instseg">
     <span class="pill instp on" data-inst="ALL">All</span>
     <span class="pill instp" data-inst="UCD">UCD</span>
@@ -216,7 +241,7 @@ _TEMPLATE = r"""<!doctype html>
 
 <script>
 const DATA = /*DATAJSON*/;
-const {header, rows, heatFrom, freeze, filters, weightCol, qchart, titles, titleKeyCols} = DATA;
+const {header, rows, heatFrom, freeze, filters, weightCol, qchart, titles, titleKeyCols, cm} = DATA;
 function cellTitle(r,c){
   if(!titles) return "";
   const k = (titleKeyCols||[0,2]).map(i=>r[i]).join("␟");
@@ -226,10 +251,14 @@ function cellTitle(r,c){
 const FROZEN = new Set(freeze);
 const GROUP_COLORS = {OPACIFICATION:"#0d8f97",LOCATION:"#3b5bdb",PATHOLOGY:"#c0392b",
   DEVICE:"#c98a1b",ACCESS:"#7048e8",OTHER:"#5a6b7b"};
+// "_cm:<col>:KIND" sidecar columns hold per-row confusion counts for the
+// pooled footer mode - never a real table column, always excluded from
+// display (headers/cells/column-toggle/sort/search/heat).
+const CM_COL = new Set(header.map((h,c)=>h.startsWith("_cm:")?c:-1).filter(c=>c>=0));
 const isNum = header.map((_,c)=> rows.length>0 &&
   rows.every(r=> r[c]===""||r[c]==null|| !isNaN(parseFloat(r[c]))));
 const LABEL_COL = Math.max(0, header.findIndex(h=>h.toLowerCase()==="question"));
-let hidden = new Set(), sortCol=null, sortDir=-1;
+let hidden = new Set([...CM_COL]), sortCol=null, sortDir=-1, footMode='avg', footCM={};
 const pick = {};  // col -> selected value ("" = All)
 filters.forEach(c=> pick[c]="");
 
@@ -303,6 +332,12 @@ const COLDOC = {
   "F1_A2+A3":PROBE_METHOD+"\n\nApproach A2+A3 — features: [ image_attn ; question ; "+
     "image_attn × question ; |image_attn − question| ]. Attention view plus the "+
     "cross-modal difference term.",
+  "F1_B3margins":PROBE_METHOD+"\n\nApproach B3+margins (round-4 winner) — features: "+
+    "[ image_final ; image_attn ; question ; final×question ; attn×question ; "+
+    "|final−question| ; |attn−question| ; cos(final,question) ; cos(attn,question) ; "+
+    "zero-shot yes/no similarity margin (final & attn view, raw and per-family "+
+    "debiased) ]. Only computed for checkpoints with captured yes/no hypothesis "+
+    "embeddings — blank elsewhere.",
   "best_A":"Which A-approach (A1_pre / A2_attn / A3_xmodal / A2+A3) scored the "+
     "highest macro-F1 on this question.",
   "best_A_F1":"The macro-F1 of that best A-approach for this question (the max "+
@@ -342,12 +377,24 @@ function docFor(h){
   return baseDocFor(h);
 }
 const _tip = () => document.getElementById('tip');
-function showTip(el){
-  const t=_tip(); t.textContent=docFor(header[+el.dataset.c]); t.style.display='block';
+function positionTip(el){
+  const t=_tip(); t.style.display='block';
   const r=el.getBoundingClientRect();
   t.style.left=Math.max(6, Math.min(r.left, window.innerWidth-t.offsetWidth-12))+'px';
   const below=r.bottom+6;
   t.style.top=(below+t.offsetHeight>window.innerHeight? r.top-t.offsetHeight-6: below)+'px';
+}
+function showFootTip(el){
+  const c=+el.dataset.c, r=footCM[c]; if(!r) return;
+  const f1y=(2*r.tp)/((2*r.tp+r.fp+r.fn)||1), f1n=(2*r.tn)/((2*r.tn+r.fn+r.fp)||1);
+  _tip().textContent = `Pooled over shown rows — ${header[c]}\n`+
+    `TP=${r.tp}   TN=${r.tn}\nFP=${r.fp}   FN=${r.fn}\n`+
+    `F1(yes)=${f1y.toFixed(3)}   F1(no)=${f1n.toFixed(3)}   macro=${r.val.toFixed(3)}`;
+  positionTip(el);
+}
+function showTip(el){
+  _tip().textContent=docFor(header[+el.dataset.c]);
+  positionTip(el);
 }
 function hideTip(){ _tip().style.display='none'; }
 function shadeable(v){ return !isNaN(v) && v>=0 && v<=1; }
@@ -411,7 +458,7 @@ function drawHead(){
   });
 }
 function drawCols(){
-  document.getElementById('cols').innerHTML = header.map((h,c)=>
+  document.getElementById('cols').innerHTML = header.map((h,c)=> CM_COL.has(c) ? "" :
     `<label><input type="checkbox" data-c="${c}" ${hidden.has(c)?"":"checked"}>${esc(h)}</label>`
   ).join("");
   document.querySelectorAll('#cols input').forEach(cb=>cb.onchange=()=>{
@@ -447,8 +494,37 @@ function drawBody(){
   drawFoot(view);
   applyFreeze();
 }
+function weightedAvgCell(c, view){
+  const wc = activeWeightCol();    // n / n_UCD / n_NONUCD depending on the toggle
+  let num=0, den=0;                // weighted mean over shown rows, weight = n
+  for(const r of view){
+    const v=parseFloat(r[c]), w=parseFloat(r[wc]);
+    if(!isNaN(v) && !isNaN(w)){ num+=v*w; den+=w; }
+  }
+  return den===0 ? null : num/den;
+}
+function pooledCell(c, view){
+  // Pooled aggregate: sum TP/TN/FP/FN over the shown rows for this column's
+  // approach/model, THEN derive macro-F1 from the totals - not an average of
+  // per-row F1 scores. Requires confusion sidecar columns (cm[c]); columns
+  // without sidecars (e.g. institution-split twins, or raw predictions no
+  // longer on disk) fall back to the weighted average, so the footer is
+  // never blank.
+  const idx = cm[c];
+  if(!idx){ const val=weightedAvgCell(c, view); return val==null? null : {val, cm:false}; }
+  let tp=0, tn=0, fp=0, fn=0, any=false;
+  for(const r of view){
+    const t=parseFloat(r[idx.tp]), n=parseFloat(r[idx.tn]),
+          p=parseFloat(r[idx.fp]), g=parseFloat(r[idx.fn]);
+    if(!isNaN(t)&&!isNaN(n)&&!isNaN(p)&&!isNaN(g)){ tp+=t; tn+=n; fp+=p; fn+=g; any=true; }
+  }
+  if(!any) return null;
+  const f1yes = (2*tp)/((2*tp+fp+fn)||1), f1no = (2*tn)/((2*tn+fn+fp)||1);
+  return {val:(f1yes+f1no)/2, cm:true, tp, tn, fp, fn};
+}
 function drawFoot(view){
   const foot=document.getElementById('foot');
+  footCM = {};
   if(weightCol==null){ foot.innerHTML=""; return; }
   const wc = activeWeightCol();  // n / n_UCD / n_NONUCD depending on the toggle
   const cells = header.map((h,c)=>{
@@ -458,20 +534,25 @@ function drawFoot(view){
       return `<td class="${classOf(c)}" data-c="${c}">${s}</td>`;
     }
     if(!isNum[c] || c<heatFrom){  // text cols: label goes in the question column
-      const lbl = c===LABEL_COL ? "weighted average" : "";
+      const lbl = c===LABEL_COL ? (footMode==='pooled'?"pooled (TP/TN/FP/FN)":"weighted average") : "";
       return `<td class="${classOf(c)}" data-c="${c}">${lbl}</td>`;
     }
-    let num=0, den=0;                // weighted mean over shown rows, weight = n
-    for(const r of view){
-      const v=parseFloat(r[c]), w=parseFloat(r[wc]);
-      if(!isNaN(v) && !isNaN(w)){ num+=v*w; den+=w; }
+    const res = footMode==='pooled' ? pooledCell(c, view) : {val: weightedAvgCell(c, view)};
+    if(res==null || res.val==null) return `<td class="${classOf(c)}" data-c="${c}">·</td>`;
+    const disp=res.val.toFixed(3);
+    const bg = shadeable(res.val)? heat(res.val):"transparent";
+    let attr = "";
+    if(footMode==='pooled'){
+      if(res.cm){ footCM[c]=res; attr=' data-foothover="1"'; }
+      else attr=' title="no confusion counts for this column - showing weighted average"';
     }
-    if(den===0) return `<td class="${classOf(c)}" data-c="${c}">·</td>`;
-    const val=num/den, disp=val.toFixed(3);
-    const bg = shadeable(val)? heat(val):"transparent";
-    return `<td class="${classOf(c)}" data-c="${c}"><span class="cell" style="background:${bg}">${disp}</span></td>`;
+    return `<td class="${classOf(c)}" data-c="${c}"${attr}><span class="cell" style="background:${bg}">${disp}</span></td>`;
   }).join("");
   foot.innerHTML = `<tr>${cells}</tr>`;
+  foot.querySelectorAll('td[data-foothover]').forEach(td=>{
+    td.onmouseenter=()=>showFootTip(td);
+    td.onmouseleave=hideTip;
+  });
 }
 function applyFreeze(){
   // cumulative left offset for visible frozen columns, in original order
@@ -531,9 +612,14 @@ let chartMode='question';
 function openOverlay(){ drawChart(chartMode); document.getElementById('overlay').classList.add('open'); }
 function closeOverlay(){ document.getElementById('overlay').classList.remove('open'); }
 
+document.querySelectorAll('.footmode').forEach(p=>p.onclick=()=>{
+  footMode=p.dataset.m;
+  document.querySelectorAll('.footmode').forEach(x=>x.classList.toggle('on',x===p));
+  drawBody();
+});
 document.getElementById('q').oninput=drawBody;
 document.getElementById('toggleCols').onclick=()=>document.getElementById('cols').classList.toggle('open');
-document.getElementById('showAll').onclick=()=>{hidden.clear(); drawCols(); draw();};
+document.getElementById('showAll').onclick=()=>{hidden=new Set([...CM_COL]); drawCols(); draw();};
 document.getElementById('instseg').style.display = HAS_INST_SPLIT ? 'flex' : 'none';
 document.querySelectorAll('.instp').forEach(p=>p.onclick=()=>{
   instMode = p.dataset.inst;

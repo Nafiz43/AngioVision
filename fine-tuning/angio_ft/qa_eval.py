@@ -599,7 +599,12 @@ def _lr_probe_cv(
 
 
 def _dump_rich_probe_npz(rich_rows, gt_csv, path="/tmp/rich_probe_emb.npz"):
-    """Dump approach-A frozen features for offline feature-set sweeping."""
+    """Dump approach-A frozen features for offline feature-set sweeping.
+
+    Includes yes_emb/no_emb (the model's own zero-shot yes/no hypothesis
+    embeddings) and family (debias template group) - computed anyway for
+    the margin-based decision rule but previously discarded before reaching
+    the probe, so probes never saw the model's own zero-shot decision axis."""
     import numpy as np
     gt: Dict[Tuple[str, str], int] = {}
     with open(gt_csv, newline="", encoding="utf-8", errors="replace") as f:
@@ -607,22 +612,26 @@ def _dump_rich_probe_npz(rich_rows, gt_csv, path="/tmp/rich_probe_emb.npz"):
             a = str(r.get("Answer", "")).strip().lower()
             if a in ("yes", "no"):
                 gt[(normalize_str(r.get("SOPInstanceUID", "")), str(r.get("Question", "")).strip())] = 1 if a == "yes" else 0
-    final, pre, attn, qv, y, groups, ql = [], [], [], [], [], [], []
+    final, pre, attn, qv, yes_emb, no_emb, family, y, groups, ql = [], [], [], [], [], [], [], [], [], []
     seen: set = set()
-    for acc, sop_norm, q, f_, p_, a_, qv_ in rich_rows:
+    for acc, sop_norm, q, f_, p_, a_, qv_, ye_, ne_, fam_ in rich_rows:
         key = (sop_norm, q.strip())
         lbl = gt.get(key)
         if lbl is None or key in seen:
             continue
         seen.add(key)
         final.append(f_); pre.append(p_); attn.append(a_); qv.append(qv_)
+        yes_emb.append(ye_); no_emb.append(ne_); family.append(fam_)
         y.append(lbl); groups.append(str(acc)); ql.append(q.strip())
     if not y:
         print("[RICH_PROBE] no labeled rows to dump"); return
     np.savez(path, final=np.stack(final), pre=np.stack(pre), attn=np.stack(attn),
-             qv=np.stack(qv), y=np.asarray(y), groups=np.asarray(groups), q=np.asarray(ql))
+             qv=np.stack(qv), yes_emb=np.stack(yes_emb), no_emb=np.stack(no_emb),
+             family=np.asarray(family),
+             y=np.asarray(y), groups=np.asarray(groups), q=np.asarray(ql))
     print(f"[RICH_PROBE] dumped {len(y)} rows -> {path} "
-          f"final={np.stack(final).shape} pre={np.stack(pre).shape} attn={np.stack(attn).shape}")
+          f"final={np.stack(final).shape} pre={np.stack(pre).shape} attn={np.stack(attn).shape} "
+          f"yes_emb={np.stack(yes_emb).shape}")
 
 
 def _complex_probe_cv(
@@ -828,7 +837,10 @@ def predict_and_score(
                         _w = torch.softmax((_fp @ _qn) / 0.1, dim=0)
                         _sattn = F.normalize((_w.unsqueeze(1) * _fp).sum(0), dim=-1).float().cpu().numpy()
                         rich_rows.append((acc, sop_norm, q, rich["final"], rich["pre"], _sattn,
-                                          q_emb.squeeze(0).float().cpu().numpy()))
+                                          q_emb.squeeze(0).float().cpu().numpy(),
+                                          yes_emb.squeeze(0).float().cpu().numpy(),
+                                          no_emb.squeeze(0).float().cpu().numpy(),
+                                          family))
 
             n_ok += 1
 
