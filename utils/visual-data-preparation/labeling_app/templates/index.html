@@ -34,10 +34,6 @@
       <input type="hidden" name="labeler" id="labeler-hidden" value="">
       <input type="hidden" name="pos" value="{{ pos }}">
 
-      <div class="choice-row">
-        <button type="button" class="choice-btn" data-value="dsa">DSA <kbd>1</kbd></button>
-        <button type="button" class="choice-btn" data-value="non_dsa">Non-DSA <kbd>2</kbd></button>
-      </div>
       <input type="hidden" name="human_label" id="human-label" value="{{ item.algo_verdict }}">
 
       <div class="algo-note">Algorithm predicted:
@@ -47,17 +43,24 @@
       <div class="prior-note">Your previous answer: <strong>{{ 'DSA' if prior_label == 'dsa' else 'Non-DSA' }}</strong></div>
       {% endif %}
 
-      <button type="submit" class="next-btn">Next &rarr; <kbd>Enter</kbd></button>
+      <div class="bottom-bar">
+        <div class="action-row">
+          <div class="choice-row">
+            <button type="button" class="choice-btn" data-value="dsa">DSA <kbd>1</kbd></button>
+            <button type="button" class="choice-btn" data-value="non_dsa">Non-DSA <kbd>2</kbd></button>
+          </div>
+          <button type="submit" class="next-btn">Next &rarr; <kbd>Enter</kbd></button>
+        </div>
+        <div class="nav-row">
+          <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back10) }}">&laquo;&laquo; Back 10</a>
+          <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back5) }}">&laquo; Back 5</a>
+          <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back1) }}">&larr; Back</a>
+          <span class="nav-pos">{{ pos + 1 }} / {{ total }}</span>
+          <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next5) }}">Next 5 &raquo;</a>
+          <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next10) }}">Next 10 &raquo;&raquo;</a>
+        </div>
+      </div>
     </form>
-
-    <div class="nav-row">
-      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back10) }}">&laquo;&laquo; Back 10</a>
-      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back5) }}">&laquo; Back 5</a>
-      <a class="nav-btn{{ ' disabled' if pos <= 0 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.back1) }}">&larr; Back</a>
-      <span class="nav-pos">{{ pos + 1 }} / {{ total }}</span>
-      <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next5) }}">Next 5 &raquo;</a>
-      <a class="nav-btn{{ ' disabled' if pos >= total - 1 else '' }}" href="{{ url_for('index', labeler=current_labeler, pos=nav.next10) }}">Next 10 &raquo;&raquo;</a>
-    </div>
   </main>
 
   <script>

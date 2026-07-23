@@ -72,7 +72,7 @@ main {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px 24px 96px;
+  padding: 24px 24px 220px;
   gap: 18px;
 }
 
@@ -88,6 +88,10 @@ main {
 .paper-meta { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .paper-meta a { color: var(--include); }
 .paper-abstract { font-size: 15px; line-height: 1.55; margin-top: 14px; white-space: pre-wrap; }
+
+#label-form {
+  width: 100%;
+}
 
 .choice-row {
   display: flex;
@@ -112,7 +116,7 @@ main {
 .choice-btn[data-value="include"].selected { border-color: var(--include); background: color-mix(in srgb, var(--include) 15%, var(--panel)); }
 .choice-btn[data-value="exclude"].selected { border-color: var(--exclude); background: color-mix(in srgb, var(--exclude) 15%, var(--panel)); }
 
-.algo-note { font-size: 13px; color: var(--muted); }
+.algo-note { font-size: 13px; color: var(--muted); text-align: center; margin-bottom: 8px; }
 .uncertain-tag {
   margin-left: 6px;
   padding: 1px 6px;
@@ -156,21 +160,34 @@ kbd {
 .done-screen h1 { margin-bottom: 8px; }
 .done-screen p { color: var(--muted); }
 
-.nav-row {
+.bottom-bar {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: center;
-  padding: 14px 24px;
+  flex-direction: column;
   background: var(--panel);
   border-top: 1px solid var(--border);
   box-shadow: 0 -2px 10px rgba(0, 0, 0, .06);
   z-index: 10;
+}
+.action-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 14px 24px 10px;
+}
+.nav-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 10px 24px 14px;
+  border-top: 1px solid var(--border);
 }
 .nav-btn {
   padding: 12px 22px;
@@ -189,4 +206,4 @@ kbd {
 .nav-btn:active { transform: translateY(0); box-shadow: 0 1px 2px rgba(0, 0, 0, .04); }
 .nav-btn.disabled { opacity: .35; pointer-events: none; box-shadow: none; }
 .nav-pos { font-size: 15px; font-weight: 600; color: var(--muted); padding: 0 10px; min-width: 76px; text-align: center; }
-.prior-note { font-size: 13px; color: var(--muted); }
+.prior-note { font-size: 13px; color: var(--muted); margin-bottom: 8px; }

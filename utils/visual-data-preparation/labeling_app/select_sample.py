@@ -24,7 +24,7 @@ from pathlib import Path
 
 DSA_SPLIT_REPORT = (
     "/data/Deep_Angiography/AngioVision/utils/visual-data-preparation/"
-    "runs/training/run_20260716_034659/06_dsa_split/dsa_split_report.csv"
+    "runs/training/run_20260721_060709/06_dsa_split/dsa_split_report.csv"
 )
 OUT_CSV = Path(__file__).resolve().parent / "sample.csv"
 
